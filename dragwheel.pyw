@@ -1,0 +1,1465 @@
+"""
+DragWheel — drag a file, tap a key, drop on the wheel. Offline file converter for Windows.
+
+Drag a file, tap Shift  -> conversion wheel
+                 tap Ctrl   -> file tools (compress, trim, resize, merge…)
+                 tap Alt    -> file actions (copy, move, terminal, float…)
+Drop on a slice to apply it. Everything runs locally.
+
+Also: select files in Explorer and press Ctrl+Alt+Space, or right-click > "DragWheel".
+"""
+from __future__ import annotations
+
+import getpass
+import json
+import math
+import os
+import sys
+import traceback
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from PySide6.QtCore import (QEasingCurve, QObject, QPointF, QPropertyAnimation, QRectF, QRunnable,
+                            QSettings, QSize, Qt, QThreadPool, QTimer, QUrl, Signal, QMimeData, QPoint)
+from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QDesktopServices, QDrag, QFont, QFontMetrics,
+                           QGuiApplication, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient)
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+                               QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget)
+
+import engine
+import i18n
+import winsys
+from i18n import tr
+
+APP = "DragWheel"
+VERSION = "1.0.0"
+
+ACCENT = QColor("#ff8a00")
+ACCENT_2 = QColor("#ffb347")
+BG = QColor(28, 28, 30, 238)
+BG_RING = QColor(44, 44, 46, 245)
+FG = QColor("#f5f5f7")
+FG_DIM = QColor("#a1a1a6")
+
+MODES = ["convert", "tool", "action"]
+MODE_LABEL = {"convert": "Convert", "tool": "Tools", "action": "Actions"}   # translated at use: tr(MODE_LABEL[m])
+DEFAULT_KEYS = {"convert": "Shift", "tool": "Ctrl", "action": "Alt"}
+
+
+def settings() -> QSettings:
+    return QSettings(APP, APP)
+
+
+def mode_keys() -> dict[str, str]:
+    s = settings()
+    return {m: s.value(f"keys/{m}", DEFAULT_KEYS[m]) for m in MODES}
+
+
+# ============================================================================
+# File actions (don't use the engine)
+# ============================================================================
+class Actions:
+    def __init__(self, app: "DragWheelApp"):
+        self.app = app
+
+    def ops(self, paths):
+        A = lambda i, l, f, h="": engine.Op(i, l, f, group="action", multi=True, hint=h)
+        return [
+            A("copy", "Copy", self.copy, "to clipboard"),  # labels are translated when drawn
+            A("path", "Copy path", self.copy_path),
+            A("move", "Move to…", self.move),
+            A("copyto", "Copy to…", self.copy_to),
+            A("terminal", "Terminal", self.terminal, "open here"),
+            A("float", "Float", self.float),
+            A("reveal", "Show", self.reveal, "in Explorer"),
+            A("openwith", "Open with…", self.open_with),
+        ]
+
+    def copy(self, paths, p):
+        md = QMimeData()
+        md.setUrls([QUrl.fromLocalFile(x) for x in paths])
+        QGuiApplication.clipboard().setMimeData(md)
+        self.app.toast.show_msg(tr("Copied to clipboard"), tr("{n} item(s) — paste anywhere", n=len(paths)))
+
+    def copy_path(self, paths, p):
+        QGuiApplication.clipboard().setText("\n".join(str(Path(x)) for x in paths))
+        self.app.toast.show_msg(tr("Path copied"), str(Path(paths[0])) if len(paths) == 1 else tr("{n} paths", n=len(paths)))
+
+    def _pick_dir(self, title):
+        s = settings()
+        d = QFileDialog.getExistingDirectory(None, title, s.value("last_dir", str(Path(self._first).parent)))
+        if d:
+            s.setValue("last_dir", d)
+        return d
+
+    def move(self, paths, p):
+        import shutil
+        self._first = paths[0]
+        d = self._pick_dir(tr("Move to"))
+        if not d:
+            return
+        done = []
+        for x in paths:
+            target = engine.unique_path(Path(d) / Path(x).name)
+            shutil.move(x, target)
+            done.append(target)
+        self.app.toast.show_result(tr("Moved"), done)
+
+    def copy_to(self, paths, p):
+        import shutil
+        self._first = paths[0]
+        d = self._pick_dir(tr("Copy to"))
+        if not d:
+            return
+        done = []
+        for x in paths:
+            target = engine.unique_path(Path(d) / Path(x).name)
+            (shutil.copytree if Path(x).is_dir() else shutil.copy2)(x, target)
+            done.append(target)
+        self.app.toast.show_result(tr("Copied"), done)
+
+    def terminal(self, paths, p):
+        x = Path(paths[0])
+        winsys.open_terminal(str(x if x.is_dir() else x.parent))
+
+    def float(self, paths, p):
+        for x in paths[:6]:
+            w = FloatWindow(x)
+            self.app.floats.append(w)
+            w.closed.connect(lambda w=w: self.app.floats.remove(w) if w in self.app.floats else None)
+            w.show()
+
+    def reveal(self, paths, p):
+        winsys.reveal(paths[0])
+
+    def open_with(self, paths, p):
+        winsys.open_with(paths[0])
+
+
+# ============================================================================
+# Background worker
+# ============================================================================
+class WorkerSignals(QObject):
+    done = Signal(object, object, object)   # worker, outputs, error
+
+
+class Worker(QRunnable):
+    def __init__(self, op, paths, params):
+        super().__init__()
+        self.op, self.paths, self.params = op, paths, params
+        self.sig = WorkerSignals()
+
+    def run(self):
+        try:
+            outs = engine.run_op(self.op, self.paths, self.params)
+            self.sig.done.emit(self, outs, None)
+        except Exception as e:
+            traceback.print_exc()
+            self.sig.done.emit(self, None, str(e) or e.__class__.__name__)
+
+
+# ============================================================================
+# The wheel
+# ============================================================================
+class Wheel(QWidget):
+    R_IN = 62
+    R_MID = 158
+    R_OUT = 246
+    PAD = 18
+    PILL_H = 34
+    MAX_INNER = 9
+
+    def __init__(self, app: "DragWheelApp"):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+                         | Qt.WindowDoesNotAcceptFocus)
+        self.app = app
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAcceptDrops(True)
+        self.setMouseTracking(True)
+        self.paths: list[str] = []
+        self.mode = "convert"
+        self.ops: list[engine.Op] = []
+        self.hover = -1          # index in ops, -1 none, -2 center
+        self.hover_pill = None
+        self.click_mode = False
+        self.opacity_anim = QPropertyAnimation(self, b"windowOpacity", self)
+        self.opacity_anim.setDuration(110)
+        self.opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.pill_timer = QTimer(self, singleShot=True, interval=380, timeout=self._pill_dwell)
+        self._resize_for(1)
+
+    # ------------------------------------------------------------- geometry
+    def _rings(self):
+        n = len(self.ops)
+        if n <= self.MAX_INNER + 1:
+            return [(self.R_IN, self.R_MID + 14, self.ops)]
+        return [(self.R_IN, self.R_MID, self.ops[:self.MAX_INNER]),
+                (self.R_MID + 4, self.R_OUT, self.ops[self.MAX_INNER:])]
+
+    def _outer(self):
+        return self._rings()[-1][1]
+
+    def _resize_for(self, _):
+        r = self.R_OUT
+        side = 2 * (r + self.PAD)
+        self.setFixedSize(side, side + self.PILL_H + 12)
+
+    def center(self) -> QPointF:
+        return QPointF(self.width() / 2, self.R_OUT + self.PAD)
+
+    def _pill_rects(self):
+        w, gap = 108, 8
+        total = w * 3 + gap * 2
+        x0 = (self.width() - total) / 2
+        c = self.center()
+        y = c.y() + self._outer() + 14
+        return {m: QRectF(x0 + i * (w + gap), y, w, self.PILL_H) for i, m in enumerate(MODES)}
+
+    def hit(self, pos: QPointF):
+        for m, r in self._pill_rects().items():
+            if r.contains(pos):
+                return ("pill", m)
+        c = self.center()
+        dx, dy = pos.x() - c.x(), pos.y() - c.y()
+        d = math.hypot(dx, dy)
+        if d < self.R_IN:
+            return ("center", None)
+        ang = (math.degrees(math.atan2(dx, -dy)) + 360) % 360  # 0 = top, clockwise
+        offset = 0
+        for r0, r1, items in self._rings():
+            if r0 <= d <= r1 and items:
+                step = 360 / len(items)
+                idx = int(((ang + step / 2) % 360) // step)
+                return ("item", offset + idx)
+            offset += len(items)
+        return (None, None)
+
+    # ------------------------------------------------------------- content
+    def set_mode(self, mode):
+        self.mode = mode
+        self.ops = self.app.ops_for(mode, self.paths) if self.paths else []
+        self.hover = -1
+        self.update()
+
+    def set_paths(self, paths):
+        self.paths = paths
+        self.set_mode(self.mode)
+
+    # ------------------------------------------------------------- show/hide
+    def popup(self, mode, paths=None, click_mode=False, at: QPoint | None = None):
+        self.click_mode = click_mode
+        self.dropped = False
+        self.scroll_active = False
+        self.scroll_anchor = None
+        self.paths = paths or []
+        self.mode = mode
+        self.set_mode(mode)
+        pos = at or QCursor.pos()
+        c = self.center()
+        geo = QGuiApplication.screenAt(pos).availableGeometry() if QGuiApplication.screenAt(pos) else None
+        x, y = int(pos.x() - c.x()), int(pos.y() - c.y())
+        if geo and click_mode:   # keep it fully on-screen when not dragging
+            x = max(geo.left(), min(x, geo.right() - self.width()))
+            y = max(geo.top(), min(y, geo.bottom() - self.height()))
+        self.move(x, y)
+        self.setWindowOpacity(0.0)
+        if click_mode:
+            self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, False)
+        else:
+            self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
+        self.show()
+        self.raise_()
+        if click_mode:
+            self.activateWindow()
+            self.setFocus()
+        self.opacity_anim.stop()
+        self.opacity_anim.setStartValue(0.0)
+        self.opacity_anim.setEndValue(1.0)
+        self.opacity_anim.start()
+
+    def dismiss(self):
+        self.pill_timer.stop()
+        self.hide()
+        self.paths = []
+        self.ops = []
+        self.hover = -1
+
+    # ------------------------------------------------------------- drag & drop
+    def _paths_from(self, md) -> list[str]:
+        return [u.toLocalFile() for u in md.urls() if u.isLocalFile() and u.toLocalFile()]
+
+    def dragEnterEvent(self, e):
+        paths = self._paths_from(e.mimeData())
+        if not paths:
+            e.ignore()
+            return
+        if not getattr(self, "_logged_enter", False):
+            winsys.log(f"drag enter received: {len(paths)} path(s)")
+            self._logged_enter = True
+        if paths != self.paths:
+            self.set_paths(paths)
+        e.setDropAction(Qt.CopyAction)
+        e.accept()
+        self._track(e.position())
+
+    def dragMoveEvent(self, e):
+        kind = self._track(e.position())
+        if kind == "item":
+            e.setDropAction(Qt.CopyAction)   # never let Explorer treat it as a move
+            e.accept()
+        else:
+            e.ignore()
+
+    def dragLeaveEvent(self, e):
+        self.hover = -1
+        self.hover_pill = None
+        self.pill_timer.stop()
+        self.update()
+
+    def dropEvent(self, e):
+        self.dropped = True
+        winsys.log("drop event received")
+        kind, val = self.hit(e.position())
+        if getattr(self, "scroll_active", False) and 0 <= self.hover < len(self.ops):
+            kind, val = "item", self.hover
+        paths = self._paths_from(e.mimeData()) or self.paths
+        e.setDropAction(Qt.CopyAction)
+        e.accept()
+        if kind == "item" and 0 <= val < len(self.ops):
+            op = self.ops[val]
+            self.dismiss()
+            QTimer.singleShot(0, lambda: self.app.execute(op, paths))
+        else:
+            self.dismiss()
+
+    def scroll_step(self, step):
+        """Move the highlight to the next/previous slice (mouse wheel)."""
+        n = len(self.ops)
+        if not n:
+            return
+        if self.hover >= 0:
+            self.hover = (self.hover + step) % n
+        else:
+            self.hover = 0 if step > 0 else n - 1
+        self.scroll_active = True
+        local = QPointF(self.mapFromGlobal(QCursor.pos()))
+        self.scroll_anchor = self.hit(local)
+        self.update()
+
+    def wheelEvent(self, e):
+        self.scroll_step(1 if e.angleDelta().y() < 0 else -1)
+
+    def _track(self, pos):
+        kind, val = self.hit(pos)
+        if getattr(self, "scroll_active", False):
+            if (kind, val) == self.scroll_anchor or kind == "center":
+                return "item" if self.hover >= 0 else kind      # keep the scrolled highlight
+            self.scroll_active = False                            # pointer moved onto a slice: it wins
+        new_hover = val if kind == "item" else (-2 if kind == "center" else -1)
+        pill = val if kind == "pill" else None
+        if pill != self.hover_pill:
+            self.hover_pill = pill
+            self.pill_timer.stop()
+            if pill and pill != self.mode:
+                self.pill_timer.start()
+        if new_hover != self.hover:
+            self.hover = new_hover
+            self.update()
+        return kind
+
+    def _pill_dwell(self):
+        if self.hover_pill:
+            self.set_mode(self.hover_pill)
+
+    # ------------------------------------------------------------- click mode
+    def mouseMoveEvent(self, e):
+        self._track(e.position())
+
+    def mousePressEvent(self, e):
+        kind, val = self.hit(e.position())
+        if kind == "pill":
+            self.set_mode(val)
+        elif kind == "item" and 0 <= val < len(self.ops):
+            op, paths = self.ops[val], list(self.paths)
+            self.dismiss()
+            QTimer.singleShot(0, lambda: self.app.execute(op, paths))
+        else:
+            self.dismiss()
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        n = len(self.ops)
+        if k == Qt.Key_Escape:
+            self.dismiss()
+        elif k in (Qt.Key_Right, Qt.Key_Down) and n:
+            self.hover = (self.hover + 1) % n if self.hover >= 0 else 0
+            self.update()
+        elif k in (Qt.Key_Left, Qt.Key_Up) and n:
+            self.hover = (self.hover - 1) % n if self.hover >= 0 else n - 1
+            self.update()
+        elif k == Qt.Key_Tab:
+            self.set_mode(MODES[(MODES.index(self.mode) + 1) % 3])
+        elif k == Qt.Key_Backtab:
+            self.set_mode(MODES[(MODES.index(self.mode) - 1) % 3])
+        elif k in (Qt.Key_Return, Qt.Key_Enter) and 0 <= self.hover < n:
+            op, paths = self.ops[self.hover], list(self.paths)
+            self.dismiss()
+            QTimer.singleShot(0, lambda: self.app.execute(op, paths))
+        else:
+            # modifier taps switch wheels, like during a drag
+            keys = mode_keys()
+            name = {Qt.Key_Shift: "Shift", Qt.Key_Control: "Ctrl", Qt.Key_Alt: "Alt"}.get(k)
+            for m, kname in keys.items():
+                if name == kname:
+                    self.set_mode(m)
+
+    def focusOutEvent(self, e):
+        if self.click_mode:
+            QTimer.singleShot(120, lambda: (not self.isActiveWindow()) and self.dismiss())
+
+    # ------------------------------------------------------------- painting
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        c = self.center()
+        rings = self._rings()
+        outer = rings[-1][1]
+
+        # soft shadow
+        g = QRadialGradient(c + QPointF(0, 6), outer + 16)
+        g.setColorAt(0.86, QColor(0, 0, 0, 90))
+        g.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(c + QPointF(0, 6), outer + 16, outer + 16)
+
+        # disc
+        p.setBrush(BG)
+        p.setPen(QPen(QColor(255, 255, 255, 28), 1))
+        p.drawEllipse(c, outer, outer)
+
+        offset = 0
+        for ri, (r0, r1, items) in enumerate(rings):
+            if ri > 0:
+                p.setPen(QPen(QColor(255, 255, 255, 22), 1))
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(c, r0 - 2, r0 - 2)
+            n = len(items)
+            if not n:
+                continue
+            step = 360 / n
+            for i, op in enumerate(items):
+                gi = offset + i
+                a_mid = i * step                      # degrees clockwise from top
+                hovered = gi == self.hover
+                path = self._wedge(c, r0 + 3, r1 - 3, a_mid - step / 2 + 0.9, step - 1.8)
+                if hovered:
+                    grad = QRadialGradient(c, r1)
+                    grad.setColorAt(0.25, ACCENT_2)
+                    grad.setColorAt(1.0, ACCENT)
+                    p.setBrush(grad)
+                else:
+                    p.setBrush(QColor(255, 255, 255, 10))
+                p.setPen(Qt.NoPen)
+                p.drawPath(path)
+                # label
+                rad = math.radians(a_mid)
+                rm = (r0 + r1) / 2
+                pt = QPointF(c.x() + rm * math.sin(rad), c.y() - rm * math.cos(rad))
+                self._label(p, pt, op, hovered, (r1 - r0), step * math.pi / 180 * rm)
+            offset += n
+
+        # center
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(58, 58, 60, 250) if self.hover == -2 else BG_RING)
+        p.drawEllipse(c, self.R_IN - 4, self.R_IN - 4)
+        self._center_text(p, c)
+
+        # mode pills
+        keys = mode_keys()
+        for m, r in self._pill_rects().items():
+            active = m == self.mode
+            p.setPen(QPen(QColor(255, 255, 255, 30), 1))
+            p.setBrush(ACCENT if active else (QColor(58, 58, 60, 245) if m == self.hover_pill else BG))
+            p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+            f = QFont("Segoe UI", 9)
+            f.setWeight(QFont.DemiBold)
+            p.setFont(f)
+            p.setPen(QColor("#1c1c1e") if active else FG)
+            p.drawText(r, Qt.AlignCenter, f"{tr(keys[m])}  ·  {tr(MODE_LABEL[m])}")
+        p.end()
+
+    @staticmethod
+    def _wedge(c, r0, r1, start_deg, span_deg) -> QPainterPath:
+        # Qt angles: 0 = 3 o'clock, counter-clockwise. Ours: 0 = 12 o'clock, clockwise.
+        qs = 90 - start_deg
+        path = QPainterPath()
+        outer = QRectF(c.x() - r1, c.y() - r1, 2 * r1, 2 * r1)
+        inner = QRectF(c.x() - r0, c.y() - r0, 2 * r0, 2 * r0)
+        path.arcMoveTo(outer, qs)
+        path.arcTo(outer, qs, -span_deg)
+        path.arcTo(inner, qs - span_deg, span_deg)
+        path.closeSubpath()
+        return path
+
+    def _label(self, p, pt, op, hovered, depth, arc_len):
+        label = tr(op.label)
+        max_w = max(46, min(arc_len - 10, depth + 34))
+        size = 10.0
+        lines = [label]
+        while True:
+            f = QFont("Segoe UI", 1)
+            f.setPointSizeF(size)
+            f.setWeight(QFont.DemiBold)
+            fm = QFontMetrics(f)
+            lines = [label]
+            if fm.horizontalAdvance(label) > max_w and " " in label:
+                words = label.split(" ")
+                best = None
+                for i in range(1, len(words)):      # most balanced two-line split
+                    l1, l2 = " ".join(words[:i]), " ".join(words[i:])
+                    wid = max(fm.horizontalAdvance(l1), fm.horizontalAdvance(l2))
+                    if best is None or wid < best[0]:
+                        best = (wid, [l1, l2])
+                lines = best[1]
+            if max(fm.horizontalAdvance(x) for x in lines) <= max_w or size <= 7.5:
+                break
+            size -= 0.5
+        lines = [fm.elidedText(x, Qt.ElideRight, int(max_w)) for x in lines]
+        p.setFont(f)
+        p.setPen(QColor("#1c1c1e") if hovered else FG)
+        lh = fm.height() - 2
+        hint_h = 12 if op.hint else 0
+        total = lh * len(lines) + hint_h
+        y = pt.y() - total / 2
+        for line in lines:
+            p.drawText(QRectF(pt.x() - 80, y, 160, lh + 2), Qt.AlignCenter, line)
+            y += lh
+        if op.hint:
+            f2 = QFont("Segoe UI", 7)
+            p.setFont(f2)
+            p.setPen(QColor(28, 28, 30, 200) if hovered else FG_DIM)
+            p.drawText(QRectF(pt.x() - 80, y, 160, hint_h + 2), Qt.AlignCenter, tr(op.hint))
+
+    def _center_text(self, p, c):
+        r = QRectF(c.x() - self.R_IN + 6, c.y() - 30, 2 * self.R_IN - 12, 60)
+        mode = tr(MODE_LABEL[self.mode])
+        if self.hover == -2:
+            title, sub = tr("Cancel"), tr("drop here")
+        elif 0 <= self.hover < len(self.ops):
+            title, sub = tr(self.ops[self.hover].label).rstrip("…"), mode
+        elif not self.paths:
+            title, sub = mode, tr("move to read file")
+        else:
+            n = len(self.paths)
+            title = mode
+            if n > 1:
+                sub = tr("{n} files", n=n)
+            else:
+                name = Path(self.paths[0]).name
+                cat = tr(engine.CATEGORY_LABEL.get(engine.category_of(self.paths), "File"))
+                sub = name if len(name) <= 16 else (Path(name).suffix.upper().lstrip(".") or cat)
+        f = QFont("Segoe UI", 11)
+        f.setWeight(QFont.Bold)
+        p.setFont(f)
+        p.setPen(ACCENT_2 if self.hover >= 0 else FG)
+        fm = QFontMetrics(f)
+        if fm.horizontalAdvance(title) > r.width():
+            f.setPointSizeF(9)
+            p.setFont(f)
+            p.drawText(QRectF(r.x(), r.y() - 6, r.width(), 38), Qt.AlignCenter | Qt.TextWordWrap, title)
+        else:
+            p.drawText(QRectF(r.x(), r.y() + 6, r.width(), 24), Qt.AlignCenter, title)
+        f2 = QFont("Segoe UI", 8)
+        p.setFont(f2)
+        p.setPen(FG_DIM)
+        p.drawText(QRectF(r.x(), r.y() + 30, r.width(), 18), Qt.AlignCenter,
+                   QFontMetrics(f2).elidedText(sub, Qt.ElideMiddle, int(r.width())))
+
+
+# ============================================================================
+# Toast
+# ============================================================================
+class Toast(QWidget):
+    def __init__(self):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setFixedWidth(340)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(16, 12, 12, 12)
+        self.icon = QLabel()
+        self.icon.setFixedSize(30, 30)
+        lay.addWidget(self.icon)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        self.title = QLabel()
+        self.title.setStyleSheet("color:#f5f5f7;font:600 10pt 'Segoe UI'")
+        self.body = QLabel()
+        self.body.setStyleSheet("color:#a1a1a6;font:9pt 'Segoe UI'")
+        self.body.setWordWrap(True)
+        col.addWidget(self.title)
+        col.addWidget(self.body)
+        lay.addLayout(col, 1)
+        self.btn = QPushButton(tr("Show"))
+        self.btn.setCursor(Qt.PointingHandCursor)
+        self.btn.setStyleSheet("QPushButton{background:#ff8a00;color:#1c1c1e;border:none;border-radius:11px;"
+                               "padding:4px 12px;font:600 9pt 'Segoe UI'}QPushButton:hover{background:#ffb347}")
+        self.btn.clicked.connect(self._reveal)
+        lay.addWidget(self.btn)
+        self.timer = QTimer(self, singleShot=True, timeout=self.hide)
+        self.target = None
+        self.spin = 0
+        self.spin_timer = QTimer(self, interval=60, timeout=self._spin)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(255, 255, 255, 30), 1))
+        p.setBrush(BG)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 14, 14)
+
+    def _place(self):
+        self.adjustSize()
+        scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        g = scr.availableGeometry()
+        x = g.left() + 18 if i18n.is_rtl() else g.right() - self.width() - 18
+        self.move(x, g.bottom() - self.height() - 18)
+
+    def _set_icon(self, kind):
+        pm = QPixmap(30, 30)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        if kind == "busy":
+            p.setPen(QPen(QColor(255, 255, 255, 40), 3))
+            p.drawEllipse(4, 4, 22, 22)
+            pen = QPen(ACCENT, 3)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawArc(4, 4, 22, 22, -self.spin * 16, 100 * 16)
+        else:
+            col = {"ok": QColor("#30d158"), "err": QColor("#ff453a"), "info": ACCENT}[kind]
+            p.setPen(Qt.NoPen)
+            p.setBrush(col)
+            p.drawEllipse(3, 3, 24, 24)
+            p.setPen(QPen(QColor("#1c1c1e"), 2.6))
+            if kind == "ok":
+                p.drawPolyline([QPointF(9, 15.5), QPointF(13.5, 20), QPointF(21, 11)])
+            elif kind == "err":
+                p.drawLine(10, 10, 20, 20)
+                p.drawLine(20, 10, 10, 20)
+            else:
+                p.drawLine(15, 9, 15, 17)
+                p.drawPoint(15, 21)
+        p.end()
+        self.icon.setPixmap(pm)
+
+    def _spin(self):
+        self.spin = (self.spin + 24) % 360
+        self._set_icon("busy")
+
+    def show_busy(self, title, body):
+        self.timer.stop()
+        self.title.setText(title)
+        self.body.setText(body)
+        self.btn.hide()
+        self.spin_timer.start()
+        self._set_icon("busy")
+        self._place()
+        self.show()
+
+    def show_msg(self, title, body, kind="info", ms=2600):
+        self.spin_timer.stop()
+        self.title.setText(title)
+        self.body.setText(body)
+        self.btn.hide()
+        self._set_icon(kind)
+        self._place()
+        self.show()
+        self.timer.start(ms)
+
+    def show_result(self, title, outs):
+        self.spin_timer.stop()
+        outs = [Path(o) for o in outs if o]
+        self.target = str(outs[0]) if outs else None
+        self.title.setText(title)
+        self.body.setText(outs[0].name if len(outs) == 1 else tr("{n} items saved", n=len(outs)))
+        self.btn.setText(tr("Show"))
+        self.btn.setVisible(bool(self.target))
+        self._set_icon("ok")
+        self._place()
+        self.show()
+        self.timer.start(5000)
+
+    def _reveal(self):
+        if self.target:
+            winsys.reveal(self.target)
+        self.hide()
+
+
+# ============================================================================
+# Float window — pinned, always on top. Drag it anywhere; drag the grip to drop the file elsewhere.
+# ============================================================================
+class FloatWindow(QWidget):
+    closed = Signal()
+    PAD = 12
+    BAR = 34          # bottom bar with name + drag-out grip
+    CLOSE_R = 11
+
+    def __init__(self, path):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.path = path
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setMouseTracking(True)
+        self.src = None
+        try:
+            if engine.EXT_CATEGORY.get(engine.ext_of(path)) == "image":
+                img = engine.open_image(path)
+                img.thumbnail((1200, 1200))
+                q = QImage(img.convert("RGBA").tobytes("raw", "RGBA"), img.width, img.height,
+                           img.width * 4, QImage.Format_RGBA8888)
+                self.src = QPixmap.fromImage(q.copy())
+        except Exception:
+            self.src = None
+        self.is_icon = self.src is None
+        if self.is_icon:
+            from PySide6.QtCore import QFileInfo
+            from PySide6.QtWidgets import QFileIconProvider
+            self.src = QFileIconProvider().icon(QFileInfo(path)).pixmap(128, 128)
+        self.side = 120 if self.is_icon else 300       # longest side of the preview, Ctrl+scroll changes it
+        self.hover = None
+        self._move_from = None
+        self._grip_press = None
+        self._relayout()
+        self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
+        self.setToolTip(f"{path}\n" + tr("Drag to move · drag ⠿ to drop the file · double-click to open · scroll to resize"))
+
+    # geometry
+    def _relayout(self):
+        pm = self.src.scaled(self.side, self.side, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.pix = pm
+        w = max(pm.width() + 2 * self.PAD, 200)
+        h = pm.height() + 2 * self.PAD + self.BAR
+        self.setFixedSize(w, h)
+        self.update()
+
+    def _close_center(self):
+        return QPointF(self.width() - 18, 18)
+
+    def _grip_rect(self):
+        return QRectF(self.width() - self.PAD - 30, self.height() - self.BAR + 2, 30, self.BAR - 8)
+
+    def _hit(self, pos):
+        c = self._close_center()
+        if (pos.x() - c.x()) ** 2 + (pos.y() - c.y()) ** 2 <= (self.CLOSE_R + 4) ** 2:
+            return "close"
+        if self._grip_rect().contains(pos):
+            return "grip"
+        return "body"
+
+    # paint
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(QPen(ACCENT if self.hover else QColor(255, 255, 255, 30), 1.2))
+        p.setBrush(BG)
+        p.drawRoundedRect(r, 14, 14)
+        p.drawPixmap((self.width() - self.pix.width()) // 2, self.PAD, self.pix)
+        # name
+        p.setPen(FG)
+        f = QFont("Segoe UI", 9)
+        p.setFont(f)
+        name_r = QRectF(self.PAD, self.height() - self.BAR, self.width() - 2 * self.PAD - 36, self.BAR - 6)
+        p.drawText(name_r, Qt.AlignVCenter | Qt.AlignLeft,
+                   QFontMetrics(f).elidedText(Path(self.path).name, Qt.ElideMiddle, int(name_r.width())))
+        # grip (drag the file out from here)
+        g = self._grip_rect()
+        p.setPen(Qt.NoPen)
+        p.setBrush(ACCENT if self.hover == "grip" else QColor(255, 255, 255, 28))
+        p.drawRoundedRect(g, 7, 7)
+        p.setBrush(QColor("#1c1c1e") if self.hover == "grip" else FG)
+        for i in range(3):
+            for j in range(2):
+                p.drawEllipse(QPointF(g.center().x() - 3 + j * 6, g.center().y() - 5 + i * 5), 1.6, 1.6)
+        # close button — always visible
+        c = self._close_center()
+        p.setBrush(QColor("#ff453a") if self.hover == "close" else QColor(0, 0, 0, 150))
+        p.setPen(QPen(QColor(255, 255, 255, 60), 1))
+        p.drawEllipse(c, self.CLOSE_R, self.CLOSE_R)
+        pen = QPen(QColor("#ffffff"), 2)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        d = 4.2
+        p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
+        p.drawLine(QPointF(c.x() + d, c.y() - d), QPointF(c.x() - d, c.y() + d))
+
+    # mouse
+    def mousePressEvent(self, e):
+        if e.button() == Qt.RightButton:
+            self._menu(e.globalPosition().toPoint())
+            return
+        if e.button() != Qt.LeftButton:
+            return
+        hit = self._hit(e.position())
+        if hit == "close":
+            self.close()
+        elif hit == "grip":
+            self._grip_press = e.position()
+        else:
+            self._move_from = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, e):
+        if self._move_from is not None:
+            self.move(e.globalPosition().toPoint() - self._move_from)
+            return
+        if self._grip_press is not None:
+            if (e.position() - self._grip_press).manhattanLength() > 6:
+                self._grip_press = None
+                self._drag_out()
+            return
+        h = self._hit(e.position())
+        if h != self.hover:
+            self.hover = h
+            self.setCursor({"close": Qt.PointingHandCursor, "grip": Qt.OpenHandCursor}.get(h, Qt.SizeAllCursor))
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        self._move_from = None
+        self._grip_press = None
+
+    def leaveEvent(self, e):
+        self.hover = None
+        self.update()
+
+    def mouseDoubleClickEvent(self, e):
+        if self._hit(e.position()) == "body":
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.path))
+
+    def wheelEvent(self, e):
+        if True:   # scroll wheel resizes the float
+            step = 30 if e.angleDelta().y() > 0 else -30
+            center = self.frameGeometry().center()
+            self.side = max(80, min(900, self.side + step))
+            self._relayout()
+            self.move(center - QPoint(self.width() // 2, self.height() // 2))
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.close()
+
+    def _drag_out(self):
+        md = QMimeData()
+        md.setUrls([QUrl.fromLocalFile(self.path)])
+        drag = QDrag(self)
+        drag.setMimeData(md)
+        drag.setPixmap(self.pix.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        drag.exec(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction, Qt.CopyAction)
+
+    def _menu(self, at):
+        m = QMenu(self)
+        m.addAction(tr("Open"), lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self.path)))
+        m.addAction(tr("Show in Explorer"), lambda: winsys.reveal(self.path))
+        m.addAction(tr("Copy path"), lambda: QGuiApplication.clipboard().setText(str(Path(self.path))))
+        m.addSeparator()
+        m.addAction(tr("Close"), self.close)
+        m.exec(at)
+
+    def closeEvent(self, e):
+        self.closed.emit()
+        super().closeEvent(e)
+
+
+# ============================================================================
+# Dialog styling + parameter prompt (trim times, password…)
+# ============================================================================
+DIALOG_CSS = """
+QDialog{background:#1c1c1e} QLabel{color:#f5f5f7;font:10pt 'Segoe UI'} QGroupBox{color:#a1a1a6;font:600 9pt 'Segoe UI';
+border:1px solid #3a3a3c;border-radius:8px;margin-top:22px;padding:10px 8px 8px 8px} QGroupBox::title{subcontrol-origin:margin;subcontrol-position:top left;padding:0 6px;left:8px;top:0px}
+QLineEdit,QComboBox{background:#2c2c2e;color:#f5f5f7;border:1px solid #3a3a3c;border-radius:6px;padding:5px 8px;font:10pt 'Segoe UI'}
+QLineEdit:focus,QComboBox:focus{border-color:#ff8a00} QCheckBox{color:#f5f5f7;font:10pt 'Segoe UI'}
+QPushButton{background:#3a3a3c;color:#f5f5f7;border:none;border-radius:6px;padding:6px 16px;font:600 9pt 'Segoe UI'}
+QPushButton:default{background:#ff8a00;color:#1c1c1e} QPushButton:hover{background:#48484a} QPushButton:default:hover{background:#ffb347}
+QComboBox QAbstractItemView{background:#2c2c2e;color:#f5f5f7;selection-background-color:#ff8a00}
+QMessageBox{background:#1c1c1e}
+"""
+
+
+def ask_params(op, paths) -> dict | None:
+    dlg = QDialog(None, Qt.WindowStaysOnTopHint)
+    title = tr(op.label).rstrip("…")
+    dlg.setWindowTitle(f"{APP} — {title}")
+    dlg.setWindowIcon(app_icon())
+    dlg.setStyleSheet(DIALOG_CSS)
+    lay = QVBoxLayout(dlg)
+    who = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
+    lay.addWidget(QLabel(f"<b>{title}</b> &nbsp;<span style='color:#a1a1a6'>{who}</span>"))
+    form = QFormLayout()
+    edits = {}
+    for name, default in op.ask:
+        ed = QLineEdit(default)
+        if name == "Password":
+            ed.setEchoMode(QLineEdit.Password)
+        if name in ("Start", "End", "At time"):
+            ed.setPlaceholderText(tr("seconds, m:ss or h:mm:ss"))
+            ed.setLayoutDirection(Qt.LeftToRight)
+        form.addRow(tr(name), ed)
+        edits[name] = ed
+    lay.addLayout(form)
+    bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    bb.button(QDialogButtonBox.Ok).setText(tr("Apply"))
+    bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+    bb.button(QDialogButtonBox.Ok).setDefault(True)
+    bb.accepted.connect(dlg.accept)
+    bb.rejected.connect(dlg.reject)
+    lay.addWidget(bb)
+    dlg.setMinimumWidth(340)
+    dlg.move(QCursor.pos() - QPoint(170, 60))
+    dlg.activateWindow()
+    if dlg.exec() != QDialog.Accepted:
+        return None
+    return {k: e.text() for k, e in edits.items()}
+
+
+def message(title, html):
+    box = QMessageBox()
+    box.setWindowTitle(title)
+    box.setWindowIcon(app_icon())
+    box.setStyleSheet(DIALOG_CSS)
+    box.setIconPixmap(app_icon().pixmap(48, 48))
+    box.setTextFormat(Qt.RichText)
+    box.setText(html)
+    box.setStandardButtons(QMessageBox.Ok)
+    box.button(QMessageBox.Ok).setText(tr("OK"))
+    box.exec()
+
+
+# ============================================================================
+# Settings
+# ============================================================================
+KEY_NAMES = ["Shift", "Ctrl", "Alt", "CapsLock"]
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, app: "DragWheelApp"):
+        super().__init__(None)
+        self.app = app
+        self.setWindowTitle(tr("{app} Settings", app=APP))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(DIALOG_CSS)
+        self.setMinimumWidth(500)
+        s = settings()
+        lay = QVBoxLayout(self)
+
+        g0 = QGroupBox(tr("Language"))
+        f0 = QFormLayout(g0)
+        self.lang = QComboBox()
+        self.lang.addItem(tr("System default"), "")
+        for code, native in i18n.LANGUAGES:
+            self.lang.addItem(native, code)
+        cur = s.value("language", "")
+        self.lang.setCurrentIndex(max(0, self.lang.findData(cur)))
+        f0.addRow(tr("App language"), self.lang)
+        lay.addWidget(g0)
+
+        g1 = QGroupBox(tr("Wheel keys — tap while dragging a file"))
+        f1 = QFormLayout(g1)
+        self.key_boxes = {}
+        for m in MODES:
+            cb = QComboBox()
+            for k in KEY_NAMES:
+                cb.addItem(tr(k), k)
+            cb.setCurrentIndex(KEY_NAMES.index(mode_keys()[m]))
+            f1.addRow(tr(MODE_LABEL[m]), cb)
+            self.key_boxes[m] = cb
+        self.detect = QComboBox()
+        self.detect.addItems([tr("File drags only (recommended)"), tr("Any mouse drag")])
+        self.detect.setCurrentIndex(int(s.value("detect_any", 0)))
+        f1.addRow(tr("Trigger on"), self.detect)
+        self.scroll = QCheckBox(tr("Scroll the mouse wheel while dragging to open the wheel and move between slices"))
+        self.scroll.setChecked(s.value("scroll", "true") == "true")
+        f1.addRow(self.scroll)
+        lay.addWidget(g1)
+
+        g2 = QGroupBox(tr("Output"))
+        f2 = QFormLayout(g2)
+        row = QHBoxLayout()
+        self.out = QLineEdit(s.value("output_dir", ""))
+        self.out.setPlaceholderText(tr("Next to the original file"))
+        b = QPushButton(tr("Browse…"))
+        b.clicked.connect(lambda: self.out.setText(QFileDialog.getExistingDirectory(self, tr("Output folder")) or self.out.text()))
+        row.addWidget(self.out, 1)
+        row.addWidget(b)
+        f2.addRow(tr("Save to"), row)
+        lay.addWidget(g2)
+
+        g3 = QGroupBox("Windows")
+        v3 = QVBoxLayout(g3)
+        self.startup = QCheckBox(tr("Start {app} when I sign in", app=APP))
+        self.startup.setChecked(winsys.startup_enabled())
+        self.menu = QCheckBox(tr("Add {app} to the Explorer right-click menu and Send To", app=APP))
+        self.menu.setChecked(winsys.context_menu_enabled())
+        self.hotkey = QCheckBox(tr("Ctrl + Alt + Space opens the wheel for files selected in Explorer"))
+        self.hotkey.setChecked(s.value("hotkey", "true") == "true")
+        for w in (self.startup, self.menu, self.hotkey):
+            v3.addWidget(w)
+        lay.addWidget(g3)
+
+        office = tr("found") if engine.office_available() else \
+            tr("not found — DOCX/PPTX/XLS conversions need Microsoft Office or LibreOffice")
+        conv, tl = engine.count_catalog()
+        info = QLabel(f"<span style='color:#a1a1a6'>{APP} {VERSION}<br>"
+                      + tr("{c}+ conversions · {t}+ tools · 8 actions", c=conv, t=tl) + "<br>"
+                      + f"Office/LibreOffice: {office}<br>"
+                      + tr("Everything runs locally — nothing is uploaded.") + "</span>")
+        info.setWordWrap(True)
+        info.setAlignment(Qt.AlignLeading | Qt.AlignVCenter)
+        lay.addWidget(info)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Save).setText(tr("Save"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.button(QDialogButtonBox.Save).setDefault(True)
+        bb.accepted.connect(self.save)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def save(self):
+        keys = {m: cb.currentData() for m, cb in self.key_boxes.items()}
+        if len(set(keys.values())) < 3:
+            QMessageBox.warning(self, APP, tr("Each wheel needs a different key."))
+            return
+        s = settings()
+        for m, k in keys.items():
+            s.setValue(f"keys/{m}", k)
+        s.setValue("detect_any", self.detect.currentIndex())
+        s.setValue("output_dir", self.out.text().strip())
+        s.setValue("hotkey", "true" if self.hotkey.isChecked() else "false")
+        s.setValue("scroll", "true" if self.scroll.isChecked() else "false")
+        self.app.watcher.refresh_settings()
+        engine.OUTPUT_DIR = self.out.text().strip() or None
+        new_lang = self.lang.currentData()
+        lang_changed = new_lang != s.value("language", "")
+        s.setValue("language", new_lang)
+        try:
+            winsys.set_startup(self.startup.isChecked())
+            winsys.set_context_menu(self.menu.isChecked())
+        except Exception as e:
+            QMessageBox.warning(self, APP, tr("Couldn't update Windows integration:") + f"\n{e}")
+        if lang_changed:
+            self.app.apply_language()
+        self.accept()
+
+
+# ============================================================================
+# Drag watcher — polls input state (no hooks, nothing injected)
+# ============================================================================
+class DragWatcher(QObject):
+    tapped = Signal(str)     # mode
+    released = Signal()
+    hotkey = Signal()
+    moved = Signal()         # every tick while a drag is in progress
+    scrolled = Signal(int)   # wheel delta while dragging (from the hook thread, delivered queued)
+    cancelled = Signal()     # Esc pressed during a drag
+
+    def __init__(self):
+        super().__init__()
+        self.timer = QTimer(self, interval=20, timeout=self.tick)
+        self.down_at = None
+        self.dragging = False
+        self.prev = {}
+        self.hotkey_latch = False
+        self.source_hwnd = 0     # top-level window the drag started in
+        self.esc_prev = False
+        self.refresh_settings()
+        self.hook = winsys.WheelHook(self._on_wheel, self._swallow_wheel)
+
+    def refresh_settings(self):
+        s = settings()
+        self.scroll_enabled = s.value("scroll", "true") == "true"
+        self.any_drag = int(s.value("detect_any", 0)) == 1
+
+    # called on the hook thread — keep it tiny
+    def _drag_qualifies(self):
+        return self.dragging and self.scroll_enabled and (self.any_drag or winsys.file_drag_active())
+
+    def _on_wheel(self, delta):
+        if self._drag_qualifies():
+            self.scrolled.emit(delta)
+
+    def _swallow_wheel(self):
+        return self._drag_qualifies()
+
+    def start(self):
+        if winsys.IS_WIN:
+            self.timer.start()
+            self.hook.start()
+
+    def tick(self):
+        keys = mode_keys()
+        held = {name: winsys.key_down(winsys.VK[name]) for name in set(keys.values())}
+        lmb = winsys.mouse_down()
+
+        # global hotkey: Ctrl+Alt+Space
+        combo = winsys.key_down(0x11) and winsys.key_down(0x12) and winsys.key_down(winsys.VK_SPACE)
+        if combo and not self.hotkey_latch:
+            self.hotkey_latch = True
+            if settings().value("hotkey", "true") == "true":
+                self.hotkey.emit()
+        elif not combo:
+            self.hotkey_latch = False
+
+        if lmb:
+            pos = winsys.cursor_pos()
+            if self.down_at is None:
+                self.down_at = pos
+                self.dragging = False
+                self.source_hwnd = winsys.root_window_at(*pos)
+            elif not self.dragging:
+                dx, dy = pos[0] - self.down_at[0], pos[1] - self.down_at[1]
+                if abs(dx) + abs(dy) > winsys.drag_threshold() * 2:
+                    self.dragging = True
+            if self.dragging:
+                self.moved.emit()
+                esc = winsys.key_down(winsys.VK_ESCAPE)
+                if esc and not self.esc_prev:
+                    self.cancelled.emit()
+                self.esc_prev = esc
+                any_drag = int(settings().value("detect_any", 0)) == 1
+                for m, name in keys.items():
+                    if held[name] and not self.prev.get(name):
+                        if any_drag or winsys.file_drag_active():
+                            self.tapped.emit(m)
+        else:
+            if self.down_at is not None and self.dragging:
+                self.released.emit()
+            self.down_at = None
+            self.dragging = False
+        self.prev = held
+
+
+# ============================================================================
+# App
+# ============================================================================
+def asset(name) -> str:
+    return str(Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / name)
+
+
+_ICON = None
+
+
+def app_icon() -> QIcon:
+    global _ICON
+    if _ICON is None:
+        _ICON = QIcon(asset("dragwheel.ico")) if os.path.exists(asset("dragwheel.ico")) else QIcon()
+    return _ICON
+
+
+class DragWheelApp(QObject):
+    def __init__(self, qapp: QApplication):
+        super().__init__()
+        self.qapp = qapp
+        self.pool = QThreadPool.globalInstance()
+        self.pool.setMaxThreadCount(max(2, (os.cpu_count() or 4) // 2))
+        self.actions = Actions(self)
+        self.floats = []
+        self.wheel = Wheel(self)
+        self.toast = Toast()
+        self.running = set()
+        engine.OUTPUT_DIR = settings().value("output_dir", "") or None
+
+        self.watcher = DragWatcher()
+        self.watcher.tapped.connect(self.on_tap)
+        self.watcher.released.connect(self.on_release)
+        self.watcher.hotkey.connect(self.on_hotkey)
+        self.watcher.moved.connect(self.on_drag_move)
+        self.watcher.scrolled.connect(self.on_scroll)
+        self.watcher.cancelled.connect(self.on_drag_cancel)
+        self.watcher.start()
+
+        self.pending: list[str] = []
+        self.pending_timer = QTimer(self, singleShot=True, interval=350, timeout=self._flush_pending)
+
+        self.tray = QSystemTrayIcon(app_icon())
+        self.tray.activated.connect(lambda r: self.pick_files() if r == QSystemTrayIcon.DoubleClick else None)
+        self._build_tray_menu()
+        self.tray.show()
+
+    def _build_tray_menu(self):
+        self.tray.setToolTip(tr("{app} — drag a file, tap {key}", app=APP, key=tr(mode_keys()["convert"])))
+        menu = QMenu()
+        menu.addAction(tr("Convert files…"), self.pick_files)
+        menu.addSeparator()
+        menu.addAction(tr("How it works"), self.show_help)
+        menu.addAction(tr("Settings…"), self.show_settings)
+        menu.addSeparator()
+        menu.addAction(tr("Quit {app}", app=APP), self.qapp.quit)
+        old = self.tray.contextMenu()
+        self.tray.setContextMenu(menu)
+        self._menu = menu
+        if old:
+            old.deleteLater()
+
+    def apply_language(self):
+        i18n.set_language(settings().value("language", ""))
+        self.qapp.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
+        self._build_tray_menu()
+        self.wheel.update()
+
+    # ---- ops for a mode
+    def ops_for(self, mode, paths):
+        if mode == "convert":
+            ops = engine.conversions(paths)
+            return ops or [engine.Op("none", "No conversions", lambda *a: None, hint="try Tools or Actions")]
+        if mode == "tool":
+            return engine.tools(paths)
+        return self.actions.ops(paths)
+
+    # ---- triggers
+    def on_tap(self, mode):
+        if self.wheel.isVisible():
+            if mode != self.wheel.mode:
+                self.wheel.set_mode(mode)
+            if not self.wheel.paths:
+                self._fill_from_explorer()
+            return
+        self.wheel.popup(mode, click_mode=False)
+        self._fill_from_explorer()
+
+    def _fill_from_explorer(self):
+        """Ask Explorer which files are being dragged, so the wheel works even if
+        Windows never delivers the drag to it (security software, elevation, Qt quirks)."""
+        hwnd = self.watcher.source_hwnd
+        paths = [p for p in winsys.explorer_selection(hwnd) if p and os.path.exists(p)]
+        winsys.log(f"tap: source={winsys.window_class(hwnd)!r} selection={len(paths)}")
+        if paths and not self.wheel.paths:
+            self.wheel.set_paths(paths)
+
+    def on_scroll(self, delta):
+        w = self.wheel
+        if not w.isVisible():
+            w.popup("convert", click_mode=False)
+            self._fill_from_explorer()
+            return
+        if not w.click_mode:
+            w.scroll_step(1 if delta < 0 else -1)
+
+    def on_drag_cancel(self):
+        if self.wheel.isVisible() and not self.wheel.click_mode:
+            winsys.log("drag cancelled with Esc")
+            self.wheel.dismiss()
+
+    def on_drag_move(self):
+        w = self.wheel
+        if w.isVisible() and not w.click_mode:
+            w._track(QPointF(w.mapFromGlobal(QCursor.pos())))
+
+    def on_release(self):
+        w = self.wheel
+        if w.isVisible() and not w.click_mode:
+            pos = QPointF(w.mapFromGlobal(QCursor.pos()))
+            # give a real OLE drop time to arrive; if it doesn't, apply the slice under the cursor
+            QTimer.singleShot(350, lambda: self._finish_drag(pos))
+
+    def _finish_drag(self, pos):
+        w = self.wheel
+        if not w.isVisible() or w.click_mode or w.dropped:
+            return
+        kind, val = w.hit(pos)
+        if w.scroll_active and 0 <= w.hover < len(w.ops):
+            kind, val = "item", w.hover
+        paths = list(w.paths)
+        if kind == "item" and paths and 0 <= val < len(w.ops):
+            op = w.ops[val]
+            winsys.log(f"applied via release fallback: {op.id} on {len(paths)} file(s)")
+            w.dismiss()
+            QTimer.singleShot(0, lambda: self.execute(op, paths))
+        else:
+            if kind == "item" and not paths:
+                self.toast.show_msg(tr("Couldn't read the dragged file"),
+                                    tr("Try again, or select it and press Ctrl+Alt+Space"), "err", 5000)
+            w.dismiss()
+
+    def on_hotkey(self):
+        paths = winsys.explorer_selection()
+        if not paths:
+            self.toast.show_msg(tr("Nothing selected"), tr("Select files in File Explorer, then press Ctrl+Alt+Space"))
+            return
+        self.open_paths(paths)
+
+    def open_paths(self, paths, mode="convert"):
+        paths = [str(Path(p)) for p in paths if os.path.exists(p)]
+        if paths:
+            self.wheel.popup(mode, paths, click_mode=True)
+
+    def queue_paths(self, paths):
+        self.pending += paths
+        self.pending_timer.start()
+
+    def _flush_pending(self):
+        paths, self.pending = list(dict.fromkeys(self.pending)), []
+        self.open_paths(paths)
+
+    def pick_files(self):
+        files, _ = QFileDialog.getOpenFileNames(None, tr("Choose files to convert"))
+        if files:
+            self.open_paths(files)
+
+    # ---- run
+    def execute(self, op: engine.Op, paths: list[str]):
+        if op.id == "none":
+            return
+        params = {}
+        if op.ui == "crop":
+            from editor import CropResizeDialog
+            for p in paths[:5]:           # one editor per image
+                try:
+                    dlg = CropResizeDialog(p, DIALOG_CSS, app_icon())
+                except Exception as e:
+                    self.toast.show_msg(tr("Couldn't open image"), str(e), "err", 6000)
+                    continue
+                if dlg.exec() == QDialog.Accepted:
+                    self._start(op, [p], dlg.params())
+            return
+        if op.ask:
+            params = ask_params(op, paths)
+            if params is None:
+                return
+        if op.group == "action":
+            try:
+                op.fn(paths, params)
+            except Exception as e:
+                self.toast.show_msg(tr("Couldn't do that"), str(e), "err", 6000)
+            return
+        self._start(op, paths, params)
+
+    def _start(self, op, paths, params):
+        name = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
+        if op.group == "convert":
+            self.toast.show_busy(tr("Converting to {fmt}…", fmt=tr(op.label)), name)
+        else:
+            self.toast.show_busy(tr(op.label).rstrip("…") + "…", name)
+        w = Worker(op, paths, params)
+        w.setAutoDelete(False)
+        self.running.add(w)                       # keep Python refs alive until done
+        w.sig.done.connect(self._done, Qt.QueuedConnection)
+        self.pool.start(w)
+
+    def _done(self, worker, outs, err):
+        self.running.discard(worker)
+        op = worker.op
+        if err:
+            self.toast.show_msg(tr("{what} failed", what=tr(op.label).rstrip("…")), err, "err", 8000)
+        else:
+            self.toast.show_result(tr("Done") if op.group == "tool" else tr("Converted to {fmt}", fmt=tr(op.label)), outs)
+
+    # ---- windows
+    def show_settings(self):
+        SettingsDialog(self).exec()
+
+    def show_help(self):
+        k = {m: tr(v) for m, v in mode_keys().items()}
+        message(tr("{app} — How it works", app=APP), tr("HELP_HTML", app=APP, convert=k["convert"],
+                                                         tool=k["tool"], action=k["action"])
+                + "<br><br>" + tr("HELP_SCROLL"))
+
+
+# ============================================================================
+# Single instance
+# ============================================================================
+SERVER_NAME = f"dragwheel-{getpass.getuser()}"
+
+
+def send_to_running(args) -> bool:
+    sock = QLocalSocket()
+    sock.connectToServer(SERVER_NAME)
+    if not sock.waitForConnected(400):
+        return False
+    sock.write(json.dumps(args).encode("utf-8"))
+    sock.flush()
+    sock.waitForBytesWritten(1000)
+    sock.disconnectFromServer()
+    return True
+
+
+def parse_args(argv):
+    paths, flags = [], set()
+    for a in argv:
+        (flags.add(a) if a.startswith("--") else paths.append(a))
+    return flags, paths
+
+
+def main():
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DragWheel.App")
+        except Exception:
+            pass
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    qapp = QApplication(sys.argv)
+    qapp.setQuitOnLastWindowClosed(False)
+    qapp.setApplicationName(APP)
+    qapp.setWindowIcon(app_icon())
+
+    flags, paths = parse_args(sys.argv[1:])
+    if send_to_running({"paths": paths, "flags": sorted(flags)}):
+        return 0
+
+    i18n.set_language(settings().value("language", ""))
+    qapp.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
+
+    try:
+        from PySide6 import __version__ as pyside_version
+    except Exception:
+        pyside_version = "?"
+    winsys.log(f"start {APP} {VERSION} qt={pyside_version} frozen={getattr(sys, 'frozen', False)} "
+               f"elevated={winsys.is_elevated()}")
+
+    QLocalServer.removeServer(SERVER_NAME)
+    server = QLocalServer()
+    server.listen(SERVER_NAME)
+    app = DragWheelApp(qapp)
+
+    def on_conn():
+        sock = server.nextPendingConnection()
+
+        def read():
+            try:
+                msg = json.loads(bytes(sock.readAll()).decode("utf-8") or "{}")
+            except Exception:
+                return
+            if msg.get("paths"):
+                app.queue_paths(msg["paths"])
+            elif "--tray" not in msg.get("flags", []):
+                app.show_help()
+        sock.readyRead.connect(read)
+    server.newConnection.connect(on_conn)
+
+    first_run = settings().value("first_run_done", "false") != "true"
+    if first_run:
+        settings().setValue("first_run_done", "true")
+        if settings().value("installer", "") != "1":   # the installer already applied the user's choice
+            try:
+                winsys.set_context_menu(True)
+            except Exception:
+                pass
+        QTimer.singleShot(500, app.show_help)
+    if paths:
+        app.queue_paths(paths)
+    elif "--tray" not in flags and not first_run:
+        app.tray.showMessage(APP, tr("Running in the tray. Drag a file and tap {key}.", key=tr(mode_keys()["convert"])),
+                             app_icon(), 3000)
+    return qapp.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

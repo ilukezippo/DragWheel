@@ -1,0 +1,51 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Build exe
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name DragWheel
+          --icon assets/dragwheel.ico --version-file version_info.txt --add-data "assets;assets"
+          --collect-data imageio_ffmpeg --collect-binaries imageio_ffmpeg
+          --collect-all pillow_heif --hidden-import win32timezone --hidden-import py7zr --hidden-import win32com.shell.shell
+          --exclude-module tkinter --exclude-module matplotlib
+          dragwheel.pyw
+      - name: Trim unused Qt files
+        run: |
+          Remove-Item dist/DragWheel/_internal/PySide6/opengl32sw.dll -ErrorAction SilentlyContinue
+          Remove-Item dist/DragWheel/_internal/PySide6/translations -Recurse -ErrorAction SilentlyContinue
+      - name: Build installer
+        run: |
+          choco install nsis -y --no-progress
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" installer\dragwheel.nsi
+      - name: Zip portable
+        run: Compress-Archive -Path dist/DragWheel -DestinationPath dist/DragWheel-portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DragWheel-windows
+          path: |
+            dist/DragWheel-Setup-*.exe
+            dist/DragWheel-portable.zip
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/DragWheel-Setup-*.exe
+            dist/DragWheel-portable.zip
