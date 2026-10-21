@@ -101,7 +101,7 @@ All keys can be changed in **Settings** (tray icon → Settings).
 
 ## Install
 
-1. Download **`DragWheel-Setup-1.1.1.exe`** from [Releases](../../releases/latest).
+1. Download **`DragWheel-Setup-1.1.2.exe`** from [Releases](../../releases/latest).
 2. Run it. It asks for administrator rights and installs for all users into `C:\Program Files\DragWheel`.
 3. Choose your options: Explorer right-click menu + Send To, start with Windows, desktop shortcut. The installer is available in English and Arabic.
 

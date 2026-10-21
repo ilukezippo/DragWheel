@@ -12,7 +12,7 @@ SetCompressor /SOLID lzma
 SetCompressorDictSize 64
 
 !define APPNAME      "DragWheel"
-!define APPVERSION   "1.1.1"
+!define APPVERSION   "1.1.2"
 !define PUBLISHER    "ilukezippo"
 !define EXE          "DragWheel.exe"
 !define UNINST_KEY   "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
