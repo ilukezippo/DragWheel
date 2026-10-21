@@ -14,17 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  # 1) Build DragWheel.exe on Windows
+  app:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Read version
         id: ver
         shell: pwsh
         run: |
           $v = (Select-String -Path dragwheel.pyw -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
           "version=$v" >> $env:GITHUB_OUTPUT
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install
@@ -36,19 +39,48 @@ jobs:
           pyinstaller --noconfirm --clean --windowed --name DragWheel
           --icon assets/dragwheel.ico --version-file version_info.txt --add-data "assets;assets"
           --collect-data imageio_ffmpeg --collect-binaries imageio_ffmpeg
-          --collect-all pillow_heif --hidden-import win32timezone --hidden-import py7zr --hidden-import win32com.shell.shell
+          --collect-all pillow_heif --hidden-import win32timezone --hidden-import py7zr
+          --hidden-import win32com.shell.shell --hidden-import editor
           --exclude-module tkinter --exclude-module matplotlib
           dragwheel.pyw
       - name: Trim unused Qt files
         run: |
           Remove-Item dist/DragWheel/_internal/PySide6/opengl32sw.dll -ErrorAction SilentlyContinue
           Remove-Item dist/DragWheel/_internal/PySide6/translations -Recurse -ErrorAction SilentlyContinue
+      - name: Zip portable
+        run: Compress-Archive -Path dist/DragWheel -DestinationPath DragWheel-portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: dist/DragWheel
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable
+          path: DragWheel-portable.zip
+          retention-days: 7
+
+  # 2) Build the installer with Linux NSIS (it ships the 64-bit stubs; the Windows build does not)
+  installer:
+    needs: app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: app
+          path: dist/DragWheel
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable
+          path: dist
+      - name: Install NSIS
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nsis
       - name: Build installer
         run: |
-          choco install nsis -y --no-progress
-          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" installer\dragwheel.nsi
-      - name: Zip portable
-        run: Compress-Archive -Path dist/DragWheel -DestinationPath dist/DragWheel-portable.zip
+          cd installer
+          makensis -V2 -DDISTDIR="$GITHUB_WORKSPACE/dist/DragWheel" dragwheel.nsi
+          ls -la ../dist
       - uses: actions/upload-artifact@v4
         with:
           name: DragWheel-windows
@@ -56,18 +88,18 @@ jobs:
             dist/DragWheel-Setup-*.exe
             dist/DragWheel-portable.zip
       - name: Release
-        # publishes v<VERSION> from main (or from a pushed v* tag); re-running updates the same release
+        # publishes v<VERSION> from main (or a pushed v* tag); re-running updates the same release
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: DragWheel ${{ steps.ver.outputs.version }}
+          tag_name: v${{ needs.app.outputs.version }}
+          name: DragWheel ${{ needs.app.outputs.version }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           body: |
             **Drag a file, tap a key, drop it on the wheel.** Offline file converter and toolbox for Windows.
 
-            **Install:** download `DragWheel-Setup-${{ steps.ver.outputs.version }}.exe` below and run it (asks for admin, installs to `C:\Program Files\DragWheel`).
+            **Install:** download `DragWheel-Setup-${{ needs.app.outputs.version }}.exe` below and run it (asks for admin, installs to `C:\Program Files\DragWheel`).
             Windows SmartScreen may warn because the installer isn't code-signed — choose *More info → Run anyway*.
 
             **Portable:** `DragWheel-portable.zip` — unzip anywhere and run `DragWheel.exe`.

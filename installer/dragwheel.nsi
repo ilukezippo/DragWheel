@@ -3,7 +3,11 @@
 ; Build:  makensis installer\dragwheel.nsi     (expects ..\dist\DragWheel\ from PyInstaller)
 
 Unicode true
-Target amd64-unicode          ; 64-bit installer for a 64-bit app
+; 64-bit installer when this NSIS has 64-bit stubs (Linux/MSYS builds do); otherwise a 32-bit
+; installer, which still installs the 64-bit app into C:\Program Files (see SetRegView below).
+!if /FileExists "${NSISDIR}/Stubs/lzma_solid-amd64-unicode"
+  Target amd64-unicode
+!endif
 SetCompressor /SOLID lzma
 SetCompressorDictSize 64
 
@@ -74,6 +78,7 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 
 ; ---------------------------------------------------------------------------
 !include "LogicLib.nsh"
+!include "x64.nsh"
 
 ; The installer runs elevated. Starting the app from it would make the app elevated too, and
 ; Windows blocks drag-and-drop from Explorer into elevated windows — so launch it through
@@ -176,6 +181,11 @@ SectionEnd
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Function .onInit
+  ${IfNot} ${RunningX64}
+    MessageBox MB_OK|MB_ICONSTOP "$(Need64)"
+    Quit
+  ${EndIf}
+  SetRegView 64
   !insertmacro RequireAdmin
   SetShellVarContext all
   !insertmacro MUI_LANGDLL_DISPLAY
@@ -189,6 +199,7 @@ FunctionEnd
 
 ; ---------------------------------------------------------------------------
 Function un.onInit
+  SetRegView 64
   !insertmacro RequireAdmin
   SetShellVarContext all
   !insertmacro MUI_UNGETLANGUAGE
@@ -246,3 +257,5 @@ LangString AlreadyRunning ${LANG_ENGLISH} "The ${APPNAME} installer is already r
 LangString AlreadyRunning ${LANG_ARABIC}  "مثبّت ${APPNAME} قيد التشغيل بالفعل."
 LangString NeedAdmin      ${LANG_ENGLISH} "${APPNAME} Setup needs administrator rights. Right-click it and choose 'Run as administrator'."
 LangString NeedAdmin      ${LANG_ARABIC}  "يحتاج مثبّت ${APPNAME} إلى صلاحيات المسؤول. انقر عليه بزر الفأرة الأيمن واختر «تشغيل كمسؤول»."
+LangString Need64         ${LANG_ENGLISH} "${APPNAME} needs 64-bit Windows 10 or 11."
+LangString Need64         ${LANG_ARABIC}  "يتطلب ${APPNAME} نظام Windows 10 أو 11 بإصدار 64 بت."
