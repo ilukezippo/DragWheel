@@ -1365,18 +1365,53 @@ class DragWheelApp(QObject):
     def _build_tray_menu(self):
         self.tray.setToolTip(tr("{app} — drag a file, tap {key}", app=APP, key=tr(mode_keys()["convert"])))
         menu = QMenu()
-        menu.addAction(tr("Convert files…"), self.pick_files)
+        self._first_action = menu.addAction(tr("Convert files…"), self.pick_files)
         menu.addSeparator()
         menu.addAction(tr("How it works"), self.show_help)
         menu.addAction(tr("Settings…"), self.show_settings)
         menu.addAction(tr("Check for updates…"), lambda: self.check_updates(manual=True))
         menu.addSeparator()
         menu.addAction(tr("Quit {app}", app=APP), self.qapp.quit)
+        self._cancel_actions = []
+        menu.aboutToShow.connect(self._refresh_tray_menu)
         old = self.tray.contextMenu()
         self.tray.setContextMenu(menu)
         self._menu = menu
         if old:
             old.deleteLater()
+
+    def _active_jobs(self):
+        """Conversions/tools still running and not already being cancelled."""
+        return [w for w in list(self.running) if not w.cancel_requested]
+
+    def _refresh_tray_menu(self):
+        """Cancel entries go first in the tray menu, only while work is in progress."""
+        menu = self._menu
+        for act in self._cancel_actions:
+            menu.removeAction(act)
+            act.deleteLater()
+        self._cancel_actions = []
+        jobs = self._active_jobs()
+        if not jobs:
+            return
+        before = self._first_action
+        for w in jobs:
+            name = Path(w.paths[0]).name if len(w.paths) == 1 else tr("{n} files", n=len(w.paths))
+            if len(name) > 40:
+                name = name[:37] + "…"
+            what = (tr("Converting to {fmt}…", fmt=tr(w.op.label)) if w.op.group == "convert"
+                    else tr(w.op.label)).rstrip("…")
+            act = QAction(tr("Cancel: {what} — {name}", what=what, name=name), menu)
+            act.triggered.connect(lambda _=False, w=w: self._cancel_job(w))
+            menu.insertAction(before, act)
+            self._cancel_actions.append(act)
+        if len(jobs) > 1:
+            act = QAction(tr("Cancel all ({n})", n=len(jobs)), menu)
+            act.triggered.connect(lambda: [self._cancel_job(w) for w in self._active_jobs()])
+            menu.insertAction(before, act)
+            self._cancel_actions.append(act)
+        sep = menu.insertSeparator(before)
+        self._cancel_actions.append(sep)
 
     def apply_language(self):
         i18n.set_language(settings().value("language", ""))
@@ -1527,8 +1562,11 @@ class DragWheelApp(QObject):
         self.pool.start(w)
 
     def _cancel_job(self, worker):
+        if worker.cancel_requested:
+            return
         worker.cancel()
-        worker.card.show_busy(tr("Cancelling…"), Path(worker.paths[0]).name)
+        if worker.card is not None and worker.card in self.toast.cards:
+            worker.card.show_busy(tr("Cancelling…"), Path(worker.paths[0]).name)
 
     def _done(self, worker, outs, err):
         self.running.discard(worker)

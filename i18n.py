@@ -66,6 +66,8 @@ T: dict[str, dict[str, str]] = {}
 
 # --------------------------------------------------------------------------- Arabic
 T["ar"] = {
+    "Cancel: {what} — {name}": "إلغاء: {what} — {name}",
+    "Cancel all ({n})": "إلغاء الكل ({n})",
     "Cancelled": "تم الإلغاء",
     "Cancelling…": "جارٍ الإلغاء…",
     "Check for updates automatically (once a day)": "التحقق من التحديثات تلقائيًا (مرة يوميًا)",
@@ -177,6 +179,8 @@ T["ar"] = {
 
 # --------------------------------------------------------------------------- French
 T["fr"] = {
+    "Cancel: {what} — {name}": "Annuler : {what} — {name}",
+    "Cancel all ({n})": "Tout annuler ({n})",
     "Cancelled": "Annulé",
     "Cancelling…": "Annulation…",
     "Check for updates automatically (once a day)": "Rechercher les mises à jour automatiquement (une fois par jour)",
@@ -276,6 +280,8 @@ T["fr"] = {
 
 # --------------------------------------------------------------------------- Spanish
 T["es"] = {
+    "Cancel: {what} — {name}": "Cancelar: {what} — {name}",
+    "Cancel all ({n})": "Cancelar todo ({n})",
     "Cancelled": "Cancelado",
     "Cancelling…": "Cancelando…",
     "Check for updates automatically (once a day)": "Buscar actualizaciones automáticamente (una vez al día)",
@@ -375,6 +381,8 @@ T["es"] = {
 
 # --------------------------------------------------------------------------- Turkish
 T["tr"] = {
+    "Cancel: {what} — {name}": "İptal: {what} — {name}",
+    "Cancel all ({n})": "Tümünü iptal et ({n})",
     "Cancelled": "İptal edildi",
     "Cancelling…": "İptal ediliyor…",
     "Check for updates automatically (once a day)": "Güncellemeleri otomatik denetle (günde bir kez)",
@@ -473,6 +481,8 @@ T["tr"] = {
 
 # --------------------------------------------------------------------------- German
 T["de"] = {
+    "Cancel: {what} — {name}": "Abbrechen: {what} — {name}",
+    "Cancel all ({n})": "Alle abbrechen ({n})",
     "Cancelled": "Abgebrochen",
     "Cancelling…": "Wird abgebrochen…",
     "Check for updates automatically (once a day)": "Automatisch nach Updates suchen (einmal täglich)",
