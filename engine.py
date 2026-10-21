@@ -106,6 +106,7 @@ class CancelToken:
         self.cancelled = False
         self.procs: list[subprocess.Popen] = []
         self.paths: list[Path] = []        # every output path handed out for this job
+        self.on_path = None                # callback(kind, path) — lets a parent process clean up
         self._lock = threading.Lock()
 
     def cancel(self):
@@ -129,11 +130,23 @@ def check_cancel():
         raise Cancelled()
 
 
-def _remember(path: Path) -> Path:
+def _remember(path: Path, kind: str = "out") -> Path:
     t = _token()
     if t is not None:
-        t.paths.append(path)
+        if kind == "out":
+            t.paths.append(path)
+        if t.on_path:
+            try:
+                t.on_path(kind, str(path))
+            except Exception:
+                pass
     return path
+
+
+def temp_dir() -> Path:
+    """A private temp folder for the current job (reported so it can be removed if the job is killed)."""
+    import tempfile
+    return _remember(Path(tempfile.mkdtemp(prefix="dragwheel-")), "tmp")
 
 
 def unique_path(path: Path) -> Path:
@@ -961,14 +974,17 @@ def _lo_convert(src: Path, fmt: str) -> Path | None:
     filt = {"txt": "txt:Text (encoded):UTF8", "csv": "csv:Text - txt - csv (StarCalc):44,34,76",
             "docx": "docx:MS Word 2007 XML", "odt": "odt:writer8", "rtf": "rtf:Rich Text Format"}.get(fmt, fmt)
     cmd_extra = ["--infilter=HTML (StarWriter)"] if ext_of(src) in ("html", "htm") else []
-    with tempfile.TemporaryDirectory() as td:
-        run([exe, "--headless", "--norestore", *cmd_extra, "--convert-to", filt, "--outdir", td, str(src)])
+    td = temp_dir()
+    try:
+        run([exe, "--headless", "--norestore", *cmd_extra, "--convert-to", filt, "--outdir", str(td), str(src)])
         produced = list(Path(td).glob(f"*.{fmt}"))
         if not produced:
             return None
         out = out_for(src, fmt)
         shutil.move(str(produced[0]), out)
         return out
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
 
 
 def office_available() -> bool:
@@ -1357,9 +1373,8 @@ def archive_extract(src, p):
 def archive_repack(fmt):
     """Convert one archive format to another (extract to temp, repack)."""
     def f(src, p):
-        import tempfile
         src = Path(src)
-        td = Path(tempfile.mkdtemp(prefix="dragwheel-"))
+        td = temp_dir()
         try:
             _extract_into(src, td)
             out = unique_path(_target_dir(src) / f"{archive_stem(src)}.{fmt}")

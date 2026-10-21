@@ -36,7 +36,7 @@ import winsys
 from i18n import tr
 
 APP = "DragWheel"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 ACCENT = QColor("#ff8a00")
 ACCENT_2 = QColor("#ffb347")
@@ -155,14 +155,24 @@ class Worker(QRunnable):
         super().__init__()
         self.op, self.paths, self.params = op, paths, params
         self.sig = WorkerSignals()
-        self.token = engine.CancelToken()
+        self.cancel_requested = False
+        self.card = None
+
+    def cancel(self):
+        self.cancel_requested = True
 
     def run(self):
+        """The job runs in its own process (jobproc) so Cancel can stop it instantly."""
         try:
-            outs = engine.run_op(self.op, self.paths, self.params, token=self.token)
-            self.sig.done.emit(self, outs, None)
-        except engine.Cancelled:
-            self.sig.done.emit(self, None, CANCELLED)
+            import jobproc
+            job = jobproc.JobProcess(self.op.group, self.op.id, self.paths, self.params, engine.OUTPUT_DIR)
+            kind, val = job.run(lambda: self.cancel_requested)
+            if kind == "done":
+                self.sig.done.emit(self, [Path(v) for v in val], None)
+            elif kind == "cancelled":
+                self.sig.done.emit(self, None, CANCELLED)
+            else:
+                self.sig.done.emit(self, None, str(val))
         except Exception as e:
             traceback.print_exc()
             self.sig.done.emit(self, None, str(e) or e.__class__.__name__)
@@ -634,6 +644,8 @@ class Wheel(QWidget):
 # Toast
 # ============================================================================
 class Toast(QWidget):
+    closed = Signal(object)
+    resized = Signal()
     TOAST_CSS = """
     QLabel#title{color:#f5f5f7;font:600 10pt 'Segoe UI'}
     QLabel#body{color:#a1a1a6;font:9pt 'Segoe UI'}
@@ -674,7 +686,7 @@ class Toast(QWidget):
         self.cancel_btn.setCursor(Qt.PointingHandCursor)
         self.cancel_btn.clicked.connect(self._cancel)
         lay.addWidget(self.cancel_btn)
-        self.timer = QTimer(self, singleShot=True, timeout=self.hide)
+        self.timer = QTimer(self, singleShot=True, timeout=self.close_card)
         self.target = None
         self.on_cancel = None
         self.spin = 0
@@ -696,10 +708,13 @@ class Toast(QWidget):
 
     def _place(self):
         self.adjustSize()
-        scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
-        g = scr.availableGeometry()
-        x = g.left() + 18 if i18n.is_rtl() else g.right() - self.width() - 18
-        self.move(x, g.bottom() - self.height() - 18)
+        self.resized.emit()          # the manager re-stacks all cards
+
+    def close_card(self):
+        self.timer.stop()
+        self.spin_timer.stop()
+        self.hide()
+        self.closed.emit(self)
 
     def _set_icon(self, kind):
         pm = QPixmap(30, 30)
@@ -774,7 +789,67 @@ class Toast(QWidget):
     def _reveal(self):
         if self.target:
             winsys.reveal(self.target)
-        self.hide()
+        self.close_card()
+
+
+class ToastManager(QObject):
+    """Stacks notification cards bottom-right (bottom-left in Arabic). Each job gets its own card,
+    so a new message never hides a running conversion."""
+    GAP = 10
+    MAX = 6
+
+    def __init__(self):
+        super().__init__()
+        self.cards: list[Toast] = []
+
+    def _new(self) -> Toast:
+        t = Toast()
+        t.closed.connect(self._closed)
+        t.resized.connect(self.reflow)
+        self.cards.append(t)
+        while len(self.cards) > self.MAX:       # drop the oldest finished card
+            old = next((c for c in self.cards if c.on_cancel is None), self.cards[0])
+            old.close_card()
+        return t
+
+    def _closed(self, card):
+        if card in self.cards:
+            self.cards.remove(card)
+        card.deleteLater()
+        self.reflow()
+
+    def reflow(self):
+        scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        g = scr.availableGeometry()
+        y = g.bottom() - 18
+        for c in reversed(self.cards):          # newest at the bottom
+            if not c.isVisible():
+                continue
+            c.adjustSize()
+            x = g.left() + 18 if i18n.is_rtl() else g.right() - c.width() - 18
+            y -= c.height()
+            c.move(x, y)
+            y -= self.GAP
+
+    def restyle(self):
+        for c in self.cards:
+            c.restyle()
+
+    # same API as a single card — every call makes a new card and returns it
+    def show_busy(self, title, body, on_cancel=None) -> Toast:
+        t = self._new()
+        t.show_busy(title, body, on_cancel)
+        return t
+
+    def show_msg(self, title, body, kind="info", ms=2600) -> Toast:
+        t = self._new()
+        t.show_msg(title, body, kind, ms)
+        return t
+
+    def show_result(self, title, outs) -> Toast:
+        t = self._new()
+        t.show_result(title, outs)
+        return t
 
 
 # ============================================================================
@@ -1264,7 +1339,7 @@ class DragWheelApp(QObject):
         self.actions = Actions(self)
         self.floats = []
         self.wheel = Wheel(self)
-        self.toast = Toast()
+        self.toast = ToastManager()
         self.running = set()
         engine.OUTPUT_DIR = settings().value("output_dir", "") or None
 
@@ -1443,27 +1518,29 @@ class DragWheelApp(QObject):
         w = Worker(op, paths, params)
         cancel = lambda w=w: self._cancel_job(w)
         if op.group == "convert":
-            self.toast.show_busy(tr("Converting to {fmt}…", fmt=tr(op.label)), name, cancel)
+            w.card = self.toast.show_busy(tr("Converting to {fmt}…", fmt=tr(op.label)), name, cancel)
         else:
-            self.toast.show_busy(tr(op.label).rstrip("…") + "…", name, cancel)
+            w.card = self.toast.show_busy(tr(op.label).rstrip("…") + "…", name, cancel)
         w.setAutoDelete(False)
         self.running.add(w)                       # keep Python refs alive until done
         w.sig.done.connect(self._done, Qt.QueuedConnection)
         self.pool.start(w)
 
     def _cancel_job(self, worker):
-        worker.token.cancel()
-        self.toast.show_busy(tr("Cancelling…"), Path(worker.paths[0]).name)
+        worker.cancel()
+        worker.card.show_busy(tr("Cancelling…"), Path(worker.paths[0]).name)
 
     def _done(self, worker, outs, err):
         self.running.discard(worker)
         op = worker.op
+        card = worker.card if worker.card is not None and worker.card in self.toast.cards else None
+        target = card or self.toast
         if err == CANCELLED:
-            self.toast.show_msg(tr("Cancelled"), tr("Nothing was saved."), "info", 3000)
+            target.show_msg(tr("Cancelled"), tr("Nothing was saved."), "info", 3000)
         elif err:
-            self.toast.show_msg(tr("{what} failed", what=tr(op.label).rstrip("…")), err, "err", 8000)
+            target.show_msg(tr("{what} failed", what=tr(op.label).rstrip("…")), err, "err", 8000)
         else:
-            self.toast.show_result(tr("Done") if op.group == "tool" else tr("Converted to {fmt}", fmt=tr(op.label)), outs)
+            target.show_result(tr("Done") if op.group == "tool" else tr("Converted to {fmt}", fmt=tr(op.label)), outs)
 
     # ---- updates
     def _auto_update_check(self):
@@ -1482,24 +1559,27 @@ class DragWheelApp(QObject):
         job.setAutoDelete(False)
         self._update_jobs.add(job)
         job.sig.checked.connect(lambda rel, err, m, job=job: self._update_checked(job, rel, err, m), Qt.QueuedConnection)
-        if manual:
-            self.toast.show_busy(tr("Checking for updates…"), "github.com/" + updater.REPO)
+        job.card = self.toast.show_busy(tr("Checking for updates…"), "github.com/" + updater.REPO) if manual else None
         self.pool.start(job)
 
     def _update_checked(self, job, rel, err, manual):
         self._update_jobs.discard(job)
+        card = getattr(job, "card", None) if job is not None else None
+        card = card if card is not None and card in self.toast.cards else None
+        target = card or self.toast
         winsys.log(f"update check: latest={getattr(rel, 'version', None)} err={err}")
         if err:
             if manual:
-                self.toast.show_msg(tr("Couldn't check for updates"), err, "err", 6000)
+                target.show_msg(tr("Couldn't check for updates"), err, "err", 6000)
             return
         if not updater.is_newer(rel.version, VERSION):
             if manual:
-                self.toast.show_msg(tr("You're up to date"), tr("{app} {v} is the latest version.", app=APP, v=VERSION), "ok", 4000)
+                target.show_msg(tr("You're up to date"), tr("{app} {v} is the latest version.", app=APP, v=VERSION), "ok", 4000)
             return
         if not manual and settings().value("skip_version", "") == rel.version:
             return
-        self.toast.hide()
+        if card:
+            card.close_card()
         self._offer_update(rel)
 
     def _offer_update(self, rel):
@@ -1535,17 +1615,20 @@ class DragWheelApp(QObject):
         def cancel():
             job.stop = True
         name = rel.installer_name or "DragWheel-Setup.exe"
-        self.toast.show_busy(tr("Downloading update…"), name, cancel)
+        job.card = self.toast.show_busy(tr("Downloading update…"), name, cancel)
 
-        def progress(done, total):
-            if total and self.toast.isVisible():
-                self.toast.body.setText(f"{name} — {done * 100 // total}%  ({done / 1048576:.0f} / {total / 1048576:.0f} MB)")
+        def progress(done, total, card=job.card):
+            if total and card in self.toast.cards:
+                card.body.setText(f"{name} — {done * 100 // total}%  ({done / 1048576:.0f} / {total / 1048576:.0f} MB)")
         job.sig.progress.connect(progress, Qt.QueuedConnection)
         job.sig.downloaded.connect(lambda path, err, job=job: self._update_downloaded(job, path, err), Qt.QueuedConnection)
         self.pool.start(job)
 
     def _update_downloaded(self, job, path, err):
         self._update_jobs.discard(job)
+        card = job.card if job.card in self.toast.cards else None
+        if card:
+            card.close_card()
         if err == CANCELLED:
             self.toast.show_msg(tr("Cancelled"), tr("The update was not downloaded."), "info", 3000)
             return
@@ -1596,7 +1679,34 @@ def parse_args(argv):
     return flags, paths
 
 
+def selftest() -> int:
+    """Diagnostics for the packaged app: runs a job in a worker process, then cancels one.
+    Results go to the log file (%LOCALAPPDATA%\\DragWheel\\dragwheel.log)."""
+    import tempfile
+    import time
+    import jobproc
+    d = Path(tempfile.mkdtemp(prefix="dw-selftest-"))
+    (d / "data").mkdir()
+    (d / "data" / "a.txt").write_text("hello", encoding="utf-8")
+    t0 = time.monotonic()
+    res = jobproc.JobProcess("convert", "to_zip", [str(d / "data")], {}, None).run(lambda: False)
+    winsys.log(f"selftest job: {res} in {time.monotonic() - t0:.1f}s")
+    big = d / "big"
+    big.mkdir()
+    with open(big / "blob.bin", "wb") as fh:
+        fh.write(os.urandom(80 * 1024 * 1024))
+    start = time.monotonic()
+    res = jobproc.JobProcess("convert", "to_7z", [str(big)], {}, None).run(lambda: time.monotonic() - start > 3)
+    left = [p.name for p in d.iterdir()]
+    winsys.log(f"selftest cancel: {res} after {time.monotonic() - start:.1f}s, folder={left}")
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+    return 0
+
+
 def main():
+    import multiprocessing
+    multiprocessing.freeze_support()      # worker processes of the frozen exe start here and exit
     if sys.platform == "win32":
         try:
             import ctypes
@@ -1610,6 +1720,8 @@ def main():
     qapp.setWindowIcon(app_icon())
 
     flags, paths = parse_args(sys.argv[1:])
+    if "--selftest" in flags:
+        return selftest()
     if send_to_running({"paths": paths, "flags": sorted(flags)}):
         return 0
 
