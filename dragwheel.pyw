@@ -25,25 +25,29 @@ from PySide6.QtCore import (QEasingCurve, QObject, QPointF, QPropertyAnimation, 
 from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QDesktopServices, QDrag, QFont, QFontMetrics,
                            QGuiApplication, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QTabWidget,
                                QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
                                QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget)
 
 import engine
 import i18n
+import theme
 import updater
 import winsys
 from i18n import tr
 
 APP = "DragWheel"
+DONATE_URL = "https://buymeacoffee.com/ilukezippo"
 VERSION = "1.1.1"
 
 ACCENT = QColor("#ff8a00")
 ACCENT_2 = QColor("#ffb347")
-BG = QColor(28, 28, 30, 238)
-BG_RING = QColor(44, 44, 46, 245)
-FG = QColor("#f5f5f7")
-FG_DIM = QColor("#a1a1a6")
+ON_ACCENT = QColor("#1c1c1e")
+
+
+def C(name):
+    """Current theme colour (see theme.py)."""
+    return theme.color(name)
 
 MODES = ["convert", "tool", "action"]
 MODE_LABEL = {"convert": "Convert", "tool": "Tools", "action": "Actions"}   # translated at use: tr(MODE_LABEL[m])
@@ -490,21 +494,21 @@ class Wheel(QWidget):
 
         # soft shadow
         g = QRadialGradient(c + QPointF(0, 6), outer + 16)
-        g.setColorAt(0.86, QColor(0, 0, 0, 90))
+        g.setColorAt(0.86, C("shadow"))
         g.setColorAt(1.0, QColor(0, 0, 0, 0))
         p.setPen(Qt.NoPen)
         p.setBrush(g)
         p.drawEllipse(c + QPointF(0, 6), outer + 16, outer + 16)
 
         # disc
-        p.setBrush(BG)
-        p.setPen(QPen(QColor(255, 255, 255, 28), 1))
+        p.setBrush(C("panel"))
+        p.setPen(QPen(C("line"), 1))
         p.drawEllipse(c, outer, outer)
 
         offset = 0
         for ri, (r0, r1, items) in enumerate(rings):
             if ri > 0:
-                p.setPen(QPen(QColor(255, 255, 255, 22), 1))
+                p.setPen(QPen(C("line"), 1))
                 p.setBrush(Qt.NoBrush)
                 p.drawEllipse(c, r0 - 2, r0 - 2)
             n = len(items)
@@ -522,7 +526,7 @@ class Wheel(QWidget):
                     grad.setColorAt(1.0, ACCENT)
                     p.setBrush(grad)
                 else:
-                    p.setBrush(QColor(255, 255, 255, 10))
+                    p.setBrush(C("wedge"))
                 p.setPen(Qt.NoPen)
                 p.drawPath(path)
                 # label
@@ -534,7 +538,7 @@ class Wheel(QWidget):
 
         # center
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(58, 58, 60, 250) if self.hover == -2 else BG_RING)
+        p.setBrush(C("ring_hover") if self.hover == -2 else C("ring"))
         p.drawEllipse(c, self.R_IN - 4, self.R_IN - 4)
         self._center_text(p, c)
 
@@ -542,13 +546,13 @@ class Wheel(QWidget):
         keys = mode_keys()
         for m, r in self._pill_rects().items():
             active = m == self.mode
-            p.setPen(QPen(QColor(255, 255, 255, 30), 1))
-            p.setBrush(ACCENT if active else (QColor(58, 58, 60, 245) if m == self.hover_pill else BG))
+            p.setPen(QPen(C("line"), 1))
+            p.setBrush(ACCENT if active else (C("ring_hover") if m == self.hover_pill else C("panel")))
             p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
             f = QFont(i18n.ui_font(), 9)
             f.setWeight(QFont.DemiBold)
             p.setFont(f)
-            p.setPen(QColor("#1c1c1e") if active else FG)
+            p.setPen(ON_ACCENT if active else C("text"))
             p.drawText(r, Qt.AlignCenter, f"{tr(keys[m])}  ·  {tr(MODE_LABEL[m])}")
         p.end()
 
@@ -590,7 +594,7 @@ class Wheel(QWidget):
             size -= 0.5
         lines = [fm.elidedText(x, Qt.ElideRight, int(max_w)) for x in lines]
         p.setFont(f)
-        p.setPen(QColor("#1c1c1e") if hovered else FG)
+        p.setPen(ON_ACCENT if hovered else C("text"))
         lh = fm.height() - 2
         hint_h = 12 if op.hint else 0
         total = lh * len(lines) + hint_h
@@ -601,7 +605,7 @@ class Wheel(QWidget):
         if op.hint:
             f2 = QFont(i18n.ui_font(), 7)
             p.setFont(f2)
-            p.setPen(QColor(28, 28, 30, 200) if hovered else FG_DIM)
+            p.setPen(QColor(28, 28, 30, 200) if hovered else C("dim"))
             p.drawText(QRectF(pt.x() - 80, y, 160, hint_h + 2), Qt.AlignCenter, tr(op.hint))
 
     def _center_text(self, p, c):
@@ -625,7 +629,7 @@ class Wheel(QWidget):
         f = QFont(i18n.ui_font(), 11)
         f.setWeight(QFont.Bold)
         p.setFont(f)
-        p.setPen(ACCENT_2 if self.hover >= 0 else FG)
+        p.setPen((ACCENT_2 if theme.is_dark() else ACCENT) if self.hover >= 0 else C("text"))
         fm = QFontMetrics(f)
         if fm.horizontalAdvance(title) > r.width():
             f.setPointSizeF(9)
@@ -635,7 +639,7 @@ class Wheel(QWidget):
             p.drawText(QRectF(r.x(), r.y() + 6, r.width(), 24), Qt.AlignCenter, title)
         f2 = QFont(i18n.ui_font(), 8)
         p.setFont(f2)
-        p.setPen(FG_DIM)
+        p.setPen(C("dim"))
         p.drawText(QRectF(r.x(), r.y() + 30, r.width(), 18), Qt.AlignCenter,
                    QFontMetrics(f2).elidedText(sub, Qt.ElideMiddle, int(r.width())))
 
@@ -647,12 +651,12 @@ class Toast(QWidget):
     closed = Signal(object)
     resized = Signal()
     TOAST_CSS = """
-    QLabel#title{color:#f5f5f7;font:600 10pt 'Segoe UI'}
-    QLabel#body{color:#a1a1a6;font:9pt 'Segoe UI'}
-    QPushButton#show{background:#ff8a00;color:#1c1c1e;border:none;border-radius:11px;padding:4px 12px;font:600 9pt 'Segoe UI'}
-    QPushButton#show:hover{background:#ffb347}
-    QPushButton#cancel{background:#3a3a3c;color:#f5f5f7;border:none;border-radius:11px;padding:4px 12px;font:600 9pt 'Segoe UI'}
-    QPushButton#cancel:hover{background:#ff453a;color:#ffffff}
+    QLabel#title{color:$text;font:600 10pt 'Segoe UI'}
+    QLabel#body{color:$dim;font:9pt 'Segoe UI'}
+    QPushButton#show{background:$accent;color:$on_accent;border:none;border-radius:11px;padding:4px 12px;font:600 9pt 'Segoe UI'}
+    QPushButton#show:hover{background:$accent2}
+    QPushButton#cancel{background:$button;color:$text;border:none;border-radius:11px;padding:4px 12px;font:600 9pt 'Segoe UI'}
+    QPushButton#cancel:hover{background:$danger;color:#ffffff}
     """
 
     def __init__(self):
@@ -702,8 +706,8 @@ class Toast(QWidget):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(QPen(QColor(255, 255, 255, 30), 1))
-        p.setBrush(BG)
+        p.setPen(QPen(C("line"), 1))
+        p.setBrush(C("panel"))
         p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 14, 14)
 
     def _place(self):
@@ -723,18 +727,18 @@ class Toast(QWidget):
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing)
         if kind == "busy":
-            p.setPen(QPen(QColor(255, 255, 255, 40), 3))
+            p.setPen(QPen(C("busy_track"), 3))
             p.drawEllipse(4, 4, 22, 22)
             pen = QPen(ACCENT, 3)
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.drawArc(4, 4, 22, 22, -self.spin * 16, 100 * 16)
         else:
-            col = {"ok": QColor("#30d158"), "err": QColor("#ff453a"), "info": ACCENT}[kind]
+            col = {"ok": C("ok"), "err": C("danger"), "info": ACCENT}[kind]
             p.setPen(Qt.NoPen)
             p.setBrush(col)
             p.drawEllipse(3, 3, 24, 24)
-            p.setPen(QPen(QColor("#1c1c1e"), 2.6))
+            p.setPen(QPen(ON_ACCENT if kind != "err" else QColor("#ffffff"), 2.6))
             if kind == "ok":
                 p.drawPolyline([QPointF(9, 15.5), QPointF(13.5, 20), QPointF(21, 11)])
             elif kind == "err":
@@ -922,12 +926,12 @@ class FloatWindow(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        p.setPen(QPen(ACCENT if self.hover else QColor(255, 255, 255, 30), 1.2))
-        p.setBrush(BG)
+        p.setPen(QPen(ACCENT if self.hover else C("line"), 1.2))
+        p.setBrush(C("panel"))
         p.drawRoundedRect(r, 14, 14)
         p.drawPixmap((self.width() - self.pix.width()) // 2, self.PAD, self.pix)
         # name
-        p.setPen(FG)
+        p.setPen(C("text"))
         f = QFont(i18n.ui_font(), 9)
         p.setFont(f)
         name_r = QRectF(self.PAD, self.height() - self.BAR, self.width() - 2 * self.PAD - 36, self.BAR - 6)
@@ -936,15 +940,15 @@ class FloatWindow(QWidget):
         # grip (drag the file out from here)
         g = self._grip_rect()
         p.setPen(Qt.NoPen)
-        p.setBrush(ACCENT if self.hover == "grip" else QColor(255, 255, 255, 28))
+        p.setBrush(ACCENT if self.hover == "grip" else C("grip"))
         p.drawRoundedRect(g, 7, 7)
-        p.setBrush(QColor("#1c1c1e") if self.hover == "grip" else FG)
+        p.setBrush(ON_ACCENT if self.hover == "grip" else C("text"))
         for i in range(3):
             for j in range(2):
                 p.drawEllipse(QPointF(g.center().x() - 3 + j * 6, g.center().y() - 5 + i * 5), 1.6, 1.6)
         # close button — always visible
         c = self._close_center()
-        p.setBrush(QColor("#ff453a") if self.hover == "close" else QColor(0, 0, 0, 150))
+        p.setBrush(C("danger") if self.hover == "close" else C("close"))
         p.setPen(QPen(QColor(255, 255, 255, 60), 1))
         p.drawEllipse(c, self.CLOSE_R, self.CLOSE_R)
         pen = QPen(QColor("#ffffff"), 2)
@@ -1034,14 +1038,26 @@ class FloatWindow(QWidget):
 # Dialog styling + parameter prompt (trim times, password…)
 # ============================================================================
 DIALOG_CSS = """
-QDialog{background:#1c1c1e} QLabel{color:#f5f5f7;font:10pt 'Segoe UI'} QGroupBox{color:#a1a1a6;font:600 9pt 'Segoe UI';
-border:1px solid #3a3a3c;border-radius:8px;margin-top:22px;padding:10px 8px 8px 8px} QGroupBox::title{subcontrol-origin:margin;subcontrol-position:top left;padding:0 6px;left:8px;top:0px}
-QLineEdit,QComboBox{background:#2c2c2e;color:#f5f5f7;border:1px solid #3a3a3c;border-radius:6px;padding:5px 8px;font:10pt 'Segoe UI'}
-QLineEdit:focus,QComboBox:focus{border-color:#ff8a00} QCheckBox{color:#f5f5f7;font:10pt 'Segoe UI'}
-QPushButton{background:#3a3a3c;color:#f5f5f7;border:none;border-radius:6px;padding:6px 16px;font:600 9pt 'Segoe UI'}
-QPushButton:default{background:#ff8a00;color:#1c1c1e} QPushButton:hover{background:#48484a} QPushButton:default:hover{background:#ffb347}
-QComboBox QAbstractItemView{background:#2c2c2e;color:#f5f5f7;selection-background-color:#ff8a00}
-QMessageBox{background:#1c1c1e}
+QDialog{background:$bg} QWidget#page{background:$bg} QLabel{color:$text;font:10pt 'Segoe UI'} QGroupBox{color:$dim;font:600 9pt 'Segoe UI';
+border:1px solid $border;border-radius:8px;margin-top:22px;padding:10px 8px 8px 8px} QGroupBox::title{subcontrol-origin:margin;subcontrol-position:top left;padding:0 6px;left:8px;top:0px}
+QLineEdit,QComboBox{background:$surface;color:$text;border:1px solid $border;border-radius:6px;padding:5px 8px;font:10pt 'Segoe UI'}
+QLineEdit:focus,QComboBox:focus{border-color:$accent} QCheckBox{color:$text;font:10pt 'Segoe UI'}
+QPushButton{background:$button;color:$text;border:none;border-radius:6px;padding:6px 16px;font:600 9pt 'Segoe UI'}
+QPushButton:default{background:$accent;color:$on_accent} QPushButton:hover{background:$hover} QPushButton:default:hover{background:$accent2}
+QComboBox QAbstractItemView{background:$surface;color:$text;selection-background-color:$accent;selection-color:$on_accent}
+QMessageBox{background:$bg}
+QTabWidget::pane{border:none;background:$bg} QTabWidget{background:$bg}
+QTabBar{background:transparent;qproperty-drawBase:0} QTabWidget::tab-bar{left:4px} QTabBar::tab{background:transparent;color:$dim;padding:9px 22px;margin:0 2px;border:none;
+border-bottom:2px solid transparent;font:600 10pt 'Segoe UI'} QTabBar::tab:selected{color:$text;border-bottom:2px solid $accent}
+QTabBar::tab:hover{color:$text}
+QPushButton#donate{background:#ffdd00;color:#1c1c1e;border-radius:8px;padding:8px 18px;font:700 10pt 'Segoe UI'}
+QPushButton#donate:hover{background:#ffe94d}
+QPushButton#link{background:transparent;color:$link;padding:6px 10px;border:1px solid $border;border-radius:8px}
+QPushButton#link:hover{background:$hover}
+QLabel#appname{font:700 20pt 'Segoe UI';color:$text} QLabel#tagline{color:$dim;font:10pt 'Segoe UI'}
+QLabel#version{color:$accent;font:600 10pt 'Segoe UI'} QLabel#dim{color:$dim;font:9pt 'Segoe UI'}
+QFrame#card{background:$surface;border:1px solid $border;border-radius:10px}
+QFrame#card QLabel{background:transparent}
 """
 
 
@@ -1053,7 +1069,7 @@ def ask_params(op, paths) -> dict | None:
     dlg.setStyleSheet(i18n.css(DIALOG_CSS))
     lay = QVBoxLayout(dlg)
     who = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
-    lay.addWidget(QLabel(f"<b>{title}</b> &nbsp;<span style='color:#a1a1a6'>{who}</span>"))
+    lay.addWidget(QLabel(f"<b>{title}</b> &nbsp;<span style='color:{theme.hexc("dim")}'>{who}</span>"))
     form = QFormLayout()
     edits = {}
     for name, default in op.ask:
@@ -1108,8 +1124,10 @@ class SettingsDialog(QDialog):
         super().__init__(None)
         self.app = app
         self.setWindowIcon(app_icon())
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(660)
         self.orig_lang = settings().value("language", "")
+        self.orig_theme = theme.mode()
+        self.tabs = None
         self.outer = QVBoxLayout(self)
         self.outer.setContentsMargins(0, 0, 0, 0)
         self.body = None
@@ -1141,6 +1159,15 @@ class SettingsDialog(QDialog):
             "auto_update": s.value("check_updates", "true") == "true",
         }
 
+    def _theme_changed(self, _idx):
+        code = self.theme_box.currentData()
+        if code == theme.mode():
+            return
+        state = self._state()
+        settings().setValue("theme", code)
+        self.app.apply_theme()
+        QTimer.singleShot(0, lambda: self._build(state))
+
     def _language_changed(self, _idx):
         code = self.lang.currentData()
         if code == settings().value("language", ""):
@@ -1154,6 +1181,9 @@ class SettingsDialog(QDialog):
         if settings().value("language", "") != self.orig_lang:   # Cancel undoes a language switch
             settings().setValue("language", self.orig_lang)
             self.app.apply_language()
+        if theme.mode() != self.orig_theme:                       # …and a theme switch
+            settings().setValue("theme", self.orig_theme)
+            self.app.apply_theme()
         super().reject()
 
     # ------------------------------------------------------------------ UI
@@ -1162,14 +1192,39 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(tr("{app} Settings", app=APP))
         self.setStyleSheet(i18n.css(DIALOG_CSS))
         self.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
+        keep_tab = self.tabs.currentIndex() if getattr(self, "tabs", None) is not None else 0
         if self.body is not None:
             self.outer.removeWidget(self.body)
             self.body.deleteLater()
         self.body = QWidget(self)
+        self.body.setObjectName("page")
         self.outer.addWidget(self.body)
-        lay = QVBoxLayout(self.body)
+        root = QVBoxLayout(self.body)
+        root.setContentsMargins(12, 8, 12, 12)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(self._settings_tab(st), tr("Settings"))
+        self.tabs.addTab(self._about_tab(st), tr("About"))
+        self.tabs.setCurrentIndex(keep_tab)
+        root.addWidget(self.tabs)
 
-        g0 = QGroupBox(tr("Language"))
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Save).setText(tr("Save"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.button(QDialogButtonBox.Save).setDefault(True)
+        bb.accepted.connect(self.save)
+        bb.rejected.connect(self.reject)
+        root.addWidget(bb)
+        self.adjustSize()
+
+    # ---- Settings tab
+    def _settings_tab(self, st):
+        page = QWidget()
+        page.setObjectName("page")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(2, 6, 2, 2)
+
+        g0 = QGroupBox(tr("Appearance"))
         f0 = QFormLayout(g0)
         self.lang = QComboBox()
         self.lang.addItem(tr("System default"), "")
@@ -1178,6 +1233,12 @@ class SettingsDialog(QDialog):
         self.lang.setCurrentIndex(max(0, self.lang.findData(settings().value("language", ""))))
         self.lang.currentIndexChanged.connect(self._language_changed)
         f0.addRow(tr("App language"), self.lang)
+        self.theme_box = QComboBox()
+        for code, label in (("system", tr("System default")), ("dark", tr("Dark")), ("light", tr("Light"))):
+            self.theme_box.addItem(label, code)
+        self.theme_box.setCurrentIndex(max(0, self.theme_box.findData(theme.mode())))
+        self.theme_box.currentIndexChanged.connect(self._theme_changed)
+        f0.addRow(tr("Theme"), self.theme_box)
         lay.addWidget(g0)
 
         g1 = QGroupBox(tr("Wheel keys — tap while dragging a file"))
@@ -1222,43 +1283,115 @@ class SettingsDialog(QDialog):
         for w in (self.startup, self.menu, self.hotkey):
             v3.addWidget(w)
         lay.addWidget(g3)
+        lay.addStretch(1)
+        return page
 
+    # ---- About tab
+    def _about_tab(self, st):
+        page = QWidget()
+        page.setObjectName("page")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(2, 10, 2, 2)
+        lay.setSpacing(12)
+
+        # header: icon + name + version + tagline
+        head = QHBoxLayout()
+        head.setSpacing(14)
+        icon = QLabel()
+        icon.setPixmap(app_icon().pixmap(72, 72))
+        icon.setFixedSize(76, 76)
+        head.addWidget(icon, 0, Qt.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        name = QLabel(APP)
+        name.setObjectName("appname")
+        ver = QLabel(tr("Version {v}", v=VERSION))
+        ver.setObjectName("version")
+        tag = QLabel(tr("Drag a file, tap a key, drop it on the wheel."))
+        tag.setObjectName("tagline")
+        tag.setWordWrap(True)
+        made = QLabel(tr("Made by {who}", who="<b>ilukezippo</b> (BoYaqoub)"))
+        made.setTextFormat(Qt.RichText)
+        for w in (name, ver, tag, made):
+            col.addWidget(w)
+        head.addLayout(col, 1)
+        lay.addLayout(head)
+
+        # buttons: donate + GitHub
+        btns = QHBoxLayout()
+        donate = QPushButton("☕  " + tr("Donate"))
+        donate.setObjectName("donate")
+        donate.setCursor(Qt.PointingHandCursor)
+        donate.setToolTip("buymeacoffee.com/ilukezippo")
+        donate.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(DONATE_URL)))
+        gh = QPushButton(tr("GitHub page"))
+        gh.setObjectName("link")
+        gh.setCursor(Qt.PointingHandCursor)
+        gh.setToolTip(updater.REPO_URL)
+        gh.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(updater.REPO_URL)))
+        issues = QPushButton(tr("Report a problem"))
+        issues.setObjectName("link")
+        issues.setCursor(Qt.PointingHandCursor)
+        issues.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(updater.REPO_URL + "/issues")))
+        btns.addWidget(donate)
+        btns.addWidget(gh)
+        btns.addWidget(issues)
+        btns.addStretch(1)
+        lay.addLayout(btns)
+
+        # updates
         g4 = QGroupBox(tr("Updates"))
         v4 = QVBoxLayout(g4)
         self.auto_update = QCheckBox(tr("Check for updates automatically (once a day)"))
         self.auto_update.setChecked(st["auto_update"])
         v4.addWidget(self.auto_update)
         row4 = QHBoxLayout()
-        link = QLabel(f"<a style='color:#ffb347' href='{updater.REPO_URL}'>{updater.REPO_URL.replace('https://', '')}</a>")
-        link.setOpenExternalLinks(True)
-        link.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        row4.addWidget(link, 1)
+        last = float(settings().value("last_update_check", 0) or 0)
+        import time as _t
+        when = _t.strftime("%Y-%m-%d %H:%M", _t.localtime(last)) if last else tr("never")
+        lastlbl = QLabel(tr("Last checked: {when}", when=when))
+        lastlbl.setObjectName("dim")
+        row4.addWidget(lastlbl, 1)
         chk = QPushButton(tr("Check now"))
         chk.clicked.connect(lambda: self.app.check_updates(manual=True))
         row4.addWidget(chk)
         v4.addLayout(row4)
         lay.addWidget(g4)
 
-        office = tr("found") if engine.office_available() else \
-            tr("not found — DOCX/PPTX/XLS conversions need Microsoft Office or LibreOffice")
+        # info card
+        card = QFrame()
+        card.setObjectName("card")
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(14, 12, 14, 12)
+        cv.setSpacing(6)
         conv, tl = engine.count_catalog()
-        info = QLabel(f"<span style='color:#a1a1a6'>{APP} {VERSION}<br>"
-                      + tr("{c}+ conversions · {t}+ tools · 8 actions", c=conv, t=tl) + "<br>"
-                      + f"Office/LibreOffice: {office}<br>"
-                      + tr("Everything runs locally — nothing is uploaded.") + " "
-                      + tr("The only connection is the update check to GitHub.") + "</span>")
-        info.setWordWrap(True)
-        info.setAlignment(Qt.AlignLeading | Qt.AlignVCenter)
-        lay.addWidget(info)
 
-        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Save).setText(tr("Save"))
-        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
-        bb.button(QDialogButtonBox.Save).setDefault(True)
-        bb.accepted.connect(self.save)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
-        self.adjustSize()
+        def line(icon_txt, text):
+            r = QHBoxLayout()
+            r.setSpacing(10)
+            a = QLabel(icon_txt)
+            a.setFixedWidth(22)
+            a.setAlignment(Qt.AlignCenter)
+            b = QLabel(text)
+            b.setWordWrap(True)
+            b.setTextFormat(Qt.RichText)
+            b.setOpenExternalLinks(True)
+            r.addWidget(a, 0, Qt.AlignTop)
+            r.addWidget(b, 1)
+            cv.addLayout(r)
+
+        line("⚙", tr("{c}+ conversions · {t}+ tools · 8 actions", c=conv, t=tl))
+        office_ok = engine.office_available()
+        line("✔" if office_ok else "✖", "Office / LibreOffice: " + (tr("found") if office_ok else
+             tr("not found — DOCX/PPTX/XLS conversions need Microsoft Office or LibreOffice")))
+        line("🔒", tr("Everything runs locally — nothing is uploaded.") + " "
+             + tr("The only connection is the update check to GitHub.")
+             + f" <a style='color:{theme.hexc('link')}' href='{updater.REPO_URL}/blob/main/PRIVACY.md'>"
+             + tr("Privacy policy") + "</a>")
+        line("⚖", tr("Free and open source (MIT License)"))
+        lay.addWidget(card)
+        lay.addStretch(1)
+        return page
 
     def save(self):
         keys = {m: cb.currentData() for m, cb in self.key_boxes.items()}
@@ -1276,6 +1409,7 @@ class SettingsDialog(QDialog):
         self.app.watcher.refresh_settings()
         engine.OUTPUT_DIR = self.out.text().strip() or None
         s.setValue("language", self.lang.currentData())
+        s.setValue("theme", self.theme_box.currentData())
         try:
             winsys.set_startup(self.startup.isChecked())
             winsys.set_context_menu(self.menu.isChecked())
@@ -1470,6 +1604,15 @@ class DragWheelApp(QObject):
             self._cancel_actions.append(act)
         sep = menu.insertSeparator(before)
         self._cancel_actions.append(sep)
+
+    def apply_theme(self):
+        theme.set_mode(settings().value("theme", "system"))
+        self.toast.restyle()
+        for c in self.toast.cards:
+            c.update()
+        for f in self.floats:
+            f.update()
+        self.wheel.update()
 
     def apply_language(self):
         i18n.set_language(settings().value("language", ""))
@@ -1686,8 +1829,9 @@ class DragWheelApp(QObject):
         box.setIconPixmap(app_icon().pixmap(48, 48))
         box.setTextFormat(Qt.RichText)
         notes = rel.notes.split("\n\n")[0][:400].replace("**", "") if rel.notes else ""
+        dimc = theme.hexc("dim")
         box.setText(f"<b>{tr('{app} {v} is available', app=APP, v=rel.version)}</b><br>"
-                    f"<span style='color:#a1a1a6'>{tr('You have {v}.', v=VERSION)}</span><br><br>{notes}")
+                    f"<span style='color:{dimc}'>{tr('You have {v}.', v=VERSION)}</span><br><br>{notes}")
         install = box.addButton(tr("Download && install"), QMessageBox.AcceptRole) if rel.installer_url else None
         page = box.addButton(tr("Open release page"), QMessageBox.ActionRole)
         skip = box.addButton(tr("Skip this version"), QMessageBox.RejectRole)
@@ -1822,6 +1966,7 @@ def main():
         return 0
 
     i18n.set_language(settings().value("language", ""))
+    theme.set_mode(settings().value("theme", "system"))
     qapp.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
     qapp.setFont(QFont(i18n.ui_font(), 9))
 

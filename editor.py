@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QFra
                                QLabel, QPushButton, QSizePolicy, QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
 import engine
+import theme
 from i18n import tr
 
 ACCENT = QColor("#ff8a00")
@@ -205,7 +206,7 @@ class CropCanvas(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        p.fillRect(self.rect(), QColor("#141416"))
+        p.fillRect(self.rect(), theme.color("canvas"))
         if not self.img:
             return
         v = self._view()
@@ -216,9 +217,9 @@ class CropCanvas(QWidget):
         for yy in range(int(v.top()), int(v.bottom()) + tile, tile):
             for xx in range(int(v.left()), int(v.right()) + tile, tile):
                 if ((xx - int(v.left())) // tile + (yy - int(v.top())) // tile) % 2:
-                    p.fillRect(xx, yy, tile, tile, QColor("#2a2a2d"))
+                    p.fillRect(xx, yy, tile, tile, theme.color("check_a"))
                 else:
-                    p.fillRect(xx, yy, tile, tile, QColor("#222225"))
+                    p.fillRect(xx, yy, tile, tile, theme.color("check_b"))
         p.restore()
         p.drawImage(v, self.img)
         c = self.to_widget(self.crop)
@@ -470,16 +471,16 @@ class CropResizeDialog(QDialog):
 
 
 EDITOR_CSS = """
-QFrame#side{background:#232326;border-radius:12px}
-QLabel#section{color:#a1a1a6;font:600 8.5pt 'Segoe UI';padding-top:4px}
-QLabel#dim{color:#8e8e93;font:8.5pt 'Segoe UI'}
-QToolButton#chip,QToolButton#icon{background:#2c2c2e;color:#f5f5f7;border:1px solid #3a3a3c;border-radius:6px;
+QFrame#side{background:$side;border-radius:12px}
+QLabel#section{color:$dim;font:600 8.5pt 'Segoe UI';padding-top:4px}
+QLabel#dim{color:$faint;font:8.5pt 'Segoe UI'}
+QToolButton#chip,QToolButton#icon{background:$surface;color:$text;border:1px solid $border;border-radius:6px;
   padding:5px 4px;font:600 9pt 'Segoe UI'}
 QToolButton#icon{font:13pt 'Segoe UI Symbol'}
-QToolButton#chip:hover,QToolButton#icon:hover{background:#3a3a3c}
-QToolButton#chip:checked{background:#ff8a00;color:#1c1c1e;border-color:#ff8a00}
-QSpinBox{background:#2c2c2e;color:#f5f5f7;border:1px solid #3a3a3c;border-radius:8px;padding:0 10px;min-height:38px;font:600 11pt 'Segoe UI'}
-QSpinBox:focus{border-color:#ff8a00}
+QToolButton#chip:hover,QToolButton#icon:hover{background:$hover}
+QToolButton#chip:checked{background:$accent;color:$on_accent;border-color:$accent}
+QSpinBox{background:$surface;color:$text;border:1px solid $border;border-radius:8px;padding:0 10px;min-height:38px;font:600 11pt 'Segoe UI'}
+QSpinBox:focus{border-color:$accent}
 QSpinBox QLineEdit{padding:0;margin:0;border:none;background:transparent;min-height:30px}
 QSpinBox::up-button,QSpinBox::down-button{width:0;border:none}
 """

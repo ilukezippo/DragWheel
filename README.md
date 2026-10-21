@@ -52,7 +52,8 @@ All keys can be changed in **Settings** (tray icon → Settings).
 - **Crop & Resize editor** with live preview, aspect presets (Free, Original, 1:1, 4:3, 3:2, 16:9, 9:16, 4:5), rotate/flip and an exact output size
 - **Archive converter:** turn any ZIP, 7Z, RAR, TAR, TAR.GZ, TAR.BZ2 or TAR.XZ into any other, or compress folders straight into one
 - **Float:** pin any file on top of all windows, drag it anywhere, scroll to resize it, and drag it into another app later
-- **Six languages:** English, العربية (full right-to-left layout), Français, Español, Türkçe, Deutsch
+- **14 languages:** English, العربية, فارسی and اردو (full right-to-left layout), Français, Español, Português, Italiano, Deutsch, Türkçe, Русский, हिन्दी, 简体中文, 日本語
+- **Dark and light themes:** follow Windows or pick one in Settings
 - **Cancel any time:** every conversion shows a notification with a **Cancel** button; partial files are cleaned up
 - **Updates built in:** checks this GitHub page once a day (can be turned off) and offers *Download & install*
 - **100% offline conversions.** No accounts, no uploads, no telemetry. The only connection is the optional update check

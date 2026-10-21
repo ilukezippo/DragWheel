@@ -29,13 +29,14 @@ def is_rtl() -> bool:
 
 
 def ui_font() -> str:
-    """Font family for the interface: Arial for Arabic, Segoe UI otherwise."""
-    return "Arial" if _lang == "ar" else "Segoe UI"
+    """Font family for the interface (Segoe UI covers Arabic, Persian, Urdu, Hindi, CJK fall back automatically)."""
+    return "Segoe UI"
 
 
 def css(sheet: str) -> str:
-    """Swap the default font in a stylesheet for the current language's font."""
-    return sheet.replace("'Segoe UI'", f"'{ui_font()}'")
+    """Fill a stylesheet template with the current theme colours (and font)."""
+    import theme
+    return theme.sheet(sheet).replace("'Segoe UI'", f"'{ui_font()}'")
 
 
 def tr(text: str, **kw) -> str:
@@ -66,6 +67,22 @@ T: dict[str, dict[str, str]] = {}
 
 # --------------------------------------------------------------------------- Arabic
 T["ar"] = {
+    "About": "حول",
+    "Appearance": "المظهر",
+    "Dark": "داكن",
+    "Donate": "تبرّع",
+    "Drag a file, tap a key, drop it on the wheel.": "اسحب ملفًا، اضغط مفتاحًا، وأفلته على العجلة.",
+    "Free and open source (MIT License)": "مجاني ومفتوح المصدر (رخصة MIT)",
+    "GitHub page": "صفحة GitHub",
+    "Last checked: {when}": "آخر تحقق: {when}",
+    "Light": "فاتح",
+    "Made by {who}": "من تطوير {who}",
+    "Privacy policy": "سياسة الخصوصية",
+    "Report a problem": "الإبلاغ عن مشكلة",
+    "Settings": "الإعدادات",
+    "Theme": "السمة",
+    "Version {v}": "الإصدار {v}",
+    "never": "أبدًا",
     "Cancel: {what} — {name}": "إلغاء: {what} — {name}",
     "Cancel all ({n})": "إلغاء الكل ({n})",
     "Cancelled": "تم الإلغاء",
@@ -179,6 +196,22 @@ T["ar"] = {
 
 # --------------------------------------------------------------------------- French
 T["fr"] = {
+    "About": "À propos",
+    "Appearance": "Apparence",
+    "Dark": "Sombre",
+    "Donate": "Faire un don",
+    "Drag a file, tap a key, drop it on the wheel.": "Glissez un fichier, appuyez sur une touche, déposez-le sur la roue.",
+    "Free and open source (MIT License)": "Gratuit et open source (licence MIT)",
+    "GitHub page": "Page GitHub",
+    "Last checked: {when}": "Dernière vérification : {when}",
+    "Light": "Clair",
+    "Made by {who}": "Créé par {who}",
+    "Privacy policy": "Politique de confidentialité",
+    "Report a problem": "Signaler un problème",
+    "Settings": "Paramètres",
+    "Theme": "Thème",
+    "Version {v}": "Version {v}",
+    "never": "jamais",
     "Cancel: {what} — {name}": "Annuler : {what} — {name}",
     "Cancel all ({n})": "Tout annuler ({n})",
     "Cancelled": "Annulé",
@@ -280,6 +313,22 @@ T["fr"] = {
 
 # --------------------------------------------------------------------------- Spanish
 T["es"] = {
+    "About": "Acerca de",
+    "Appearance": "Apariencia",
+    "Dark": "Oscuro",
+    "Donate": "Donar",
+    "Drag a file, tap a key, drop it on the wheel.": "Arrastra un archivo, pulsa una tecla y suéltalo en la rueda.",
+    "Free and open source (MIT License)": "Gratis y de código abierto (licencia MIT)",
+    "GitHub page": "Página de GitHub",
+    "Last checked: {when}": "Última comprobación: {when}",
+    "Light": "Claro",
+    "Made by {who}": "Hecho por {who}",
+    "Privacy policy": "Política de privacidad",
+    "Report a problem": "Informar de un problema",
+    "Settings": "Configuración",
+    "Theme": "Tema",
+    "Version {v}": "Versión {v}",
+    "never": "nunca",
     "Cancel: {what} — {name}": "Cancelar: {what} — {name}",
     "Cancel all ({n})": "Cancelar todo ({n})",
     "Cancelled": "Cancelado",
@@ -381,6 +430,22 @@ T["es"] = {
 
 # --------------------------------------------------------------------------- Turkish
 T["tr"] = {
+    "About": "Hakkında",
+    "Appearance": "Görünüm",
+    "Dark": "Koyu",
+    "Donate": "Bağış yap",
+    "Drag a file, tap a key, drop it on the wheel.": "Bir dosya sürükleyin, bir tuşa basın, tekerleğe bırakın.",
+    "Free and open source (MIT License)": "Ücretsiz ve açık kaynak (MIT Lisansı)",
+    "GitHub page": "GitHub sayfası",
+    "Last checked: {when}": "Son denetim: {when}",
+    "Light": "Açık",
+    "Made by {who}": "Geliştiren: {who}",
+    "Privacy policy": "Gizlilik politikası",
+    "Report a problem": "Sorun bildir",
+    "Settings": "Ayarlar",
+    "Theme": "Tema",
+    "Version {v}": "Sürüm {v}",
+    "never": "hiç",
     "Cancel: {what} — {name}": "İptal: {what} — {name}",
     "Cancel all ({n})": "Tümünü iptal et ({n})",
     "Cancelled": "İptal edildi",
@@ -481,6 +546,22 @@ T["tr"] = {
 
 # --------------------------------------------------------------------------- German
 T["de"] = {
+    "About": "Über",
+    "Appearance": "Darstellung",
+    "Dark": "Dunkel",
+    "Donate": "Spenden",
+    "Drag a file, tap a key, drop it on the wheel.": "Datei ziehen, Taste tippen, auf dem Rad ablegen.",
+    "Free and open source (MIT License)": "Kostenlos und Open Source (MIT-Lizenz)",
+    "GitHub page": "GitHub-Seite",
+    "Last checked: {when}": "Zuletzt geprüft: {when}",
+    "Light": "Hell",
+    "Made by {who}": "Entwickelt von {who}",
+    "Privacy policy": "Datenschutzerklärung",
+    "Report a problem": "Problem melden",
+    "Settings": "Einstellungen",
+    "Theme": "Design",
+    "Version {v}": "Version {v}",
+    "never": "nie",
     "Cancel: {what} — {name}": "Abbrechen: {what} — {name}",
     "Cancel all ({n})": "Alle abbrechen ({n})",
     "Cancelled": "Abgebrochen",
@@ -578,3 +659,13 @@ T["de"] = {
         "<b>Ohne Ziehen:</b> Dateien wählen und <b>Strg+Alt+Leertaste</b> drücken oder Rechtsklick → <i>{app}</i>.<br><br>"
         "Ergebnisse werden neben dem Original gespeichert. Nichts verlässt Ihren PC."),
 }
+
+
+# --------------------------------------------------------------------------- more languages (locales/*.py)
+from locales import ru, zh, ja, pt, it, hi, fa, ur  # noqa: E402  (explicit imports so PyInstaller bundles them)
+
+for _code, _mod in (("ru", ru), ("zh", zh), ("ja", ja), ("pt", pt), ("it", it), ("hi", hi), ("fa", fa), ("ur", ur)):
+    T[_code] = _mod.T
+    LANGUAGES.append((_code, _mod.NAME))
+    if _mod.RTL:
+        RTL.add(_code)
