@@ -711,6 +711,7 @@ class Toast(QWidget):
         self.resized.emit()          # the manager re-stacks all cards
 
     def close_card(self):
+        self.wanted = False
         self.timer.stop()
         self.spin_timer.stop()
         self.hide()
@@ -762,8 +763,10 @@ class Toast(QWidget):
         else:
             self.spin_timer.stop()
         self._set_icon(kind)
-        self._place()
+        self.wanted = True          # counts in the stack even before Windows shows it
+        self._place()               # position first, so it never flashes in the middle of the screen
         self.show()
+        self.raise_()
         if ms:
             self.timer.start(ms)
 
@@ -823,7 +826,7 @@ class ToastManager(QObject):
         g = scr.availableGeometry()
         y = g.bottom() - 18
         for c in reversed(self.cards):          # newest at the bottom
-            if not c.isVisible():
+            if not getattr(c, "wanted", False):
                 continue
             c.adjustSize()
             x = g.left() + 18 if i18n.is_rtl() else g.right() - c.width() - 18
@@ -1098,15 +1101,73 @@ KEY_NAMES = ["Shift", "Ctrl", "Alt", "CapsLock"]
 
 
 class SettingsDialog(QDialog):
+    """Changing the language applies immediately (the window rebuilds itself in the new
+    language, keeping unsaved edits). Cancel switches the language back."""
+
     def __init__(self, app: "DragWheelApp"):
         super().__init__(None)
         self.app = app
-        self.setWindowTitle(tr("{app} Settings", app=APP))
         self.setWindowIcon(app_icon())
-        self.setStyleSheet(i18n.css(DIALOG_CSS))
         self.setMinimumWidth(500)
+        self.orig_lang = settings().value("language", "")
+        self.outer = QVBoxLayout(self)
+        self.outer.setContentsMargins(0, 0, 0, 0)
+        self.body = None
+        self._build(None)
+
+    # ------------------------------------------------------------------ state
+    def _state(self) -> dict:
+        return {
+            "keys": {m: cb.currentData() for m, cb in self.key_boxes.items()},
+            "detect": self.detect.currentIndex(),
+            "scroll": self.scroll.isChecked(),
+            "out": self.out.text(),
+            "startup": self.startup.isChecked(),
+            "menu": self.menu.isChecked(),
+            "hotkey": self.hotkey.isChecked(),
+            "auto_update": self.auto_update.isChecked(),
+        }
+
+    def _initial(self) -> dict:
         s = settings()
-        lay = QVBoxLayout(self)
+        return {
+            "keys": mode_keys(),
+            "detect": int(s.value("detect_any", 0)),
+            "scroll": s.value("scroll", "true") == "true",
+            "out": s.value("output_dir", ""),
+            "startup": winsys.startup_enabled(),
+            "menu": winsys.context_menu_enabled(),
+            "hotkey": s.value("hotkey", "true") == "true",
+            "auto_update": s.value("check_updates", "true") == "true",
+        }
+
+    def _language_changed(self, _idx):
+        code = self.lang.currentData()
+        if code == settings().value("language", ""):
+            return
+        state = self._state()
+        settings().setValue("language", code)
+        self.app.apply_language()
+        QTimer.singleShot(0, lambda: self._build(state))     # rebuild outside the combo's signal
+
+    def reject(self):
+        if settings().value("language", "") != self.orig_lang:   # Cancel undoes a language switch
+            settings().setValue("language", self.orig_lang)
+            self.app.apply_language()
+        super().reject()
+
+    # ------------------------------------------------------------------ UI
+    def _build(self, state):
+        st = state or self._initial()
+        self.setWindowTitle(tr("{app} Settings", app=APP))
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
+        if self.body is not None:
+            self.outer.removeWidget(self.body)
+            self.body.deleteLater()
+        self.body = QWidget(self)
+        self.outer.addWidget(self.body)
+        lay = QVBoxLayout(self.body)
 
         g0 = QGroupBox(tr("Language"))
         f0 = QFormLayout(g0)
@@ -1114,8 +1175,8 @@ class SettingsDialog(QDialog):
         self.lang.addItem(tr("System default"), "")
         for code, native in i18n.LANGUAGES:
             self.lang.addItem(native, code)
-        cur = s.value("language", "")
-        self.lang.setCurrentIndex(max(0, self.lang.findData(cur)))
+        self.lang.setCurrentIndex(max(0, self.lang.findData(settings().value("language", ""))))
+        self.lang.currentIndexChanged.connect(self._language_changed)
         f0.addRow(tr("App language"), self.lang)
         lay.addWidget(g0)
 
@@ -1126,22 +1187,22 @@ class SettingsDialog(QDialog):
             cb = QComboBox()
             for k in KEY_NAMES:
                 cb.addItem(tr(k), k)
-            cb.setCurrentIndex(KEY_NAMES.index(mode_keys()[m]))
+            cb.setCurrentIndex(KEY_NAMES.index(st["keys"][m]))
             f1.addRow(tr(MODE_LABEL[m]), cb)
             self.key_boxes[m] = cb
         self.detect = QComboBox()
         self.detect.addItems([tr("File drags only (recommended)"), tr("Any mouse drag")])
-        self.detect.setCurrentIndex(int(s.value("detect_any", 0)))
+        self.detect.setCurrentIndex(st["detect"])
         f1.addRow(tr("Trigger on"), self.detect)
         self.scroll = QCheckBox(tr("Scroll the mouse wheel while dragging to open the wheel and move between slices"))
-        self.scroll.setChecked(s.value("scroll", "true") == "true")
+        self.scroll.setChecked(st["scroll"])
         f1.addRow(self.scroll)
         lay.addWidget(g1)
 
         g2 = QGroupBox(tr("Output"))
         f2 = QFormLayout(g2)
         row = QHBoxLayout()
-        self.out = QLineEdit(s.value("output_dir", ""))
+        self.out = QLineEdit(st["out"])
         self.out.setPlaceholderText(tr("Next to the original file"))
         b = QPushButton(tr("Browse…"))
         b.clicked.connect(lambda: self.out.setText(QFileDialog.getExistingDirectory(self, tr("Output folder")) or self.out.text()))
@@ -1153,11 +1214,11 @@ class SettingsDialog(QDialog):
         g3 = QGroupBox("Windows")
         v3 = QVBoxLayout(g3)
         self.startup = QCheckBox(tr("Start {app} when I sign in", app=APP))
-        self.startup.setChecked(winsys.startup_enabled())
+        self.startup.setChecked(st["startup"])
         self.menu = QCheckBox(tr("Add {app} to the Explorer right-click menu and Send To", app=APP))
-        self.menu.setChecked(winsys.context_menu_enabled())
+        self.menu.setChecked(st["menu"])
         self.hotkey = QCheckBox(tr("Ctrl + Alt + Space opens the wheel for files selected in Explorer"))
-        self.hotkey.setChecked(s.value("hotkey", "true") == "true")
+        self.hotkey.setChecked(st["hotkey"])
         for w in (self.startup, self.menu, self.hotkey):
             v3.addWidget(w)
         lay.addWidget(g3)
@@ -1165,7 +1226,7 @@ class SettingsDialog(QDialog):
         g4 = QGroupBox(tr("Updates"))
         v4 = QVBoxLayout(g4)
         self.auto_update = QCheckBox(tr("Check for updates automatically (once a day)"))
-        self.auto_update.setChecked(s.value("check_updates", "true") == "true")
+        self.auto_update.setChecked(st["auto_update"])
         v4.addWidget(self.auto_update)
         row4 = QHBoxLayout()
         link = QLabel(f"<a style='color:#ffb347' href='{updater.REPO_URL}'>{updater.REPO_URL.replace('https://', '')}</a>")
@@ -1197,6 +1258,7 @@ class SettingsDialog(QDialog):
         bb.accepted.connect(self.save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+        self.adjustSize()
 
     def save(self):
         keys = {m: cb.currentData() for m, cb in self.key_boxes.items()}
@@ -1213,16 +1275,12 @@ class SettingsDialog(QDialog):
         s.setValue("check_updates", "true" if self.auto_update.isChecked() else "false")
         self.app.watcher.refresh_settings()
         engine.OUTPUT_DIR = self.out.text().strip() or None
-        new_lang = self.lang.currentData()
-        lang_changed = new_lang != s.value("language", "")
-        s.setValue("language", new_lang)
+        s.setValue("language", self.lang.currentData())
         try:
             winsys.set_startup(self.startup.isChecked())
             winsys.set_context_menu(self.menu.isChecked())
         except Exception as e:
             QMessageBox.warning(self, APP, tr("Couldn't update Windows integration:") + f"\n{e}")
-        if lang_changed:
-            self.app.apply_language()
         self.accept()
 
 
