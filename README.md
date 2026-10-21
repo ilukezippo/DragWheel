@@ -53,7 +53,9 @@ All keys can be changed in **Settings** (tray icon → Settings).
 - **Archive converter:** turn any ZIP, 7Z, RAR, TAR, TAR.GZ, TAR.BZ2 or TAR.XZ into any other, or compress folders straight into one
 - **Float:** pin any file on top of all windows, drag it anywhere, scroll to resize it, and drag it into another app later
 - **Six languages:** English, العربية (full right-to-left layout), Français, Español, Türkçe, Deutsch
-- **100% offline.** No accounts, no uploads, no telemetry
+- **Cancel any time:** every conversion shows a notification with a **Cancel** button; partial files are cleaned up
+- **Updates built in:** checks this GitHub page once a day (can be turned off) and offers *Download & install*
+- **100% offline conversions.** No accounts, no uploads, no telemetry. The only connection is the optional update check
 
 <table>
   <tr>
@@ -78,15 +80,15 @@ All keys can be changed in **Settings** (tray icon → Settings).
 
 | Category | Opens | Converts to | Tools |
 |---|---|---|---|
-| **Images** | JPG, PNG, WebP, HEIC, AVIF, TIFF, BMP, GIF, ICO, SVG | PNG, JPG, WebP, HEIC, AVIF, TIFF, BMP, GIF, ICO, PDF | Compress, Crop & Resize, rotate, flip, grayscale, strip metadata, combine into PDF |
-| **Video** | MP4, MOV, MKV, WebM, AVI, WMV, M4V, FLV, MPG, 3GP, TS | MP4, MOV, MKV, WebM, AVI, WMV, GIF, MP3/M4A (audio only) | Compress, 720p, trim, mute, rotate, snapshot, 2× speed, merge |
-| **Audio** | MP3, M4A, WAV, FLAC, OGG, Opus, AIFF, WMA, AAC | MP3, M4A, WAV, FLAC, OGG, Opus, AIFF, WMA | Compress, trim, normalize loudness, mono, fade in/out, merge |
+| **Images** | JPG, PNG, WebP, HEIC, AVIF, TIFF, BMP, GIF, ICO, SVG, PSD, TGA, DDS, JPEG 2000, PCX, PPM, QOI, ICNS | PNG, JPG, WebP, HEIC, AVIF, TIFF, BMP, GIF, ICO, TGA, JPEG 2000, ICNS, PDF | Compress, Crop & Resize, rotate, flip, grayscale, strip metadata, combine into PDF |
+| **Video** | MP4, MOV, MKV, WebM, AVI, WMV, M4V, FLV, MPG, 3GP, TS, MTS/M2TS, VOB, OGV, MXF, F4V, ASF | MP4, MP4 H.265 (smaller), MOV, MKV, WebM, AVI, WMV, GIF, MP3/M4A (audio only) | Compress, 720p, trim, mute, rotate, snapshot, 2× speed, merge |
+| **Audio** | MP3, M4A, WAV, FLAC, OGG, Opus, AIFF, WMA, AAC, AC3, MKA, CAF, M4B, AMR, AU, DTS | MP3, M4A, WAV, FLAC, OGG, Opus, AIFF, WMA, AC3 | Compress, trim, normalize loudness, mono, fade in/out, merge |
 | **PDF** | PDF | DOCX, PNG, JPG, TXT, Markdown, HTML | Compress, split pages, extract pages, rotate, extract images, password, merge |
 | **Documents** | DOCX, DOC, RTF, ODT, Markdown, TXT, HTML | PDF, DOCX, ODT, RTF, TXT, HTML, Markdown | |
 | **Slides** | PPTX, PPT, ODP | PDF, PNG, JPG, PPTX, ODP | |
-| **Spreadsheets** | XLSX, XLS, ODS, CSV, TSV | XLSX, CSV, TSV, JSON, HTML, PDF, ODS | |
-| **Subtitles** | SRT, VTT | VTT/SRT, TXT | |
-| **E-books** | EPUB | PDF, TXT | |
+| **Spreadsheets** | XLSX, XLS, ODS, CSV, TSV | XLSX, CSV, TSV, JSON, HTML, Markdown table, PDF, ODS | |
+| **Subtitles** | SRT, VTT, ASS/SSA | SRT, VTT, ASS, TXT | |
+| **E-books & comics** | EPUB, MOBI, FB2, CBZ, XPS/OXPS | PDF, TXT, Markdown, HTML (+ PNG/JPG pages for CBZ/XPS) | |
 | **Archives** | ZIP, 7Z, RAR, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, ISO, CAB | Extract, ZIP, 7Z, RAR, TAR, TAR.GZ, TAR.BZ2, TAR.XZ | |
 | **Folders / any files** | | ZIP, 7Z, RAR, TAR, TAR.GZ, TAR.BZ2, TAR.XZ | |
 
@@ -98,7 +100,7 @@ All keys can be changed in **Settings** (tray icon → Settings).
 
 ## Install
 
-1. Download **`DragWheel-Setup-1.0.0.exe`** from [Releases](../../releases/latest).
+1. Download **`DragWheel-Setup-1.1.0.exe`** from [Releases](../../releases/latest).
 2. Run it. It asks for administrator rights and installs for all users into `C:\Program Files\DragWheel`.
 3. Choose your options: Explorer right-click menu + Send To, start with Windows, desktop shortcut. The installer is available in English and Arabic.
 
@@ -121,7 +123,7 @@ build.bat    :: builds dist\DragWheel\DragWheel.exe, plus the installer if NSIS 
 
 To get NSIS for the installer: `winget install NSIS.NSIS`.
 
-Every push to `main` builds the installer and a portable zip with GitHub Actions. Pushing a tag like `v1.0.0` publishes them as a release.
+Every push to `main` builds the installer and a portable zip with GitHub Actions and publishes them as release `v<VERSION>` (the `VERSION` in `dragwheel.pyw`). Bump the version to publish a new release; the app's update check picks it up.
 
 ### Project layout
 
@@ -130,6 +132,7 @@ dragwheel.pyw   app: wheel, tray, toast, float window, settings, drag watcher
 editor.py       crop & resize editor
 engine.py       every conversion and tool (no UI, usable from your own scripts)
 i18n.py         translations; add a language by adding one dictionary
+updater.py      update check against GitHub releases
 winsys.py       Windows plumbing: input state, mouse-wheel hook, Explorer selection, registry
 installer/      NSIS installer script and artwork
 ```
@@ -148,6 +151,7 @@ engine.run_op(ops["to_jpg"], ["photo.heic"])        # -> photo.jpg
 - When a file drag is in progress (Explorer shows its drag image) and you tap a wheel key or scroll, the wheel appears under the cursor. DragWheel asks Explorer which files are being dragged, and the wheel window is also a normal drop target.
 - The drop always counts as a **copy**, so Explorer never moves or deletes your original.
 - Conversions run in the background, and a notification shows the result with a **Show** button.
+- Update check: one request to `api.github.com/repos/ilukezippo/DragWheel/releases/latest` per day, only if enabled.
 - A log is kept at `%LOCALAPPDATA%\DragWheel\dragwheel.log` to help with troubleshooting.
 
 ## Known limits

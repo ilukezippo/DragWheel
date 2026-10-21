@@ -253,7 +253,8 @@ class CropResizeDialog(QDialog):
         self.setWindowTitle(f"DragWheel — {tr('Crop & Resize')} — {Path(path).name}")
         if icon:
             self.setWindowIcon(icon)
-        self.setStyleSheet(css + EDITOR_CSS)
+        import i18n
+        self.setStyleSheet(i18n.css(css + EDITOR_CSS))
         self.resize(1060, 700)
 
         src = engine.open_image(path)

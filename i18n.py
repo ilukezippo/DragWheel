@@ -28,6 +28,16 @@ def is_rtl() -> bool:
     return _lang in RTL
 
 
+def ui_font() -> str:
+    """Font family for the interface: Arial for Arabic, Segoe UI otherwise."""
+    return "Arial" if _lang == "ar" else "Segoe UI"
+
+
+def css(sheet: str) -> str:
+    """Swap the default font in a stylesheet for the current language's font."""
+    return sheet.replace("'Segoe UI'", f"'{ui_font()}'")
+
+
 def tr(text: str, **kw) -> str:
     s = T.get(_lang, {}).get(text) or EN.get(text) or text
     if kw:
@@ -56,6 +66,33 @@ T: dict[str, dict[str, str]] = {}
 
 # --------------------------------------------------------------------------- Arabic
 T["ar"] = {
+    "Cancelled": "تم الإلغاء",
+    "Cancelling…": "جارٍ الإلغاء…",
+    "Check for updates automatically (once a day)": "التحقق من التحديثات تلقائيًا (مرة يوميًا)",
+    "Check for updates…": "التحقق من التحديثات…",
+    "Check now": "تحقق الآن",
+    "Checking for updates…": "جارٍ التحقق من التحديثات…",
+    "Couldn't check for updates": "تعذّر التحقق من التحديثات",
+    "Couldn't download the update": "تعذّر تنزيل التحديث",
+    "Couldn't start the installer": "تعذّر تشغيل المثبّت",
+    "Download && install": "تنزيل وتثبيت",
+    "Downloading update…": "جارٍ تنزيل التحديث…",
+    "E-book": "كتاب إلكتروني",
+    "Installing update…": "جارٍ تثبيت التحديث…",
+    "Later": "لاحقًا",
+    "Nothing was saved.": "لم يتم حفظ أي شيء.",
+    "Open release page": "فتح صفحة الإصدار",
+    "Skip this version": "تخطي هذا الإصدار",
+    "The only connection is the update check to GitHub.": "الاتصال الوحيد هو التحقق من التحديثات عبر GitHub.",
+    "The update was not downloaded.": "لم يتم تنزيل التحديث.",
+    "Updates": "التحديثات",
+    "You have {v}.": "لديك الإصدار {v}.",
+    "You're up to date": "لديك أحدث إصدار",
+    "smaller file": "حجم أصغر",
+    "{app} update": "تحديث {app}",
+    "Finish the steps in the setup window.": "أكمل الخطوات في نافذة التثبيت.",
+    "{app} {v} is available": "يتوفر {app} {v}",
+    "{app} {v} is the latest version.": "{app} {v} هو أحدث إصدار.",
     "Scroll the mouse wheel while dragging to open the wheel and move between slices": "مرّر عجلة الفأرة أثناء السحب لفتح العجلة والتنقل بين الأقسام",
     "HELP_SCROLL": "<b>عجلة الفأرة:</b> أثناء السحب، مرّر لفتح العجلة، واستمر بالتمرير للتنقل بين الأقسام، ثم أفلت لتطبيق القسم المحدد. Esc للإلغاء.",
     "Couldn't read the dragged file": "يتعذّر قراءة الملف المسحوب",
@@ -75,7 +112,7 @@ T["ar"] = {
     "Split pages": "تقسيم الصفحات", "Extract pages…": "استخراج صفحات…", "Extract images": "استخراج الصور",
     "Password…": "كلمة مرور…", "Zip": "ضغط ZIP", "Extract": "فك الضغط", "Markdown": "Markdown",
     "Copy": "نسخ", "Copy path": "نسخ المسار", "Move to…": "نقل إلى…", "Copy to…": "نسخ إلى…",
-    "Terminal": "الطرفية", "Float": "تثبيت عائم", "Show": "إظهار", "Open with…": "فتح بواسطة…",
+    "Terminal": "Terminal", "Float": "تثبيت عائم", "Show": "إظهار", "Open with…": "فتح بواسطة…",
     "to clipboard": "إلى الحافظة", "open here": "فتح هنا", "in Explorer": "في المستكشف", "audio only": "الصوت فقط",
     "No conversions": "لا توجد تحويلات", "try Tools or Actions": "جرّب الأدوات أو الإجراءات",
     "Cancel": "إلغاء", "drop here": "أفلت هنا", "move to read file": "حرّك لقراءة الملف",
@@ -131,7 +168,7 @@ T["ar"] = {
         "<b>اسحب أي ملف</b> في المستكشف أو على سطح المكتب، وأثناء الضغط على الفأرة:<br><br>"
         "• اضغط <b>{convert}</b> لعجلة التحويل<br>"
         "• اضغط <b>{tool}</b> لأدوات الملفات (ضغط، قص، تقطيع، دمج…)<br>"
-        "• اضغط <b>{action}</b> للإجراءات (نسخ، نقل، الطرفية، تثبيت عائم…)<br><br>"
+        "• اضغط <b>{action}</b> للإجراءات (نسخ، نقل، Terminal، تثبيت عائم…)<br><br>"
         "أفلت الملف على أحد الأقسام لتطبيقه، أو في المنتصف للإلغاء. مرّر فوق الأزرار أسفل العجلة للتبديل.<br><br>"
         "<b>بدون سحب:</b> حدّد الملفات واضغط <b>Ctrl+Alt+Space</b>، أو انقر بزر الفأرة الأيمن ← <i>{app}</i>. "
         "استخدم الأسهم و Enter، و Tab للتبديل بين العجلات، و Esc للإلغاء.<br><br>"
@@ -140,6 +177,33 @@ T["ar"] = {
 
 # --------------------------------------------------------------------------- French
 T["fr"] = {
+    "Cancelled": "Annulé",
+    "Cancelling…": "Annulation…",
+    "Check for updates automatically (once a day)": "Rechercher les mises à jour automatiquement (une fois par jour)",
+    "Check for updates…": "Rechercher des mises à jour…",
+    "Check now": "Vérifier",
+    "Checking for updates…": "Recherche de mises à jour…",
+    "Couldn't check for updates": "Impossible de vérifier les mises à jour",
+    "Couldn't download the update": "Impossible de télécharger la mise à jour",
+    "Couldn't start the installer": "Impossible de lancer l'installation",
+    "Download && install": "Télécharger et installer",
+    "Downloading update…": "Téléchargement de la mise à jour…",
+    "E-book": "Livre numérique",
+    "Installing update…": "Installation de la mise à jour…",
+    "Later": "Plus tard",
+    "Nothing was saved.": "Rien n'a été enregistré.",
+    "Open release page": "Ouvrir la page de la version",
+    "Skip this version": "Ignorer cette version",
+    "The only connection is the update check to GitHub.": "La seule connexion est la vérification des mises à jour sur GitHub.",
+    "The update was not downloaded.": "La mise à jour n'a pas été téléchargée.",
+    "Updates": "Mises à jour",
+    "You have {v}.": "Vous avez la {v}.",
+    "You're up to date": "Vous êtes à jour",
+    "smaller file": "fichier plus léger",
+    "{app} update": "Mise à jour de {app}",
+    "Finish the steps in the setup window.": "Terminez les étapes dans la fenêtre d'installation.",
+    "{app} {v} is available": "{app} {v} est disponible",
+    "{app} {v} is the latest version.": "{app} {v} est la dernière version.",
     "Scroll the mouse wheel while dragging to open the wheel and move between slices": "Faire défiler la molette pendant le glisser pour ouvrir la roue et changer de part",
     "HELP_SCROLL": "<b>Molette :</b> pendant le glisser, faites défiler pour ouvrir la roue, continuez pour changer de part, puis relâchez pour appliquer. Échap annule.",
     "Couldn't read the dragged file": "Impossible de lire le fichier glissé",
@@ -212,6 +276,33 @@ T["fr"] = {
 
 # --------------------------------------------------------------------------- Spanish
 T["es"] = {
+    "Cancelled": "Cancelado",
+    "Cancelling…": "Cancelando…",
+    "Check for updates automatically (once a day)": "Buscar actualizaciones automáticamente (una vez al día)",
+    "Check for updates…": "Buscar actualizaciones…",
+    "Check now": "Comprobar",
+    "Checking for updates…": "Buscando actualizaciones…",
+    "Couldn't check for updates": "No se pudieron buscar actualizaciones",
+    "Couldn't download the update": "No se pudo descargar la actualización",
+    "Couldn't start the installer": "No se pudo iniciar el instalador",
+    "Download && install": "Descargar e instalar",
+    "Downloading update…": "Descargando actualización…",
+    "E-book": "Libro electrónico",
+    "Installing update…": "Instalando actualización…",
+    "Later": "Más tarde",
+    "Nothing was saved.": "No se guardó nada.",
+    "Open release page": "Abrir página de la versión",
+    "Skip this version": "Omitir esta versión",
+    "The only connection is the update check to GitHub.": "La única conexión es la búsqueda de actualizaciones en GitHub.",
+    "The update was not downloaded.": "La actualización no se descargó.",
+    "Updates": "Actualizaciones",
+    "You have {v}.": "Tienes la {v}.",
+    "You're up to date": "Estás al día",
+    "smaller file": "archivo más pequeño",
+    "{app} update": "Actualización de {app}",
+    "Finish the steps in the setup window.": "Completa los pasos en la ventana de instalación.",
+    "{app} {v} is available": "{app} {v} está disponible",
+    "{app} {v} is the latest version.": "{app} {v} es la última versión.",
     "Scroll the mouse wheel while dragging to open the wheel and move between slices": "Girar la rueda del ratón al arrastrar para abrir la rueda y moverse entre secciones",
     "HELP_SCROLL": "<b>Rueda del ratón:</b> mientras arrastras, gira para abrir la rueda, sigue girando para moverte entre secciones y suelta para aplicar la resaltada. Esc cancela.",
     "Couldn't read the dragged file": "No se pudo leer el archivo arrastrado",
@@ -284,6 +375,33 @@ T["es"] = {
 
 # --------------------------------------------------------------------------- Turkish
 T["tr"] = {
+    "Cancelled": "İptal edildi",
+    "Cancelling…": "İptal ediliyor…",
+    "Check for updates automatically (once a day)": "Güncellemeleri otomatik denetle (günde bir kez)",
+    "Check for updates…": "Güncellemeleri denetle…",
+    "Check now": "Şimdi denetle",
+    "Checking for updates…": "Güncellemeler denetleniyor…",
+    "Couldn't check for updates": "Güncellemeler denetlenemedi",
+    "Couldn't download the update": "Güncelleme indirilemedi",
+    "Couldn't start the installer": "Kurulum başlatılamadı",
+    "Download && install": "İndir ve kur",
+    "Downloading update…": "Güncelleme indiriliyor…",
+    "E-book": "E-kitap",
+    "Installing update…": "Güncelleme kuruluyor…",
+    "Later": "Daha sonra",
+    "Nothing was saved.": "Hiçbir şey kaydedilmedi.",
+    "Open release page": "Sürüm sayfasını aç",
+    "Skip this version": "Bu sürümü atla",
+    "The only connection is the update check to GitHub.": "Tek bağlantı GitHub'daki güncelleme denetimidir.",
+    "The update was not downloaded.": "Güncelleme indirilmedi.",
+    "Updates": "Güncellemeler",
+    "You have {v}.": "Sizdeki sürüm: {v}.",
+    "You're up to date": "Güncelsiniz",
+    "smaller file": "daha küçük dosya",
+    "{app} update": "{app} güncellemesi",
+    "Finish the steps in the setup window.": "Kurulum penceresindeki adımları tamamlayın.",
+    "{app} {v} is available": "{app} {v} yayımlandı",
+    "{app} {v} is the latest version.": "{app} {v} en son sürüm.",
     "Scroll the mouse wheel while dragging to open the wheel and move between slices": "Sürüklerken fare tekerleğini çevirerek tekerleği aç ve dilimler arasında geç",
     "HELP_SCROLL": "<b>Fare tekerleği:</b> sürüklerken tekerleği açmak için kaydırın, dilimler arasında geçmek için kaydırmaya devam edin, vurgulananı uygulamak için bırakın. Esc iptal eder.",
     "Couldn't read the dragged file": "Sürüklenen dosya okunamadı",
@@ -355,6 +473,33 @@ T["tr"] = {
 
 # --------------------------------------------------------------------------- German
 T["de"] = {
+    "Cancelled": "Abgebrochen",
+    "Cancelling…": "Wird abgebrochen…",
+    "Check for updates automatically (once a day)": "Automatisch nach Updates suchen (einmal täglich)",
+    "Check for updates…": "Nach Updates suchen…",
+    "Check now": "Jetzt prüfen",
+    "Checking for updates…": "Suche nach Updates…",
+    "Couldn't check for updates": "Update-Prüfung fehlgeschlagen",
+    "Couldn't download the update": "Update konnte nicht geladen werden",
+    "Couldn't start the installer": "Installer konnte nicht gestartet werden",
+    "Download && install": "Herunterladen und installieren",
+    "Downloading update…": "Update wird geladen…",
+    "E-book": "E-Book",
+    "Installing update…": "Update wird installiert…",
+    "Later": "Später",
+    "Nothing was saved.": "Es wurde nichts gespeichert.",
+    "Open release page": "Release-Seite öffnen",
+    "Skip this version": "Diese Version überspringen",
+    "The only connection is the update check to GitHub.": "Die einzige Verbindung ist die Update-Prüfung bei GitHub.",
+    "The update was not downloaded.": "Das Update wurde nicht geladen.",
+    "Updates": "Updates",
+    "You have {v}.": "Installiert: {v}.",
+    "You're up to date": "Alles aktuell",
+    "smaller file": "kleinere Datei",
+    "{app} update": "{app}-Update",
+    "Finish the steps in the setup window.": "Schließen Sie die Schritte im Setup-Fenster ab.",
+    "{app} {v} is available": "{app} {v} ist verfügbar",
+    "{app} {v} is the latest version.": "{app} {v} ist die neueste Version.",
     "Scroll the mouse wheel while dragging to open the wheel and move between slices": "Beim Ziehen mit dem Mausrad das Rad öffnen und zwischen Segmenten wechseln",
     "HELP_SCROLL": "<b>Mausrad:</b> beim Ziehen scrollen, um das Rad zu öffnen, weiter scrollen, um zwischen Segmenten zu wechseln, dann loslassen, um das markierte anzuwenden. Esc bricht ab.",
     "Couldn't read the dragged file": "Gezogene Datei konnte nicht gelesen werden",

@@ -38,24 +38,24 @@ NO_WINDOW = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW
 # ----------------------------------------------------------------------------
 EXT_CATEGORY = {
     # images
-    **{e: "image" for e in "jpg jpeg png webp heic heif tif tiff avif bmp gif ico svg".split()},
+    **{e: "image" for e in "jpg jpeg png webp heic heif tif tiff avif bmp gif ico svg psd tga dds jp2 j2k jpx pcx ppm pgm pbm qoi icns".split()},
     # video
-    **{e: "video" for e in "mp4 mov mkv webm avi wmv m4v flv mpg mpeg 3gp ts".split()},
+    **{e: "video" for e in "mp4 mov mkv webm avi wmv m4v flv mpg mpeg 3gp ts mts m2ts vob ogv mxf f4v asf".split()},
     # audio
-    **{e: "audio" for e in "mp3 m4a wav flac ogg oga opus aiff aif wma aac".split()},
+    **{e: "audio" for e in "mp3 m4a wav flac ogg oga opus aiff aif wma aac ac3 mka caf m4b amr au dts".split()},
     "pdf": "pdf",
     **{e: "document" for e in "docx doc rtf odt md markdown txt html htm".split()},
     **{e: "slides" for e in "pptx ppt odp key".split()},
     **{e: "spreadsheet" for e in "xlsx xlsm xls ods csv tsv".split()},
-    **{e: "subtitle" for e in "srt vtt".split()},
-    "epub": "ebook",
+    **{e: "subtitle" for e in "srt vtt ass ssa".split()},
+    **{e: "ebook" for e in "epub mobi fb2 cbz xps oxps".split()},
     **{e: "archive" for e in "zip tar gz tgz bz2 tbz2 xz txz 7z rar iso cab".split()},
 }
 
 CATEGORY_LABEL = {
     "image": "Image", "video": "Video", "audio": "Audio", "pdf": "PDF",
     "document": "Document", "slides": "Slides", "spreadsheet": "Spreadsheet",
-    "subtitle": "Subtitles", "ebook": "EPUB", "archive": "Archive",
+    "subtitle": "Subtitles", "ebook": "E-book", "archive": "Archive",
     "folder": "Folder", "mixed": "Files", "other": "File",
 }
 
@@ -88,9 +88,57 @@ class ConversionError(Exception):
     pass
 
 
+# ----------------------------------------------------------------------------
+# Cancellation: each job runs with a CancelToken (thread-local). Cancel kills any
+# external process of the job, loops call check_cancel(), and outputs are deleted.
+# ----------------------------------------------------------------------------
+import threading
+
+_ctx = threading.local()
+
+
+class Cancelled(Exception):
+    pass
+
+
+class CancelToken:
+    def __init__(self):
+        self.cancelled = False
+        self.procs: list[subprocess.Popen] = []
+        self.paths: list[Path] = []        # every output path handed out for this job
+        self._lock = threading.Lock()
+
+    def cancel(self):
+        self.cancelled = True
+        with self._lock:
+            for p in self.procs:
+                try:
+                    if p.poll() is None:
+                        p.kill()
+                except Exception:
+                    pass
+
+
+def _token() -> CancelToken | None:
+    return getattr(_ctx, "token", None)
+
+
+def check_cancel():
+    t = _token()
+    if t and t.cancelled:
+        raise Cancelled()
+
+
+def _remember(path: Path) -> Path:
+    t = _token()
+    if t is not None:
+        t.paths.append(path)
+    return path
+
+
 def unique_path(path: Path) -> Path:
     if not path.exists():
-        return path
+        return _remember(path)
     name = path.name
     suf = ""
     for multi in (".tar.gz", ".tar.bz2", ".tar.xz"):
@@ -104,7 +152,7 @@ def unique_path(path: Path) -> Path:
     while True:
         cand = path.with_name(f"{stem} ({i}){suf}")
         if not cand.exists():
-            return cand
+            return _remember(cand)
         i += 1
 
 
@@ -126,12 +174,38 @@ def out_dir_for(src: str | Path, tag: str) -> Path:
     return unique_path(_target_dir(src) / f"{src.stem} {tag}")
 
 
-def run(cmd: list[str]) -> None:
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          creationflags=NO_WINDOW)
-    if proc.returncode != 0:
-        tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-4:]
-        raise ConversionError("\n".join(tail) or f"{cmd[0]} failed")
+def run(cmd: list[str], cwd: str | None = None, ok_codes=(0,)) -> None:
+    """Run an external tool; killed immediately if the job is cancelled."""
+    check_cancel()
+    import tempfile
+    t = _token()
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err, stdin=subprocess.DEVNULL,
+                                cwd=cwd, creationflags=NO_WINDOW)
+        if t is not None:
+            with t._lock:
+                t.procs.append(proc)
+        try:
+            while True:
+                try:
+                    proc.wait(timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    if t is not None and t.cancelled:
+                        proc.kill()
+                        proc.wait()
+                        raise Cancelled()
+        finally:
+            if t is not None:
+                with t._lock:
+                    if proc in t.procs:
+                        t.procs.remove(proc)
+        if t is not None and t.cancelled:
+            raise Cancelled()
+        if proc.returncode not in ok_codes:
+            err.seek(0)
+            tail = err.read().decode("utf-8", "replace").strip().splitlines()[-4:]
+            raise ConversionError("\n".join(tail) or f"{Path(cmd[0]).name} failed")
 
 
 def parse_time(t: str) -> str:
@@ -190,6 +264,7 @@ AUDIO_ARGS = {
     "opus": ["-vn", "-c:a", "libopus", "-b:a", "128k"],
     "aiff": ["-vn", "-c:a", "pcm_s16be"],
     "wma": ["-vn", "-c:a", "wmav2", "-b:a", "192k"],
+    "ac3": ["-vn", "-c:a", "ac3", "-b:a", "448k"],
 }
 
 
@@ -201,7 +276,12 @@ def video_to(fmt):
 
 def audio_to(fmt):
     def f(src, p):
-        return ff(src, out_for(src, fmt), *AUDIO_ARGS[fmt])
+        try:
+            return ff(src, out_for(src, fmt), *AUDIO_ARGS[fmt])
+        except ConversionError as e:
+            if "does not contain any stream" in str(e) or "matches no streams" in str(e):
+                raise ConversionError("This file has no audio track") from None
+            raise
     return f
 
 
@@ -209,6 +289,13 @@ def video_to_gif(src, p):
     out = out_for(src, "gif")
     vf = "fps=12,scale='min(640,iw)':-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4"
     return ff(src, out, "-vf", vf, "-loop", "0")
+
+
+def video_to_hevc(src, p):
+    """H.265 in MP4: about half the size of H.264 at the same quality (plays on Windows 10/11, phones)."""
+    return ff(src, out_for(src, "mp4", "hevc"), "-c:v", "libx265", "-preset", "medium", "-crf", "26",
+              "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+              "-x265-params", "log-level=error")
 
 
 def video_compress(src, p):
@@ -350,23 +437,28 @@ SAVE_KW = {
     "heic": dict(format="HEIF", quality=85),
     "ico": dict(format="ICO", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]),
     "pdf": dict(format="PDF", resolution=150),
+    "tga": dict(format="TGA", compression="tga_rle"),
+    "jp2": dict(format="JPEG2000", quality_mode="dB", quality_layers=[38]),
+    "icns": dict(format="ICNS"),
 }
 
 
 def save_image(img, out: Path, fmt: str, **override):
     kw = {**SAVE_KW[fmt], **override}
-    if fmt in ("jpg", "bmp", "pdf") or (fmt == "heic" and img.mode not in ("RGB", "RGBA")):
+    if fmt in ("jpg", "bmp", "pdf", "jp2") or (fmt == "heic" and img.mode not in ("RGB", "RGBA")):
         img = _flatten(img)
     elif fmt == "gif":
         img = img.convert("RGBA") if img.mode not in ("P", "L") else img
     elif img.mode not in ("RGB", "RGBA", "L", "LA"):
         img = img.convert("RGBA")
-    if fmt == "ico":
+    if fmt in ("ico", "icns"):
         side = max(img.size)
         Image, _ = _pil()
         sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
         sq.paste(img.convert("RGBA"), ((side - img.width) // 2, (side - img.height) // 2))
         img = sq
+        if fmt == "icns" and side > 1024:
+            img = img.resize((1024, 1024), Image.LANCZOS)
     img.save(str(out), **kw)
     return out
 
@@ -492,6 +584,7 @@ def pdf_to_images(fmt, dpi=200):
         folder.mkdir()
         width = len(str(doc.page_count))
         for i, page in enumerate(doc, 1):
+            check_cancel()
             target = folder / f"{Path(src).stem} - {str(i).zfill(width)}.{fmt}"
             pix = page.get_pixmap(dpi=dpi)
             pix.save(str(target), jpg_quality=92) if fmt == "jpg" else pix.save(str(target))
@@ -581,6 +674,7 @@ def pdf_split(src, p):
     folder.mkdir()
     width = len(str(doc.page_count))
     for i in range(doc.page_count):
+        check_cancel()
         one = mu.open()
         one.insert_pdf(doc, from_page=i, to_page=i)
         one.save(str(folder / f"{Path(src).stem} - {str(i + 1).zfill(width)}.pdf"))
@@ -1027,6 +1121,29 @@ def sheet_to_html(src, p):
     return out
 
 
+def sheet_to_markdown(src, p):
+    def cell(v):
+        return str(_clean(v)).replace("|", "\\|").replace("\n", " ")
+    parts = []
+    sheets = _read_rows(src)
+    for title, rows in sheets:
+        rows = [r for r in rows if any(v not in (None, "") for v in r)]
+        if len(sheets) > 1:
+            parts.append(f"## {title}\n")
+        if not rows:
+            continue
+        width = max(len(r) for r in rows)
+        rows = [list(r) + [""] * (width - len(r)) for r in rows]
+        parts.append("| " + " | ".join(cell(v) for v in rows[0]) + " |")
+        parts.append("|" + "---|" * width)
+        for r in rows[1:]:
+            parts.append("| " + " | ".join(cell(v) for v in r) + " |")
+        parts.append("")
+    out = out_for(src, "md")
+    out.write_text("\n".join(parts), encoding="utf-8")
+    return out
+
+
 def sheet_to_pdf(src, p):
     if office_available():
         try:
@@ -1070,9 +1187,25 @@ def vtt_to_srt(src, p):
     return out
 
 
+def subs_ffmpeg(fmt):
+    def f(src, p):
+        return ff(src, out_for(src, fmt))
+    return f
+
+
 def subs_to_txt(src, p):
     txt = _read_text(src).replace("\r\n", "\n")
     keep = []
+    if ext_of(src) in ("ass", "ssa"):
+        for line in txt.split("\n"):
+            if line.startswith("Dialogue:"):
+                t = line.split(",", 9)[-1]
+                t = re.sub(r"\{[^}]*\}", "", t).replace("\\N", "\n").replace("\\n", "\n").strip()
+                if t and (not keep or keep[-1] != t):
+                    keep.append(t)
+        out = out_for(src, "txt")
+        out.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        return out
     for line in txt.split("\n"):
         s = line.strip()
         if not s or s == "WEBVTT" or s.isdigit() or "-->" in s:
@@ -1163,7 +1296,9 @@ def _extract_into(src: Path, dest: Path):
         with zipfile.ZipFile(src) as z:
             for m in z.namelist():
                 _safe(dest, m)
-            z.extractall(dest)
+            for m in z.infolist():
+                check_cancel()
+                z.extract(m, dest)
         return
     if fmt == "7z":
         import py7zr
@@ -1247,6 +1382,7 @@ def _write_archive(items: list[Path], root: Path, fmt: str, out: Path) -> Path:
                     if it.is_dir():
                         z.write(it, it.relative_to(root))
                         for f in sorted(it.rglob("*")):
+                            check_cancel()
                             z.write(f, f.relative_to(root))
                     else:
                         z.write(it, it.relative_to(root))
@@ -1254,22 +1390,26 @@ def _write_archive(items: list[Path], root: Path, fmt: str, out: Path) -> Path:
             import py7zr
             with py7zr.SevenZipFile(tmp, "w") as z:
                 for it in items:
-                    z.writeall(it, str(it.relative_to(root))) if it.is_dir() else z.write(it, str(it.relative_to(root)))
+                    if it.is_dir():
+                        for f in [it, *sorted(it.rglob("*"))]:
+                            check_cancel()
+                            z.write(f, str(f.relative_to(root)))
+                    else:
+                        check_cancel()
+                        z.write(it, str(it.relative_to(root)))
         elif fmt.startswith("tar"):
             mode = {"tar": "w", "tar.gz": "w:gz", "tar.bz2": "w:bz2", "tar.xz": "w:xz"}[fmt]
             with tarfile.open(tmp, mode) as t:
                 for it in items:
-                    t.add(it, arcname=str(it.relative_to(root)))
+                    check_cancel()
+                    t.add(it, arcname=str(it.relative_to(root)),
+                          filter=lambda ti: (check_cancel(), ti)[1])
         elif fmt == "rar":
             exe = winrar("Rar.exe")
             if not exe:
                 raise ConversionError("Creating RAR files needs WinRAR installed")
             rel = [str(it.relative_to(root)) for it in items]
-            proc = subprocess.run([exe, "a", "-r", "-idq", "-y", str(tmp), *rel],
-                                  cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  creationflags=NO_WINDOW)
-            if proc.returncode not in (0, 1):
-                raise ConversionError(proc.stderr.decode("utf-8", "replace")[-300:] or "rar failed")
+            run([exe, "a", "-r", "-idq", "-y", str(tmp), *rel], cwd=str(root), ok_codes=(0, 1))
             # Rar.exe appends .rar when the name doesn't end with it
             if not tmp.exists() and Path(str(tmp) + ".rar").exists():
                 Path(str(tmp) + ".rar").rename(tmp)
@@ -1342,14 +1482,15 @@ class Op:
     ui: str = ""                     # "crop" -> the app opens the crop & resize editor first
 
 
-IMAGE_OUT = ["png", "jpg", "webp", "heic", "avif", "tiff", "bmp", "gif", "ico", "pdf"]
+IMAGE_OUT = ["png", "jpg", "webp", "heic", "avif", "tiff", "bmp", "gif", "ico", "tga", "jp2", "icns", "pdf"]
 VIDEO_OUT = ["mp4", "mov", "mkv", "webm", "avi", "wmv"]
-AUDIO_OUT = ["mp3", "m4a", "wav", "flac", "ogg", "opus", "aiff", "wma"]
+AUDIO_OUT = ["mp3", "m4a", "wav", "flac", "ogg", "opus", "aiff", "wma", "ac3"]
+SUB_OUT = ["srt", "vtt", "ass"]
 
 
 def _norm(e):
     return {"jpeg": "jpg", "tif": "tiff", "heif": "heic", "htm": "html", "markdown": "md",
-            "aif": "aiff", "oga": "ogg", "m4v": "mp4"}.get(e, e)
+            "aif": "aiff", "oga": "ogg", "m4v": "mp4", "j2k": "jp2", "jpx": "jp2", "ssa": "ass"}.get(e, e)
 
 
 def conversions(paths: list[str]) -> list[Op]:
@@ -1367,6 +1508,7 @@ def conversions(paths: list[str]) -> list[Op]:
     elif cat == "video":
         for f in VIDEO_OUT:
             add(f, video_to(f))
+        ops.append(Op("to_hevc", "MP4 H.265", video_to_hevc, hint="smaller file"))
         add("gif", video_to_gif)
         ops.append(Op("to_mp3", "MP3", audio_to("mp3"), hint="audio only"))
         ops.append(Op("to_m4a", "M4A", audio_to("m4a"), hint="audio only"))
@@ -1406,15 +1548,29 @@ def conversions(paths: list[str]) -> list[Op]:
         add("tsv", sheet_to_delimited("tsv"))
         add("json", sheet_to_json)
         add("html", sheet_to_html)
+        add("md", sheet_to_markdown, "Markdown")
         add("pdf", sheet_to_pdf)
         if office_available():
             add("ods", office_to("ods"))
     elif cat == "subtitle":
-        add("vtt", srt_to_vtt) if e == "srt" else add("srt", vtt_to_srt)
+        for f in SUB_OUT:
+            if f == e:
+                continue
+            if e == "srt" and f == "vtt":
+                add("vtt", srt_to_vtt)
+            elif e == "vtt" and f == "srt":
+                add("srt", vtt_to_srt)
+            else:
+                add(f, subs_ffmpeg(f))
         add("txt", subs_to_txt)
     elif cat == "ebook":
         add("pdf", epub_to_pdf)
         add("txt", epub_to_text)
+        add("md", pdf_to_markdown, "Markdown")
+        add("html", pdf_to_html)
+        if e in ("cbz", "xps", "oxps"):
+            add("png", pdf_to_images("png", dpi=150))
+            add("jpg", pdf_to_images("jpg", dpi=150))
     elif cat == "archive":
         ops.append(Op("extract", "Extract", archive_extract))
         cur = ARCHIVE_FMT.get(ext_of(paths[0]), "")
@@ -1488,11 +1644,39 @@ def tools(paths: list[str]) -> list[Op]:
     return ops
 
 
-def run_op(op: Op, paths: list[str], params: dict | None = None) -> list[Path]:
+def run_op(op: Op, paths: list[str], params: dict | None = None,
+           token: CancelToken | None = None) -> list[Path]:
     params = params or {}
-    if op.multi:
-        return [op.fn(paths, params)]
-    return [op.fn(p, params) for p in paths]
+    _ctx.token = token
+    try:
+        if op.multi:
+            outs = [op.fn(paths, params)]
+        else:
+            outs = []
+            for p in paths:
+                check_cancel()
+                outs.append(op.fn(p, params))
+        check_cancel()            # cancelled while a non-interruptible step was finishing
+        return outs
+    except BaseException:
+        if token is not None and token.cancelled:
+            _cleanup(token)
+            raise Cancelled()
+        raise
+    finally:
+        _ctx.token = None
+
+
+def _cleanup(token: CancelToken):
+    for p in reversed(token.paths):
+        try:
+            for cand in (p, p.with_name(p.name + ".part")):
+                if cand.is_dir():
+                    shutil.rmtree(cand, ignore_errors=True)
+                elif cand.exists():
+                    cand.unlink()
+        except Exception:
+            pass
 
 
 def count_catalog() -> tuple[int, int]:

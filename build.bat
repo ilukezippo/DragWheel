@@ -1,5 +1,5 @@
 @echo off
-rem Builds dist\DragWheel\DragWheel.exe and, if NSIS is installed, dist\DragWheel-Setup-1.0.0.exe
+rem Builds dist\DragWheel\DragWheel.exe and, if NSIS is installed, dist\DragWheel-Setup-1.1.0.exe
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (
     py -3 -m venv .venv || python -m venv .venv
@@ -22,6 +22,6 @@ for %%P in ("%ProgramFiles(x86)%\NSIS\makensis.exe" "%ProgramFiles%\NSIS\makensi
 if not defined NSIS (
     echo NSIS not found - skipping installer. Get it with:  winget install NSIS.NSIS
 ) else (
-    "%NSIS%" installer\dragwheel.nsi && echo Built: dist\DragWheel-Setup-1.0.0.exe
+    "%NSIS%" installer\dragwheel.nsi && echo Built: dist\DragWheel-Setup-1.1.0.exe
 )
 pause

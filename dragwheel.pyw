@@ -31,11 +31,12 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
 
 import engine
 import i18n
+import updater
 import winsys
 from i18n import tr
 
 APP = "DragWheel"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 ACCENT = QColor("#ff8a00")
 ACCENT_2 = QColor("#ffb347")
@@ -142,6 +143,9 @@ class Actions:
 # ============================================================================
 # Background worker
 # ============================================================================
+CANCELLED = "__cancelled__"
+
+
 class WorkerSignals(QObject):
     done = Signal(object, object, object)   # worker, outputs, error
 
@@ -151,14 +155,58 @@ class Worker(QRunnable):
         super().__init__()
         self.op, self.paths, self.params = op, paths, params
         self.sig = WorkerSignals()
+        self.token = engine.CancelToken()
 
     def run(self):
         try:
-            outs = engine.run_op(self.op, self.paths, self.params)
+            outs = engine.run_op(self.op, self.paths, self.params, token=self.token)
             self.sig.done.emit(self, outs, None)
+        except engine.Cancelled:
+            self.sig.done.emit(self, None, CANCELLED)
         except Exception as e:
             traceback.print_exc()
             self.sig.done.emit(self, None, str(e) or e.__class__.__name__)
+
+
+# ============================================================================
+# Update check / download (background)
+# ============================================================================
+class UpdateSignals(QObject):
+    checked = Signal(object, object, bool)     # release | None, error | None, manual
+    progress = Signal(int, int)
+    downloaded = Signal(object, object)        # path | None, error | None
+
+
+class UpdateCheck(QRunnable):
+    def __init__(self, manual):
+        super().__init__()
+        self.manual = manual
+        self.sig = UpdateSignals()
+
+    def run(self):
+        try:
+            self.sig.checked.emit(updater.latest_release(), None, self.manual)
+        except Exception as e:
+            self.sig.checked.emit(None, str(e), self.manual)
+
+
+class UpdateDownload(QRunnable):
+    def __init__(self, release):
+        super().__init__()
+        self.release = release
+        self.stop = False
+        self.sig = UpdateSignals()
+
+    def run(self):
+        try:
+            path = updater.download(self.release.installer_url, self.release.installer_name,
+                                    progress=lambda d, t: self.sig.progress.emit(d, t),
+                                    should_stop=lambda: self.stop)
+            self.sig.downloaded.emit(path, None)
+        except InterruptedError:
+            self.sig.downloaded.emit(None, CANCELLED)
+        except Exception as e:
+            self.sig.downloaded.emit(None, str(e))
 
 
 # ============================================================================
@@ -487,7 +535,7 @@ class Wheel(QWidget):
             p.setPen(QPen(QColor(255, 255, 255, 30), 1))
             p.setBrush(ACCENT if active else (QColor(58, 58, 60, 245) if m == self.hover_pill else BG))
             p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
-            f = QFont("Segoe UI", 9)
+            f = QFont(i18n.ui_font(), 9)
             f.setWeight(QFont.DemiBold)
             p.setFont(f)
             p.setPen(QColor("#1c1c1e") if active else FG)
@@ -513,7 +561,7 @@ class Wheel(QWidget):
         size = 10.0
         lines = [label]
         while True:
-            f = QFont("Segoe UI", 1)
+            f = QFont(i18n.ui_font(), 1)
             f.setPointSizeF(size)
             f.setWeight(QFont.DemiBold)
             fm = QFontMetrics(f)
@@ -541,7 +589,7 @@ class Wheel(QWidget):
             p.drawText(QRectF(pt.x() - 80, y, 160, lh + 2), Qt.AlignCenter, line)
             y += lh
         if op.hint:
-            f2 = QFont("Segoe UI", 7)
+            f2 = QFont(i18n.ui_font(), 7)
             p.setFont(f2)
             p.setPen(QColor(28, 28, 30, 200) if hovered else FG_DIM)
             p.drawText(QRectF(pt.x() - 80, y, 160, hint_h + 2), Qt.AlignCenter, tr(op.hint))
@@ -564,7 +612,7 @@ class Wheel(QWidget):
                 name = Path(self.paths[0]).name
                 cat = tr(engine.CATEGORY_LABEL.get(engine.category_of(self.paths), "File"))
                 sub = name if len(name) <= 16 else (Path(name).suffix.upper().lstrip(".") or cat)
-        f = QFont("Segoe UI", 11)
+        f = QFont(i18n.ui_font(), 11)
         f.setWeight(QFont.Bold)
         p.setFont(f)
         p.setPen(ACCENT_2 if self.hover >= 0 else FG)
@@ -575,7 +623,7 @@ class Wheel(QWidget):
             p.drawText(QRectF(r.x(), r.y() - 6, r.width(), 38), Qt.AlignCenter | Qt.TextWordWrap, title)
         else:
             p.drawText(QRectF(r.x(), r.y() + 6, r.width(), 24), Qt.AlignCenter, title)
-        f2 = QFont("Segoe UI", 8)
+        f2 = QFont(i18n.ui_font(), 8)
         p.setFont(f2)
         p.setPen(FG_DIM)
         p.drawText(QRectF(r.x(), r.y() + 30, r.width(), 18), Qt.AlignCenter,
@@ -586,36 +634,58 @@ class Wheel(QWidget):
 # Toast
 # ============================================================================
 class Toast(QWidget):
+    TOAST_CSS = """
+    QLabel#title{color:#f5f5f7;font:600 10pt 'Segoe UI'}
+    QLabel#body{color:#a1a1a6;font:9pt 'Segoe UI'}
+    QPushButton#show{background:#ff8a00;color:#1c1c1e;border:none;border-radius:11px;padding:4px 12px;font:600 9pt 'Segoe UI'}
+    QPushButton#show:hover{background:#ffb347}
+    QPushButton#cancel{background:#3a3a3c;color:#f5f5f7;border:none;border-radius:11px;padding:4px 12px;font:600 9pt 'Segoe UI'}
+    QPushButton#cancel:hover{background:#ff453a;color:#ffffff}
+    """
+
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setFixedWidth(340)
+        self.setFixedWidth(360)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(16, 12, 12, 12)
+        lay.setSpacing(10)
         self.icon = QLabel()
         self.icon.setFixedSize(30, 30)
         lay.addWidget(self.icon)
         col = QVBoxLayout()
         col.setSpacing(1)
         self.title = QLabel()
-        self.title.setStyleSheet("color:#f5f5f7;font:600 10pt 'Segoe UI'")
+        self.title.setObjectName("title")
         self.body = QLabel()
-        self.body.setStyleSheet("color:#a1a1a6;font:9pt 'Segoe UI'")
+        self.body.setObjectName("body")
         self.body.setWordWrap(True)
         col.addWidget(self.title)
         col.addWidget(self.body)
         lay.addLayout(col, 1)
-        self.btn = QPushButton(tr("Show"))
+        self.btn = QPushButton()
+        self.btn.setObjectName("show")
         self.btn.setCursor(Qt.PointingHandCursor)
-        self.btn.setStyleSheet("QPushButton{background:#ff8a00;color:#1c1c1e;border:none;border-radius:11px;"
-                               "padding:4px 12px;font:600 9pt 'Segoe UI'}QPushButton:hover{background:#ffb347}")
         self.btn.clicked.connect(self._reveal)
         lay.addWidget(self.btn)
+        self.cancel_btn = QPushButton()
+        self.cancel_btn.setObjectName("cancel")
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_btn.clicked.connect(self._cancel)
+        lay.addWidget(self.cancel_btn)
         self.timer = QTimer(self, singleShot=True, timeout=self.hide)
         self.target = None
+        self.on_cancel = None
         self.spin = 0
         self.spin_timer = QTimer(self, interval=60, timeout=self._spin)
+        self.restyle()
+
+    def restyle(self):
+        """Apply the current language's font and button texts."""
+        self.setStyleSheet(i18n.css(self.TOAST_CSS))
+        self.btn.setText(tr("Show"))
+        self.cancel_btn.setText(tr("Cancel"))
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -664,38 +734,42 @@ class Toast(QWidget):
         self.spin = (self.spin + 24) % 360
         self._set_icon("busy")
 
-    def show_busy(self, title, body):
+    def _show(self, title, body, kind, show_btn=False, cancel=None, ms=None):
         self.timer.stop()
+        self.restyle()
         self.title.setText(title)
         self.body.setText(body)
-        self.btn.hide()
-        self.spin_timer.start()
-        self._set_icon("busy")
-        self._place()
-        self.show()
-
-    def show_msg(self, title, body, kind="info", ms=2600):
-        self.spin_timer.stop()
-        self.title.setText(title)
-        self.body.setText(body)
-        self.btn.hide()
+        self.btn.setVisible(show_btn)
+        self.on_cancel = cancel
+        self.cancel_btn.setVisible(cancel is not None)
+        if kind == "busy":
+            self.spin_timer.start()
+        else:
+            self.spin_timer.stop()
         self._set_icon(kind)
         self._place()
         self.show()
-        self.timer.start(ms)
+        if ms:
+            self.timer.start(ms)
+
+    def show_busy(self, title, body, on_cancel=None):
+        self._show(title, body, "busy", cancel=on_cancel)
+
+    def show_msg(self, title, body, kind="info", ms=2600):
+        self._show(title, body, kind, ms=ms)
 
     def show_result(self, title, outs):
-        self.spin_timer.stop()
         outs = [Path(o) for o in outs if o]
         self.target = str(outs[0]) if outs else None
-        self.title.setText(title)
-        self.body.setText(outs[0].name if len(outs) == 1 else tr("{n} items saved", n=len(outs)))
-        self.btn.setText(tr("Show"))
-        self.btn.setVisible(bool(self.target))
-        self._set_icon("ok")
-        self._place()
-        self.show()
-        self.timer.start(5000)
+        body = outs[0].name if len(outs) == 1 else tr("{n} items saved", n=len(outs))
+        self._show(title, body, "ok", show_btn=bool(self.target), ms=5000)
+
+    def _cancel(self):
+        cb, self.on_cancel = self.on_cancel, None
+        self.cancel_btn.setEnabled(False)
+        if cb:
+            cb()
+        self.cancel_btn.setEnabled(True)
 
     def _reveal(self):
         if self.target:
@@ -776,7 +850,7 @@ class FloatWindow(QWidget):
         p.drawPixmap((self.width() - self.pix.width()) // 2, self.PAD, self.pix)
         # name
         p.setPen(FG)
-        f = QFont("Segoe UI", 9)
+        f = QFont(i18n.ui_font(), 9)
         p.setFont(f)
         name_r = QRectF(self.PAD, self.height() - self.BAR, self.width() - 2 * self.PAD - 36, self.BAR - 6)
         p.drawText(name_r, Qt.AlignVCenter | Qt.AlignLeft,
@@ -898,7 +972,7 @@ def ask_params(op, paths) -> dict | None:
     title = tr(op.label).rstrip("…")
     dlg.setWindowTitle(f"{APP} — {title}")
     dlg.setWindowIcon(app_icon())
-    dlg.setStyleSheet(DIALOG_CSS)
+    dlg.setStyleSheet(i18n.css(DIALOG_CSS))
     lay = QVBoxLayout(dlg)
     who = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
     lay.addWidget(QLabel(f"<b>{title}</b> &nbsp;<span style='color:#a1a1a6'>{who}</span>"))
@@ -933,7 +1007,7 @@ def message(title, html):
     box = QMessageBox()
     box.setWindowTitle(title)
     box.setWindowIcon(app_icon())
-    box.setStyleSheet(DIALOG_CSS)
+    box.setStyleSheet(i18n.css(DIALOG_CSS))
     box.setIconPixmap(app_icon().pixmap(48, 48))
     box.setTextFormat(Qt.RichText)
     box.setText(html)
@@ -954,7 +1028,7 @@ class SettingsDialog(QDialog):
         self.app = app
         self.setWindowTitle(tr("{app} Settings", app=APP))
         self.setWindowIcon(app_icon())
-        self.setStyleSheet(DIALOG_CSS)
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
         self.setMinimumWidth(500)
         s = settings()
         lay = QVBoxLayout(self)
@@ -1013,13 +1087,30 @@ class SettingsDialog(QDialog):
             v3.addWidget(w)
         lay.addWidget(g3)
 
+        g4 = QGroupBox(tr("Updates"))
+        v4 = QVBoxLayout(g4)
+        self.auto_update = QCheckBox(tr("Check for updates automatically (once a day)"))
+        self.auto_update.setChecked(s.value("check_updates", "true") == "true")
+        v4.addWidget(self.auto_update)
+        row4 = QHBoxLayout()
+        link = QLabel(f"<a style='color:#ffb347' href='{updater.REPO_URL}'>{updater.REPO_URL.replace('https://', '')}</a>")
+        link.setOpenExternalLinks(True)
+        link.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        row4.addWidget(link, 1)
+        chk = QPushButton(tr("Check now"))
+        chk.clicked.connect(lambda: self.app.check_updates(manual=True))
+        row4.addWidget(chk)
+        v4.addLayout(row4)
+        lay.addWidget(g4)
+
         office = tr("found") if engine.office_available() else \
             tr("not found — DOCX/PPTX/XLS conversions need Microsoft Office or LibreOffice")
         conv, tl = engine.count_catalog()
         info = QLabel(f"<span style='color:#a1a1a6'>{APP} {VERSION}<br>"
                       + tr("{c}+ conversions · {t}+ tools · 8 actions", c=conv, t=tl) + "<br>"
                       + f"Office/LibreOffice: {office}<br>"
-                      + tr("Everything runs locally — nothing is uploaded.") + "</span>")
+                      + tr("Everything runs locally — nothing is uploaded.") + " "
+                      + tr("The only connection is the update check to GitHub.") + "</span>")
         info.setWordWrap(True)
         info.setAlignment(Qt.AlignLeading | Qt.AlignVCenter)
         lay.addWidget(info)
@@ -1044,6 +1135,7 @@ class SettingsDialog(QDialog):
         s.setValue("output_dir", self.out.text().strip())
         s.setValue("hotkey", "true" if self.hotkey.isChecked() else "false")
         s.setValue("scroll", "true" if self.scroll.isChecked() else "false")
+        s.setValue("check_updates", "true" if self.auto_update.isChecked() else "false")
         self.app.watcher.refresh_settings()
         engine.OUTPUT_DIR = self.out.text().strip() or None
         new_lang = self.lang.currentData()
@@ -1192,6 +1284,8 @@ class DragWheelApp(QObject):
         self.tray.activated.connect(lambda r: self.pick_files() if r == QSystemTrayIcon.DoubleClick else None)
         self._build_tray_menu()
         self.tray.show()
+        self._update_jobs = set()
+        QTimer.singleShot(8000, self._auto_update_check)
 
     def _build_tray_menu(self):
         self.tray.setToolTip(tr("{app} — drag a file, tap {key}", app=APP, key=tr(mode_keys()["convert"])))
@@ -1200,6 +1294,7 @@ class DragWheelApp(QObject):
         menu.addSeparator()
         menu.addAction(tr("How it works"), self.show_help)
         menu.addAction(tr("Settings…"), self.show_settings)
+        menu.addAction(tr("Check for updates…"), lambda: self.check_updates(manual=True))
         menu.addSeparator()
         menu.addAction(tr("Quit {app}", app=APP), self.qapp.quit)
         old = self.tray.contextMenu()
@@ -1211,6 +1306,8 @@ class DragWheelApp(QObject):
     def apply_language(self):
         i18n.set_language(settings().value("language", ""))
         self.qapp.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
+        self.qapp.setFont(QFont(i18n.ui_font(), 9))
+        self.toast.restyle()
         self._build_tray_menu()
         self.wheel.update()
 
@@ -1343,23 +1440,125 @@ class DragWheelApp(QObject):
 
     def _start(self, op, paths, params):
         name = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
-        if op.group == "convert":
-            self.toast.show_busy(tr("Converting to {fmt}…", fmt=tr(op.label)), name)
-        else:
-            self.toast.show_busy(tr(op.label).rstrip("…") + "…", name)
         w = Worker(op, paths, params)
+        cancel = lambda w=w: self._cancel_job(w)
+        if op.group == "convert":
+            self.toast.show_busy(tr("Converting to {fmt}…", fmt=tr(op.label)), name, cancel)
+        else:
+            self.toast.show_busy(tr(op.label).rstrip("…") + "…", name, cancel)
         w.setAutoDelete(False)
         self.running.add(w)                       # keep Python refs alive until done
         w.sig.done.connect(self._done, Qt.QueuedConnection)
         self.pool.start(w)
 
+    def _cancel_job(self, worker):
+        worker.token.cancel()
+        self.toast.show_busy(tr("Cancelling…"), Path(worker.paths[0]).name)
+
     def _done(self, worker, outs, err):
         self.running.discard(worker)
         op = worker.op
-        if err:
+        if err == CANCELLED:
+            self.toast.show_msg(tr("Cancelled"), tr("Nothing was saved."), "info", 3000)
+        elif err:
             self.toast.show_msg(tr("{what} failed", what=tr(op.label).rstrip("…")), err, "err", 8000)
         else:
             self.toast.show_result(tr("Done") if op.group == "tool" else tr("Converted to {fmt}", fmt=tr(op.label)), outs)
+
+    # ---- updates
+    def _auto_update_check(self):
+        import time
+        s = settings()
+        if s.value("check_updates", "true") != "true":
+            return
+        if time.time() - float(s.value("last_update_check", 0) or 0) < 20 * 3600:
+            return
+        self.check_updates(manual=False)
+
+    def check_updates(self, manual=True):
+        import time
+        settings().setValue("last_update_check", time.time())
+        job = UpdateCheck(manual)
+        job.setAutoDelete(False)
+        self._update_jobs.add(job)
+        job.sig.checked.connect(lambda rel, err, m, job=job: self._update_checked(job, rel, err, m), Qt.QueuedConnection)
+        if manual:
+            self.toast.show_busy(tr("Checking for updates…"), "github.com/" + updater.REPO)
+        self.pool.start(job)
+
+    def _update_checked(self, job, rel, err, manual):
+        self._update_jobs.discard(job)
+        winsys.log(f"update check: latest={getattr(rel, 'version', None)} err={err}")
+        if err:
+            if manual:
+                self.toast.show_msg(tr("Couldn't check for updates"), err, "err", 6000)
+            return
+        if not updater.is_newer(rel.version, VERSION):
+            if manual:
+                self.toast.show_msg(tr("You're up to date"), tr("{app} {v} is the latest version.", app=APP, v=VERSION), "ok", 4000)
+            return
+        if not manual and settings().value("skip_version", "") == rel.version:
+            return
+        self.toast.hide()
+        self._offer_update(rel)
+
+    def _offer_update(self, rel):
+        box = QMessageBox()
+        box.setWindowTitle(tr("{app} update", app=APP))
+        box.setWindowIcon(app_icon())
+        box.setStyleSheet(i18n.css(DIALOG_CSS))
+        box.setIconPixmap(app_icon().pixmap(48, 48))
+        box.setTextFormat(Qt.RichText)
+        notes = rel.notes.split("\n\n")[0][:400].replace("**", "") if rel.notes else ""
+        box.setText(f"<b>{tr('{app} {v} is available', app=APP, v=rel.version)}</b><br>"
+                    f"<span style='color:#a1a1a6'>{tr('You have {v}.', v=VERSION)}</span><br><br>{notes}")
+        install = box.addButton(tr("Download && install"), QMessageBox.AcceptRole) if rel.installer_url else None
+        page = box.addButton(tr("Open release page"), QMessageBox.ActionRole)
+        skip = box.addButton(tr("Skip this version"), QMessageBox.RejectRole)
+        later = box.addButton(tr("Later"), QMessageBox.RejectRole)
+        box.setDefaultButton(install or page)
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is install:
+            self._download_update(rel)
+        elif clicked is page:
+            QDesktopServices.openUrl(QUrl(rel.page))
+        elif clicked is skip:
+            settings().setValue("skip_version", rel.version)
+
+    def _download_update(self, rel):
+        job = UpdateDownload(rel)
+        job.setAutoDelete(False)
+        self._update_jobs.add(job)
+
+        def cancel():
+            job.stop = True
+        name = rel.installer_name or "DragWheel-Setup.exe"
+        self.toast.show_busy(tr("Downloading update…"), name, cancel)
+
+        def progress(done, total):
+            if total and self.toast.isVisible():
+                self.toast.body.setText(f"{name} — {done * 100 // total}%  ({done / 1048576:.0f} / {total / 1048576:.0f} MB)")
+        job.sig.progress.connect(progress, Qt.QueuedConnection)
+        job.sig.downloaded.connect(lambda path, err, job=job: self._update_downloaded(job, path, err), Qt.QueuedConnection)
+        self.pool.start(job)
+
+    def _update_downloaded(self, job, path, err):
+        self._update_jobs.discard(job)
+        if err == CANCELLED:
+            self.toast.show_msg(tr("Cancelled"), tr("The update was not downloaded."), "info", 3000)
+            return
+        if err:
+            self.toast.show_msg(tr("Couldn't download the update"), err, "err", 8000)
+            return
+        winsys.log(f"launching installer {path}")
+        try:
+            os.startfile(str(path))          # Windows asks for admin, the installer closes DragWheel
+        except Exception as e:
+            self.toast.show_msg(tr("Couldn't start the installer"), str(e), "err", 8000)
+            return
+        self.toast.show_msg(tr("Installing update…"), tr("Finish the steps in the setup window."), "info", 4000)
 
     # ---- windows
     def show_settings(self):
@@ -1416,6 +1615,7 @@ def main():
 
     i18n.set_language(settings().value("language", ""))
     qapp.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
+    qapp.setFont(QFont(i18n.ui_font(), 9))
 
     try:
         from PySide6 import __version__ as pyside_version
