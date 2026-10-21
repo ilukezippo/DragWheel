@@ -106,7 +106,7 @@ All keys can be changed in **Settings** (tray icon → Settings).
 
 DragWheel then sits in the system tray. To remove it, use **Settings → Apps** or *Uninstall DragWheel* in the Start menu.
 
-> Windows SmartScreen may warn you because the installer isn't code-signed. Choose **More info → Run anyway**.
+> Releases are being prepared for code signing through the SignPath Foundation (see [Code signing policy](#code-signing-policy)). Until then, Windows SmartScreen may warn you about the installer. Choose **More info → Run anyway**.
 
 **Requirements:** Windows 10 (1809+) or Windows 11, 64-bit.
 
@@ -158,6 +158,21 @@ engine.run_op(ops["to_jpg"], ["photo.heic"])        # -> photo.jpg
 
 - Windows doesn't allow dragging from an app running as administrator into DragWheel (or the other way round).
 - Some apps start drags without a drag image. For those, set *Trigger on → Any mouse drag* in Settings.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+**Team roles**
+
+| Role | Members |
+|---|---|
+| Committers and reviewers | [ilukezippo](https://github.com/ilukezippo) |
+| Approvers | [ilukezippo](https://github.com/ilukezippo) |
+
+Every release is built from this repository's source by GitHub Actions and manually approved before signing.
+
+**Privacy:** DragWheel does not transfer any information to other networked systems, except the optional update check that asks GitHub for the latest release (can be turned off in Settings). See the [privacy policy](PRIVACY.md).
 
 ## License
 
