@@ -233,7 +233,6 @@ class Wheel(QWidget):
     R_OUT = 246
     PAD = 18
     PILL_H = 34
-    MAX_INNER = 9
 
     def __init__(self, app: "DragWheelApp"):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -257,11 +256,11 @@ class Wheel(QWidget):
 
     # ------------------------------------------------------------- geometry
     def _rings(self):
+        """Always one ring. With many slices the ring grows (up to R_OUT) so each label keeps
+        roughly 56 px of arc; past that the labels shrink to fit."""
         n = len(self.ops)
-        if n <= self.MAX_INNER + 1:
-            return [(self.R_IN, self.R_MID + 14, self.ops)]
-        return [(self.R_IN, self.R_MID, self.ops[:self.MAX_INNER]),
-                (self.R_MID + 4, self.R_OUT, self.ops[self.MAX_INNER:])]
+        mid = max(self.R_MID + 14, 2 * (56 * n / (2 * math.pi)) - self.R_IN)
+        return [(self.R_IN, min(self.R_OUT, int(mid)), self.ops)]
 
     def _outer(self):
         return self._rings()[-1][1]
