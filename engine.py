@@ -1586,8 +1586,7 @@ def conversions(paths: list[str]) -> list[Op]:
         if e in ("cbz", "xps", "oxps"):
             add("png", pdf_to_images("png", dpi=150))
             add("jpg", pdf_to_images("jpg", dpi=150))
-    elif cat == "archive":
-        ops.append(Op("extract", "Extract", archive_extract))
+    elif cat == "archive":                 # "Extract" lives in Tools
         cur = ARCHIVE_FMT.get(ext_of(paths[0]), "")
         for f in archive_targets(exclude=cur):
             ops.append(Op(f"to_{f}", ARCHIVE_LABEL[f], archive_repack(f), hint=_rar_hint(f)))
@@ -1654,7 +1653,8 @@ def tools(paths: list[str]) -> list[Op]:
             ops.append(T("merge", "Merge", pdf_merge, multi=True))
     elif cat == "archive":
         ops.append(T("extract", "Extract", archive_extract))
-    if cat not in ("archive",):
+    # Folders, archives and "other" files already get ZIP/7Z/... in the Convert wheel
+    if cat not in ("archive", "folder", "mixed", "other"):
         ops.append(T("zip", "Zip", to_zip, multi=True))
     return ops
 

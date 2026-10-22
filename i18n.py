@@ -669,3 +669,15 @@ for _code, _mod in (("ru", ru), ("zh", zh), ("ja", ja), ("pt", pt), ("it", it), 
     LANGUAGES.append((_code, _mod.NAME))
     if _mod.RTL:
         RTL.add(_code)
+
+# --------------------------------------------------------------------------- strings added in 1.1.5
+for _code, (_a, _b) in {
+    "ar": ("لا توجد أدوات", "جرّب التحويل أو الإجراءات"), "fr": ("Aucun outil", "essayez Convertir ou Actions"),
+    "es": ("Sin herramientas", "prueba Convertir o Acciones"), "tr": ("Araç yok", "Dönüştür veya Eylemler'i deneyin"),
+    "de": ("Keine Werkzeuge", "Umwandeln oder Aktionen probieren"), "ru": ("Нет инструментов", "попробуйте Конвертировать или Действия"),
+    "zh": ("无可用工具", "试试转换或操作"), "ja": ("ツールはありません", "変換かアクションをお試しください"),
+    "pt": ("Sem ferramentas", "experimente Converter ou Ações"), "it": ("Nessuno strumento", "prova Converti o Azioni"),
+    "hi": ("कोई टूल नहीं", "बदलें या कार्य आज़माएँ"), "fa": ("ابزاری وجود ندارد", "تبدیل یا کارها را امتحان کنید"),
+    "ur": ("کوئی ٹول نہیں", "تبدیل کریں یا افعال آزمائیں"),
+}.items():
+    T[_code].update({"No tools": _a, "try Convert or Actions": _b})

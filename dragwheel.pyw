@@ -519,7 +519,13 @@ class Wheel(QWidget):
                 gi = offset + i
                 a_mid = i * step                      # degrees clockwise from top
                 hovered = gi == self.hover
-                path = self._wedge(c, r0 + 3, r1 - 3, a_mid - step / 2 + 0.9, step - 1.8)
+                if n == 1:                            # a single slice is the whole ring, no seam
+                    path = QPainterPath()
+                    path.setFillRule(Qt.OddEvenFill)
+                    path.addEllipse(c, r1 - 3, r1 - 3)
+                    path.addEllipse(c, r0 + 3, r0 + 3)
+                else:
+                    path = self._wedge(c, r0 + 3, r1 - 3, a_mid - step / 2 + 0.9, step - 1.8)
                 if hovered:
                     grad = QRadialGradient(c, r1)
                     grad.setColorAt(0.25, ACCENT_2)
@@ -1628,7 +1634,8 @@ class DragWheelApp(QObject):
             ops = engine.conversions(paths)
             return ops or [engine.Op("none", "No conversions", lambda *a: None, hint="try Tools or Actions")]
         if mode == "tool":
-            return engine.tools(paths)
+            return engine.tools(paths) or [engine.Op("none", "No tools", lambda *a: None,
+                                                     hint="try Convert or Actions")]
         return self.actions.ops(paths)
 
     # ---- triggers
