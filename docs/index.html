@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DragWheel: free offline file converter for Windows</title>
+<meta name="description" content="Drag a file, tap a key, drop it on the wheel. DragWheel is a free, open-source file converter for Windows 10 and 11: images, video, audio, PDF, Office files and archives, converted on your PC. Nothing is uploaded.">
+<meta name="keywords" content="file converter windows, offline file converter, heic to jpg windows, image converter, video converter, pdf converter, zip to 7z, tangerine for windows, drag and drop converter, open source">
+<link rel="canonical" href="https://ilukezippo.github.io/DragWheel/">
+<link rel="icon" href="favicon.ico">
+<meta name="theme-color" content="#2b2c30">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="DragWheel: drag a file, tap a key, drop it on the wheel">
+<meta property="og:description" content="Free, offline file converter and toolbox for Windows. Images, video, audio, PDF, Office files and archives. Nothing is uploaded.">
+<meta property="og:url" content="https://ilukezippo.github.io/DragWheel/">
+<meta property="og:image" content="https://ilukezippo.github.io/DragWheel/img/og.jpg">
+<meta name="twitter:card" content="summary_large_image">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "DragWheel",
+  "applicationCategory": "UtilitiesApplication",
+  "operatingSystem": "Windows 10, Windows 11",
+  "softwareVersion": "1.1.0",
+  "description": "Offline drag-and-drop file converter and toolbox for Windows. Tap a key while dragging a file and drop it on a radial wheel to convert images, video, audio, PDF, Office files and archives.",
+  "url": "https://ilukezippo.github.io/DragWheel/",
+  "downloadUrl": "https://github.com/ilukezippo/DragWheel/releases/latest",
+  "screenshot": "https://ilukezippo.github.io/DragWheel/img/og.jpg",
+  "license": "https://opensource.org/licenses/MIT",
+  "author": {"@type": "Person", "name": "ilukezippo (BoYaqoub)", "url": "https://github.com/ilukezippo"},
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type": "Question", "name": "Is DragWheel free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. DragWheel is free and open source under the MIT License."}},
+    {"@type": "Question", "name": "Does DragWheel upload my files?", "acceptedAnswer": {"@type": "Answer", "text": "No. Every conversion runs on your own PC. The only network connection is an optional daily update check against GitHub, which can be turned off."}},
+    {"@type": "Question", "name": "Is there a Tangerine for Windows?", "acceptedAnswer": {"@type": "Answer", "text": "DragWheel brings the Tangerine for Mac idea to Windows: tap a key while dragging a file and drop it on a wheel to convert it."}},
+    {"@type": "Question", "name": "Why does Windows warn about the installer?", "acceptedAnswer": {"@type": "Answer", "text": "The installer is not code-signed yet, so SmartScreen shows a warning for new downloads. Releases are built by GitHub Actions from the public source code. Choose More info, then Run anyway."}}
+  ]
+}
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;700;800&display=swap" rel="stylesheet">
+
+<style>
+:root {
+  --desk: #c9cdd3;        /* the grey desktop the wheel floats over */
+  --page: #e8eaed;
+  --ink: #1c1e22;
+  --muted: #555b65;
+  --graphite: #2b2c30;    /* wheel wedges */
+  --graphite-2: #3a3b40;
+  --rim: #202125;
+  --orange: #ff8c1a;
+  --orange-deep: #f26a00;
+  --line: #c3c7cd;
+  --card: #f6f7f8;
+  --link: #b54d00;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --desk: #17181b; --page: #1f2024; --ink: #eceef1; --muted: #a2a8b2;
+    --graphite: #2f3035; --graphite-2: #3c3d43; --rim: #141518;
+    --line: #34363c; --card: #26272c; --link: #ffad5c;
+  }
+}
+:root[data-theme="dark"] {
+  --desk: #17181b; --page: #1f2024; --ink: #eceef1; --muted: #a2a8b2;
+  --graphite: #2f3035; --graphite-2: #3c3d43; --rim: #141518;
+  --line: #34363c; --card: #26272c; --link: #ffad5c;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 400 17px/1.55 "Schibsted Grotesk", "Segoe UI", system-ui, sans-serif;
+}
+a { color: var(--link); }
+a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 3px solid var(--orange); outline-offset: 3px; border-radius: 6px; }
+img { max-width: 100%; height: auto; display: block; }
+.wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
+
+/* ---------- top bar */
+.bar { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 19px; color: var(--ink); text-decoration: none; }
+.brand img { width: 30px; height: 30px; }
+.bar nav { display: flex; gap: 22px; font-size: 15px; }
+.bar nav a { color: var(--muted); text-decoration: none; }
+.bar nav a:hover { color: var(--ink); }
+
+/* ---------- hero: the desktop with the live wheel */
+.hero { background: var(--desk); }
+.hero .split { display: grid; grid-template-columns: 1fr minmax(320px, 520px); gap: 40px; align-items: center; padding: 56px 0 64px; }
+.hero h1 { font-size: clamp(40px, 6vw, 72px); line-height: 1.02; letter-spacing: -0.03em; font-weight: 800; margin: 0 0 22px; max-width: 12ch; }
+.hero h1 span { display: block; }
+.hero p.lede { font-size: 19px; color: var(--muted); max-width: 46ch; margin: 0 0 30px; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.btn {
+  display: inline-flex; align-items: center; gap: 10px; padding: 14px 22px; border-radius: 999px;
+  font: 700 16px/1 inherit; font-family: inherit; text-decoration: none; border: 0; cursor: pointer;
+}
+.btn-main { background: linear-gradient(180deg, var(--orange), var(--orange-deep)); color: #1b1206; box-shadow: 0 6px 18px rgba(242,106,0,.32); }
+.btn-main:hover { filter: brightness(1.05); }
+.btn-quiet { background: var(--graphite); color: #f1f1f3; }
+.fine { font-size: 14px; color: var(--muted); margin-top: 14px; }
+
+.stage { display: grid; justify-items: center; gap: 18px; }
+.stage svg { width: 100%; max-width: 480px; height: auto; overflow: visible; filter: drop-shadow(0 18px 30px rgba(0,0,0,.28)); }
+.slice { cursor: pointer; }
+.slice path { fill: var(--graphite); transition: fill .12s; }
+.slice text { fill: #f2f2f4; font: 700 15px "Schibsted Grotesk", "Segoe UI", sans-serif; pointer-events: none; }
+.slice.on path { fill: url(#hot); }
+.slice.on text { fill: #1b1206; }
+.slice:focus { outline: none; }
+.slice:focus-visible path { stroke: var(--orange); stroke-width: 3; }
+.hub-title { fill: var(--orange); font: 800 22px "Schibsted Grotesk", "Segoe UI", sans-serif; }
+.hub-sub { fill: #a9adb5; font: 500 13px "Schibsted Grotesk", "Segoe UI", sans-serif; }
+.pills { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.pill {
+  font: 600 14px/1 inherit; font-family: inherit; padding: 10px 16px; border-radius: 999px; border: 1px solid #45464c;
+  background: var(--graphite); color: #f1f1f3; cursor: pointer;
+}
+.pill[aria-pressed="true"] { background: var(--orange); color: #1b1206; border-color: var(--orange); }
+.pill kbd { font: inherit; font-weight: 800; margin-right: 6px; }
+.stage-note { font-size: 14px; color: var(--muted); text-align: center; margin: 0; min-height: 1.5em; }
+
+/* ---------- sections */
+section { padding: 72px 0; }
+section + section { border-top: 1px solid var(--line); }
+h2 { font-size: clamp(28px, 3.4vw, 40px); letter-spacing: -0.02em; line-height: 1.1; margin: 0 0 14px; font-weight: 800; }
+.intro { color: var(--muted); max-width: 62ch; margin: 0 0 36px; }
+
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; counter-reset: s; }
+.steps li { counter-increment: s; }
+.steps li::before {
+  content: counter(s); display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%;
+  background: var(--graphite); color: var(--orange); font-weight: 800; font-size: 20px; margin-bottom: 14px;
+}
+.steps h3 { margin: 0 0 6px; font-size: 21px; }
+.steps p { margin: 0; color: var(--muted); }
+.keys { margin-top: 28px; color: var(--muted); }
+.keys kbd {
+  display: inline-block; padding: 2px 9px; border-radius: 6px; border: 1px solid var(--line); border-bottom-width: 2px;
+  background: var(--card); color: var(--ink); font: 600 14px/1.5 inherit; font-family: inherit;
+}
+
+.shot { margin: 0; }
+.shot img { border-radius: 14px; }
+.shot figcaption { font-size: 14px; color: var(--muted); margin-top: 10px; }
+.wide { margin-bottom: 40px; }
+.gallery { display: grid; grid-template-columns: 1.4fr 1fr; gap: 28px; align-items: start; }
+.gallery .stack { display: grid; gap: 28px; }
+
+.formats { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px 40px; margin: 0; }
+.formats div { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.formats dt { font-weight: 700; margin-bottom: 4px; }
+.formats dd { margin: 0; color: var(--muted); font-size: 15px; }
+.formats dd b { color: var(--ink); font-weight: 600; }
+.note { font-size: 15px; color: var(--muted); margin-top: 26px; max-width: 70ch; }
+
+.faq { max-width: 760px; }
+.faq details { border-bottom: 1px solid var(--line); padding: 18px 0; }
+.faq summary { font-weight: 700; font-size: 18px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; color: var(--orange-deep); font-weight: 800; }
+.faq details[open] summary::after { content: "–"; }
+.faq details p { margin: 10px 0 0; color: var(--muted); max-width: 66ch; }
+
+footer { padding: 40px 0 56px; border-top: 1px solid var(--line); font-size: 15px; color: var(--muted); }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 14px 28px; justify-content: space-between; }
+footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
+
+@media (max-width: 860px) {
+  .hero .split { grid-template-columns: 1fr; padding: 36px 0 48px; }
+  .steps { grid-template-columns: 1fr; }
+  .gallery { grid-template-columns: 1fr; }
+  .bar nav a.hide-sm { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="wrap bar">
+    <a class="brand" href="./"><img src="img/icon.webp" alt="" width="30" height="30">DragWheel</a>
+    <nav aria-label="Page">
+      <a class="hide-sm" href="#how">How it works</a>
+      <a class="hide-sm" href="#formats">Formats</a>
+      <a href="https://github.com/ilukezippo/DragWheel">GitHub</a>
+    </nav>
+  </div>
+  <div class="wrap split">
+    <div>
+      <h1><span>Drag a file.</span><span>Tap a key.</span><span>Drop it on the wheel.</span></h1>
+      <p class="lede">DragWheel is a free file converter for Windows that appears under your cursor while you drag. Turn a HEIC photo into a JPG, shrink a video or pack a folder into a 7Z in one gesture, without opening an app or uploading anything.</p>
+      <div class="cta">
+        <a class="btn btn-main" href="https://github.com/ilukezippo/DragWheel/releases/latest">Download for Windows</a>
+        <a class="btn btn-quiet" href="https://github.com/ilukezippo/DragWheel">View source</a>
+      </div>
+      <p class="fine">Version 1.1.0 for Windows 10 and 11 (64-bit). Free and open source, MIT License.</p>
+    </div>
+
+    <div class="stage">
+      <svg id="wheel" viewBox="-250 -250 500 500" role="group" aria-label="Interactive preview of the DragWheel wheel">
+        <defs>
+          <radialGradient id="hot" cx="0" cy="0" r="240" gradientUnits="userSpaceOnUse">
+            <stop offset="0.3" stop-color="#ffb04d"/><stop offset="1" stop-color="#ff8000"/>
+          </radialGradient>
+        </defs>
+        <circle r="240" fill="var(--rim)"/>
+        <g id="slices"></g>
+        <circle r="74" fill="var(--rim)"/>
+        <circle r="66" fill="#38393e"/>
+        <text id="hubT" class="hub-title" text-anchor="middle" y="2">Convert</text>
+        <text id="hubS" class="hub-sub" text-anchor="middle" y="24">photo.heic</text>
+      </svg>
+      <div class="pills" role="group" aria-label="Wheel">
+        <button class="pill" data-mode="convert" aria-pressed="true"><kbd>Shift</kbd> Convert</button>
+        <button class="pill" data-mode="tools" aria-pressed="false"><kbd>Ctrl</kbd> Tools</button>
+        <button class="pill" data-mode="actions" aria-pressed="false"><kbd>Alt</kbd> Actions</button>
+      </div>
+      <p class="stage-note" id="note" aria-live="polite">Hover a slice, or press Shift, Ctrl or Alt to switch wheels.</p>
+    </div>
+  </div>
+</div>
+
+<main>
+  <section id="how">
+    <div class="wrap">
+      <h2>How it works</h2>
+      <p class="intro">DragWheel sits in the system tray. You keep dragging files the way you already do; the wheel only shows up when you ask for it.</p>
+      <ol class="steps">
+        <li><h3>Drag a file</h3><p>Pick up any file or folder in File Explorer or on the desktop, and keep holding the mouse button.</p></li>
+        <li><h3>Tap a key</h3><p>Shift opens Convert, Ctrl opens Tools, Alt opens Actions. Scrolling the mouse wheel works too.</p></li>
+        <li><h3>Drop it on a slice</h3><p>The result is saved next to the original. Drop in the middle to cancel; the original is never changed.</p></li>
+      </ol>
+      <p class="keys">Not dragging? Select files and press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd>, or right-click and choose DragWheel.</p>
+    </div>
+  </section>
+
+  <section id="look">
+    <div class="wrap">
+      <h2>Three wheels, one gesture</h2>
+      <p class="intro">Each wheel only shows what makes sense for the file you're holding, in a single ring.</p>
+      <figure class="shot wide">
+        <img src="img/combo.webp" width="1584" height="574" loading="lazy" alt="The Convert, Tools and Actions wheels of DragWheel">
+        <figcaption>Convert, Tools and Actions for an image.</figcaption>
+      </figure>
+      <div class="gallery">
+        <figure class="shot">
+          <img src="img/editor.webp" width="1060" height="700" loading="lazy" alt="Crop and resize editor with live preview">
+          <figcaption>Crop & Resize with a live preview, aspect presets and an exact output size.</figcaption>
+        </figure>
+        <div class="stack">
+          <figure class="shot">
+            <img src="img/about.webp" width="1076" height="719" loading="lazy" alt="DragWheel settings in dark and light themes">
+            <figcaption>Dark and light themes, following Windows or your choice.</figcaption>
+          </figure>
+          <figure class="shot">
+            <img src="img/arabic.webp" width="896" height="514" loading="lazy" alt="DragWheel wheels in Arabic with a right-to-left layout">
+            <figcaption>14 languages, including Arabic, Persian and Urdu laid out right to left.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="formats">
+    <div class="wrap">
+      <h2>What it converts</h2>
+      <p class="intro">Everything runs on your PC with built-in ffmpeg, MuPDF and Pillow. No account, no upload, no telemetry.</p>
+      <dl class="formats">
+        <div><dt>Images</dt><dd><b>To</b> PNG, JPG, WebP, HEIC, AVIF, TIFF, BMP, GIF, ICO, TGA, JPEG 2000, ICNS, PDF. Opens PSD, SVG, DDS, QOI and more.</dd></div>
+        <div><dt>Video</dt><dd><b>To</b> MP4, MP4 H.265, MOV, MKV, WebM, AVI, WMV, GIF, or MP3 and M4A audio. Compress, trim, 720p, mute, snapshot, merge.</dd></div>
+        <div><dt>Audio</dt><dd><b>To</b> MP3, M4A, WAV, FLAC, OGG, Opus, AIFF, WMA, AC3. Trim, normalize, mono, fade, merge.</dd></div>
+        <div><dt>PDF</dt><dd><b>To</b> DOCX, PNG, JPG, TXT, Markdown, HTML. Compress, split, extract pages or images, password-protect, merge.</dd></div>
+        <div><dt>Office files</dt><dd>Documents, slides and spreadsheets to PDF and each other, plus CSV, JSON and Markdown tables.</dd></div>
+        <div><dt>Archives and folders</dt><dd><b>To</b> ZIP, 7Z, RAR, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, or extract them.</dd></div>
+        <div><dt>Subtitles and e-books</dt><dd>SRT, VTT and ASS subtitles; EPUB, MOBI, FB2, CBZ and XPS to PDF, text or images.</dd></div>
+        <div><dt>File actions</dt><dd>Copy, move, copy path, open with, Terminal here, and Float: pin a file on top of every window.</dd></div>
+      </dl>
+      <p class="note">Word, PowerPoint and Excel conversions use Microsoft Office if it's installed, otherwise LibreOffice. Creating RAR files needs WinRAR.</p>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap faq">
+      <h2>Questions</h2>
+      <details><summary>Is DragWheel free?</summary><p>Yes. It's free and open source under the MIT License. If it saves you time, you can <a href="https://buymeacoffee.com/ilukezippo">buy the author a coffee</a>.</p></details>
+      <details><summary>Does it upload my files?</summary><p>No. Every conversion happens on your PC. The only connection DragWheel makes is a daily update check against its GitHub releases, which you can turn off in Settings. See the <a href="https://github.com/ilukezippo/DragWheel/blob/main/PRIVACY.md">privacy policy</a>.</p></details>
+      <details><summary>Is this a Tangerine for Windows?</summary><p>That's the idea. DragWheel brings the drag-tap-drop gesture of <a href="https://tangerineformac.com/">Tangerine for Mac</a> to Windows, with its own set of tools and actions.</p></details>
+      <details><summary>Why does Windows warn about the installer?</summary><p>The installer isn't code-signed yet, so SmartScreen warns about new downloads. Every release is built by GitHub Actions from the public source code. Choose <i>More info</i>, then <i>Run anyway</i>.</p></details>
+      <details><summary>How do updates work?</summary><p>DragWheel checks GitHub once a day and offers <i>Download & install</i> when a new version is out. Your settings are kept.</p></details>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>DragWheel by <a href="https://github.com/ilukezippo">ilukezippo (BoYaqoub)</a>. MIT License.</span>
+    <nav aria-label="Links">
+      <a href="https://github.com/ilukezippo/DragWheel/releases/latest">Download</a>
+      <a href="https://github.com/ilukezippo/DragWheel/issues">Report a problem</a>
+      <a href="https://github.com/ilukezippo/DragWheel/blob/main/PRIVACY.md">Privacy</a>
+      <a href="https://buymeacoffee.com/ilukezippo">Donate</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var SETS = {
+    convert: { hub: "Convert", file: "photo.heic", items: ["JPG", "PNG", "WEBP", "AVIF", "TIFF", "GIF", "ICO", "PDF"],
+               done: function (x) { return "Saved photo." + x.toLowerCase() + " next to the original"; } },
+    tools:   { hub: "Tools", file: "photo.heic", items: ["Compress", "Crop & Resize", "Rotate 90°", "Flip", "Grayscale", "Strip metadata", "Zip"],
+               done: function (x) { return x + " applied, saved as a copy"; } },
+    actions: { hub: "Actions", file: "photo.heic", items: ["Copy", "Copy path", "Move to…", "Copy to…", "Open with…", "Terminal", "Float", "Show in Explorer"],
+               done: function (x) { return x + ": done"; } }
+  };
+  var R0 = 80, R1 = 234, NS = "http://www.w3.org/2000/svg";
+  var g = document.getElementById("slices"), hubT = document.getElementById("hubT"),
+      hubS = document.getElementById("hubS"), note = document.getElementById("note"), mode = "convert";
+
+  function pt(r, deg) { var a = (deg - 90) * Math.PI / 180; return [r * Math.cos(a), r * Math.sin(a)]; }
+  function wedge(a0, a1) {
+    var p = [pt(R1, a0), pt(R1, a1), pt(R0, a1), pt(R0, a0)], big = a1 - a0 > 180 ? 1 : 0;
+    return "M" + p[0] + "A" + R1 + "," + R1 + " 0 " + big + " 1 " + p[1] + "L" + p[2] +
+           "A" + R0 + "," + R0 + " 0 " + big + " 0 " + p[3] + "Z";
+  }
+  function setHub(t, s) { hubT.textContent = t; hubS.textContent = s; }
+
+  function build() {
+    var set = SETS[mode], n = set.items.length, step = 360 / n;
+    g.textContent = "";
+    set.items.forEach(function (label, i) {
+      var mid = i * step, s = document.createElementNS(NS, "g");
+      s.setAttribute("class", "slice"); s.setAttribute("tabindex", "0"); s.setAttribute("role", "button");
+      s.setAttribute("aria-label", set.hub + ": " + label);
+      var path = document.createElementNS(NS, "path");
+      path.setAttribute("d", wedge(mid - step / 2 + 0.9, mid + step / 2 - 0.9));
+      var c = pt((R0 + R1) / 2, mid), words = label.length > 9 && label.indexOf(" ") > 0 ? label.split(" ") : [label];
+      var text = document.createElementNS(NS, "text");
+      text.setAttribute("text-anchor", "middle");
+      words.forEach(function (w, k) {
+        var ts = document.createElementNS(NS, "tspan");
+        ts.setAttribute("x", c[0].toFixed(1));
+        ts.setAttribute("y", (c[1] + 5 + (k - (words.length - 1) / 2) * 18).toFixed(1));
+        ts.textContent = w; text.appendChild(ts);
+      });
+      s.appendChild(path); s.appendChild(text);
+      function on() { [].forEach.call(g.children, function (x) { x.classList.remove("on"); }); s.classList.add("on"); setHub(label, set.file); }
+      function off() { s.classList.remove("on"); setHub(set.hub, set.file); }
+      function pick() { note.textContent = set.done(label); }
+      s.addEventListener("mouseenter", on); s.addEventListener("focus", on);
+      s.addEventListener("mouseleave", off); s.addEventListener("blur", off);
+      s.addEventListener("click", pick);
+      s.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      g.appendChild(s);
+    });
+    setHub(set.hub, set.file);
+    document.querySelectorAll(".pill").forEach(function (b) { b.setAttribute("aria-pressed", b.dataset.mode === mode ? "true" : "false"); });
+  }
+  function switchTo(m) { if (m !== mode) { mode = m; build(); } }
+
+  document.querySelectorAll(".pill").forEach(function (b) { b.addEventListener("click", function () { switchTo(b.dataset.mode); }); });
+  document.addEventListener("keydown", function (e) {
+    if (e.repeat) return;
+    if (e.key === "Shift") switchTo("convert");
+    else if (e.key === "Control") switchTo("tools");
+    else if (e.key === "Alt") { e.preventDefault(); switchTo("actions"); }
+  });
+  build();
+})();
+</script>
+</body>
+</html>

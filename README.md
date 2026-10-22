@@ -10,6 +10,14 @@
 </p>
 
 <p align="center">
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/downloads/ilukezippo/DragWheel/total?label=downloads&color=ff8c1a" alt="Downloads"></a>
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/ilukezippo/DragWheel?color=2b2c30" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-2b2c30" alt="Windows 10 and 11">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2b2c30" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <a href="https://ilukezippo.github.io/DragWheel/"><b>Website</b></a> ·
   <a href="../../releases/latest"><b>⬇ Download the installer</b></a> ·
   <a href="#how-to-use">How to use</a> ·
   <a href="#supported-formats">Formats</a> ·
