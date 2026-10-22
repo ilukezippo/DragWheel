@@ -38,7 +38,7 @@ from i18n import tr
 
 APP = "DragWheel"
 DONATE_URL = "https://buymeacoffee.com/ilukezippo"
-VERSION = "1.1.4"
+VERSION = "1.1.5"
 
 ACCENT = QColor("#ff8a00")
 ACCENT_2 = QColor("#ffb347")
@@ -215,7 +215,8 @@ class UpdateDownload(QRunnable):
         try:
             path = updater.download(self.release.installer_url, self.release.installer_name,
                                     progress=lambda d, t: self.sig.progress.emit(d, t),
-                                    should_stop=lambda: self.stop)
+                                    should_stop=lambda: self.stop,
+                                    size=self.release.installer_size, sha256=self.release.installer_sha256)
             self.sig.downloaded.emit(path, None)
         except InterruptedError:
             self.sig.downloaded.emit(None, CANCELLED)
@@ -1978,6 +1979,7 @@ def main():
         pyside_version = "?"
     winsys.log(f"start {APP} {VERSION} qt={pyside_version} frozen={getattr(sys, 'frozen', False)} "
                f"elevated={winsys.is_elevated()}")
+    updater.cleanup(VERSION)          # the update installed fine: drop its downloaded installer
 
     QLocalServer.removeServer(SERVER_NAME)
     server = QLocalServer()

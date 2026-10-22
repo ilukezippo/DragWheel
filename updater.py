@@ -29,6 +29,7 @@ class Release:
     installer_url: str | None
     installer_name: str | None
     installer_size: int
+    installer_sha256: str = ""
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -62,11 +63,52 @@ def latest_release() -> Release:
         installer_url=asset.get("browser_download_url") if asset else None,
         installer_name=asset.get("name") if asset else None,
         installer_size=int(asset.get("size") or 0) if asset else 0,
+        installer_sha256=((asset.get("digest") or "").split("sha256:")[-1].lower()
+                          if asset and (asset.get("digest") or "").startswith("sha256:") else ""),
     )
 
 
-def download(url: str, name: str, progress=None, should_stop=lambda: False, parts: int = 8) -> Path:
+UPDATE_DIR = Path(tempfile.gettempdir()) / "DragWheel-update"     # %TEMP%\\DragWheel-update
+
+
+def sha256_of(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def cached_installer(name: str, size: int = 0, sha256: str = "") -> Path | None:
+    """An installer downloaded earlier (e.g. setup was cancelled) that is complete and unchanged."""
+    target = UPDATE_DIR / name
+    try:
+        if not target.is_file() or (size and target.stat().st_size != size):
+            return None
+        if sha256 and sha256_of(target) != sha256:
+            return None
+        return target
+    except OSError:
+        return None
+
+
+def cleanup(current_version: str):
+    """Delete downloaded installers once they are installed (version <= the running one), plus leftovers."""
+    try:
+        for f in UPDATE_DIR.iterdir():
+            m = re.match(r"DragWheel-Setup-(.+?)\.exe(\.part)?$", f.name, re.I)
+            if f.name.endswith(".part") or (m and not is_newer(m.group(1), current_version)):
+                f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def download(url: str, name: str, progress=None, should_stop=lambda: False, parts: int = 8,
+             size: int = 0, sha256: str = "") -> Path:
     """Download to %TEMP%\\DragWheel-update\\name. progress(done_bytes, total_bytes).
+
+    An installer already downloaded and verified is reused instead of downloading it again.
 
     GitHub's file server limits the speed of each connection, so the file is fetched in
     `parts` pieces at the same time (HTTP Range requests). Falls back to one stream when the
@@ -75,9 +117,13 @@ def download(url: str, name: str, progress=None, should_stop=lambda: False, part
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    folder = Path(tempfile.gettempdir()) / "DragWheel-update"
-    folder.mkdir(parents=True, exist_ok=True)
-    target = folder / name
+    cached = cached_installer(name, size, sha256)
+    if cached:
+        if progress:
+            progress(cached.stat().st_size, cached.stat().st_size)
+        return cached
+    UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+    target = UPDATE_DIR / name
     part = target.with_suffix(target.suffix + ".part")
 
     # Probe: follows the redirect to the real file URL and tells us the size + range support.
@@ -143,6 +189,8 @@ def download(url: str, name: str, progress=None, should_stop=lambda: False, part
             raise InterruptedError("download cancelled")
         if total and part.stat().st_size != total:
             raise IOError("download incomplete")
+        if sha256 and sha256_of(part) != sha256:
+            raise IOError("downloaded file is damaged (checksum mismatch), please try again")
     except BaseException:
         stopped.set()
         part.unlink(missing_ok=True)
