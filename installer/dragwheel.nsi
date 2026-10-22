@@ -12,7 +12,7 @@ SetCompressor /SOLID lzma
 SetCompressorDictSize 64
 
 !define APPNAME      "DragWheel"
-!define APPVERSION   "1.1.2"
+!define APPVERSION   "1.1.3"
 !define PUBLISHER    "ilukezippo"
 !define EXE          "DragWheel.exe"
 !define UNINST_KEY   "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
@@ -53,8 +53,11 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !define MUI_LANGDLL_REGISTRY_KEY "${SETTINGS_KEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "InstallerLanguage"
 
-!define MUI_WELCOMEPAGE_TITLE "$(WelcomeTitle)"
-!define MUI_WELCOMEPAGE_TEXT "$(WelcomeText)"
+Var OldVersion   ; version already installed ("" on a fresh install)
+Var WelcomeHead
+Var WelcomeBody
+!define MUI_WELCOMEPAGE_TITLE "$WelcomeHead"
+!define MUI_WELCOMEPAGE_TEXT "$WelcomeBody"
 
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_FUNCTION LaunchAsUser
@@ -97,10 +100,12 @@ FunctionEnd
   ${EndIf}
 !macroend
 
+; Close DragWheel. No /T here: when the app's built-in updater started this installer, the installer
+; is DragWheel's child, and /T (kill the whole process tree) would kill the installer too.
 !macro StopDragWheel
-  nsExec::Exec 'taskkill /F /T /IM ${EXE}'
+  nsExec::Exec 'taskkill /F /IM ${EXE}'
   Pop $0
-  Sleep 400
+  Sleep 800
 !macroend
 
 Section "!$(SecCoreName)" SecCore
@@ -116,8 +121,17 @@ Section "!$(SecCoreName)" SecCore
   ${EndIf}
   SetShellVarContext all
 
+  ; updating: remove the old version first (settings in the registry are kept)
+  ${If} $OldVersion != ""
+    DetailPrint "$(RemovingOld)"
+    RMDir /r "$INSTDIR\_internal"
+    Delete "$INSTDIR\${EXE}"
+    Delete "$INSTDIR\Uninstall.exe"
+    RMDir /r "$SMPROGRAMS\${APPNAME}"
+  ${EndIf}
+
   SetOutPath "$INSTDIR"
-  RMDir /r "$INSTDIR\_internal"          ; clean upgrade
+  RMDir /r "$INSTDIR\_internal"
   File /r "${DISTDIR}\*.*"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -144,11 +158,15 @@ Section "!$(SecCoreName)" SecCore
 
   ; tell the app the installer already decided about the Explorer menu
   WriteRegStr HKCU "${SETTINGS_KEY}" "installer" "1"
-  ; app language follows the installer language (can be changed in Settings)
-  StrCmp $LANGUAGE ${LANG_ARABIC} 0 +3
-    WriteRegStr HKCU "${SETTINGS_KEY}" "language" "ar"
-    Goto +2
-    WriteRegStr HKCU "${SETTINGS_KEY}" "language" "en"
+  ; app language follows the installer language on a first install; an update keeps the one chosen in Settings
+  ReadRegStr $0 HKCU "${SETTINGS_KEY}" "language"
+  ${If} $0 == ""
+    ${If} $LANGUAGE == ${LANG_ARABIC}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "ar"
+    ${Else}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "en"
+    ${EndIf}
+  ${EndIf}
 SectionEnd
 
 Section "$(SecMenuName)" SecMenu
@@ -195,6 +213,20 @@ Function .onInit
   StrCmp $R0 0 +3
     MessageBox MB_OK|MB_ICONEXCLAMATION "$(AlreadyRunning)"
     Abort
+
+  ; already installed? -> this is an update
+  ReadRegStr $OldVersion HKLM "${UNINST_KEY}" "DisplayVersion"
+  ${If} $OldVersion == ""
+  ${AndIf} ${FileExists} "$INSTDIR\${EXE}"
+    StrCpy $OldVersion "?"
+  ${EndIf}
+  ${If} $OldVersion == ""
+    StrCpy $WelcomeHead "$(WelcomeTitle)"
+    StrCpy $WelcomeBody "$(WelcomeText)"
+  ${Else}
+    StrCpy $WelcomeHead "$(UpdateTitle)"
+    StrCpy $WelcomeBody "$(UpdateText)"
+  ${EndIf}
 FunctionEnd
 
 ; ---------------------------------------------------------------------------
@@ -233,6 +265,12 @@ LangString WelcomeTitle   ${LANG_ENGLISH} "Welcome to ${APPNAME}"
 LangString WelcomeTitle   ${LANG_ARABIC}  "مرحبًا بك في ${APPNAME}"
 LangString WelcomeText    ${LANG_ENGLISH} "Drag a file, tap a key, drop it on the wheel.$\r$\n$\r$\nTap Shift to convert, Ctrl for file tools (compress, crop, trim…) or Alt for file actions.$\r$\n$\r$\nEverything runs on your PC — nothing is uploaded.$\r$\n$\r$\n${APPNAME} will be installed for all users in Program Files.$\r$\n$\r$\nClick Next to continue."
 LangString WelcomeText    ${LANG_ARABIC}  "اسحب ملفًا، اضغط مفتاحًا، ثم أفلته على العجلة.$\r$\n$\r$\nاضغط Shift للتحويل، وCtrl لأدوات الملفات (ضغط، قص، تقطيع…)، وAlt لإجراءات الملفات.$\r$\n$\r$\nكل شيء يعمل على جهازك — لا يتم رفع أي ملف.$\r$\n$\r$\nسيتم تثبيت ${APPNAME} لجميع المستخدمين في مجلد Program Files.$\r$\n$\r$\nاضغط التالي للمتابعة."
+LangString UpdateTitle    ${LANG_ENGLISH} "Update ${APPNAME}"
+LangString UpdateTitle    ${LANG_ARABIC}  "تحديث ${APPNAME}"
+LangString UpdateText     ${LANG_ENGLISH} "${APPNAME} $OldVersion is installed on this PC.$\r$\n$\r$\nSetup will close it, remove the old version and install ${APPNAME} ${APPVERSION}. Your settings are kept.$\r$\n$\r$\nClick Next to continue."
+LangString UpdateText     ${LANG_ARABIC}  "الإصدار $OldVersion من ${APPNAME} مثبّت على هذا الجهاز.$\r$\n$\r$\nسيغلقه برنامج الإعداد ويزيل الإصدار القديم ثم يثبّت ${APPNAME} ${APPVERSION}. ستبقى إعداداتك كما هي.$\r$\n$\r$\nاضغط التالي للمتابعة."
+LangString RemovingOld    ${LANG_ENGLISH} "Removing ${APPNAME} $OldVersion…"
+LangString RemovingOld    ${LANG_ARABIC}  "جارٍ إزالة ${APPNAME} $OldVersion…"
 LangString RunNow         ${LANG_ENGLISH} "Start ${APPNAME} now"
 LangString RunNow         ${LANG_ARABIC}  "تشغيل ${APPNAME} الآن"
 LangString FinishText     ${LANG_ENGLISH} "${APPNAME} lives in the system tray.$\r$\n$\r$\nDrag any file and tap Shift to try it."
