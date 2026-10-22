@@ -38,7 +38,7 @@ from i18n import tr
 
 APP = "DragWheel"
 DONATE_URL = "https://buymeacoffee.com/ilukezippo"
-VERSION = "1.1.5"
+VERSION = "1.1.6"
 
 ACCENT = QColor("#ff8a00")
 ACCENT_2 = QColor("#ffb347")
@@ -1889,8 +1889,8 @@ class DragWheelApp(QObject):
             self.toast.show_msg(tr("Couldn't start the installer"), str(e), "err", 8000)
             return
         self.toast.show_msg(tr("Installing update…"), tr("Finish the steps in the setup window."), "info", 4000)
-        # Step out of the way so the installer can replace our files (it restarts DragWheel at the end).
-        QTimer.singleShot(2500, self.qapp.quit)
+        # Keep running: the installer closes DragWheel itself when Install is pressed
+        # (and cancelling setup leaves the app running).
 
     # ---- windows
     def show_settings(self):
