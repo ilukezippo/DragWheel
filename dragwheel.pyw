@@ -1986,6 +1986,12 @@ def main():
     winsys.log(f"start {APP} {VERSION} qt={pyside_version} frozen={getattr(sys, 'frozen', False)} "
                f"elevated={winsys.is_elevated()}")
     updater.cleanup(VERSION)          # the update installed fine: drop its downloaded installer
+    try:
+        gone = winsys.remove_legacy_satsuma()
+        if gone:
+            winsys.log("removed old Satsuma leftovers: " + ", ".join(gone))
+    except Exception as e:
+        winsys.log(f"Satsuma cleanup failed: {e}")
 
     QLocalServer.removeServer(SERVER_NAME)
     server = QLocalServer()

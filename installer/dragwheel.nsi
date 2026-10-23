@@ -119,6 +119,18 @@ Section "!$(SecCoreName)" SecCore
     RMDir /r "$LOCALAPPDATA\Programs\${APPNAME}"
     DeleteRegKey HKCU "${UNINST_KEY}"
   ${EndIf}
+  ; remove DragWheel's early test build, which was called "Satsuma"
+  nsExec::Exec 'taskkill /F /IM Satsuma.exe'
+  Pop $0
+  ${If} ${FileExists} "$LOCALAPPDATA\Programs\Satsuma\Uninstall.exe"
+    ExecWait '"$LOCALAPPDATA\Programs\Satsuma\Uninstall.exe" /S _?=$LOCALAPPDATA\Programs\Satsuma'
+  ${EndIf}
+  RMDir /r "$LOCALAPPDATA\Programs\Satsuma"
+  DeleteRegKey HKCU "Software\Classes\*\shell\Satsuma"
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\Satsuma"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Satsuma"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Satsuma"
+  Delete "$SENDTO\Satsuma.lnk"
   SetShellVarContext all
 
   ; updating: remove the old version first (settings in the registry are kept)

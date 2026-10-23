@@ -94,9 +94,21 @@ jobs:
           path: |
             dist/DragWheel-Setup-*.exe
             dist/DragWheel-portable.zip
+      - name: Check whether this version is already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ needs.app.outputs.version }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "v${{ needs.app.outputs.version }} already exists - not replacing its files (bump VERSION to publish)"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Release
-        # publishes v<VERSION> from main (or a pushed v* tag); re-running updates the same release
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        # publishes v<VERSION> from main once; an existing release is never overwritten, so its
+        # checksum (used by the winget listing and the in-app updater) stays the same
+        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && steps.exists.outputs.released == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.app.outputs.version }}

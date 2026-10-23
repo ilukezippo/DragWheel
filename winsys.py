@@ -340,6 +340,64 @@ def _sendto(enabled: bool) -> None:
         print("SendTo shortcut failed:", e, file=sys.stderr)
 
 
+def _delete_tree(root, path: str) -> bool:
+    """Delete a registry key and everything under it. True if something was removed."""
+    import winreg
+    try:
+        with winreg.OpenKey(root, path, 0, winreg.KEY_ALL_ACCESS) as k:
+            while True:
+                try:
+                    child = winreg.EnumKey(k, 0)
+                except OSError:
+                    break
+                _delete_tree(root, path + "\\" + child)
+        winreg.DeleteKey(root, path)
+        return True
+    except OSError:
+        return False
+
+
+def remove_legacy_satsuma() -> list[str]:
+    """DragWheel's early test builds were called "Satsuma". Remove what they left for the
+    current user: the "Convert with Satsuma" right-click entry, Send To and Start Menu
+    shortcuts, the start-with-Windows entry and their settings. Returns what was removed."""
+    if not IS_WIN:
+        return []
+    import winreg
+    hk = winreg.HKEY_CURRENT_USER
+    removed = []
+    for key in (r"Software\Classes\*\shell\Satsuma",
+                r"Software\Classes\Directory\shell\Satsuma",
+                r"Software\Classes\Directory\Background\shell\Satsuma",
+                r"Software\Classes\SystemFileAssociations\image\shell\Satsuma",
+                r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Satsuma",
+                r"Software\Satsuma"):
+        if _delete_tree(hk, key):
+            removed.append(key)
+    try:
+        with winreg.OpenKey(hk, RUN_KEY, 0, winreg.KEY_ALL_ACCESS) as k:
+            winreg.DeleteValue(k, "Satsuma")
+            removed.append("Run\\Satsuma")
+    except OSError:
+        pass
+    appdata = Path(os.environ.get("APPDATA", ""))
+    for lnk in (appdata / "Microsoft" / "Windows" / "SendTo" / "Satsuma.lnk",
+                appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Satsuma.lnk",
+                Path.home() / "Desktop" / "Satsuma.lnk"):
+        try:
+            if lnk.exists():
+                lnk.unlink()
+                removed.append(str(lnk))
+        except OSError:
+            pass
+    folder = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Satsuma"
+    if folder.is_dir():
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+        removed.append(str(folder))
+    return removed
+
+
 # ----------------------------------------------------------------------------
 # Shell helpers
 # ----------------------------------------------------------------------------
