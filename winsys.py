@@ -299,7 +299,8 @@ MENU_TARGETS = [r"Software\Classes\*\shell\DragWheel",
 BG_MENU = r"Software\Classes\Directory\Background\shell\DragWheel"   # right-click on the desktop / a folder's empty space
 
 
-def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image here") -> None:
+def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image here",
+                     link_label: str = "Play copied link in Float") -> None:
     if not IS_WIN:
         return
     import winreg
@@ -315,6 +316,11 @@ def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image her
             winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, "imageres.dll,-5302")
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\paste\command") as k:
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _quote(app_command()) + ' --paste-here "%V"')
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zlink") as k:     # listed after "paste"
+            winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, link_label)
+            winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, "imageres.dll,-1004")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zlink\command") as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _quote(app_command()) + " --play-link")
     else:
         _delete_tree(winreg.HKEY_CURRENT_USER, BG_MENU)
     for key in MENU_TARGETS:

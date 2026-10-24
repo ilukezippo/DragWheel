@@ -803,3 +803,9 @@ from locales import share12 as _sh12  # noqa: E402
 for _code, _vals in _sh12.T.items():
     assert len(_vals) == len(_sh12.KEYS), _code
     T[_code].update(dict(zip(_sh12.KEYS, _vals)))
+
+from locales import share12b as _sh12b  # noqa: E402
+
+for _code, _vals in _sh12b.T.items():
+    assert len(_vals) == len(_sh12b.KEYS), _code
+    T[_code].update(dict(zip(_sh12b.KEYS, _vals)))

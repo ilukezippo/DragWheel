@@ -215,6 +215,9 @@ Section "$(SecMenuName)" SecMenu
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\paste" "MUIVerb" "$(PasteHere)"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\paste" "Icon" "imageres.dll,-5302"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\paste\command" "" '"$INSTDIR\${EXE}" --paste-here "%V"'
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink" "MUIVerb" "$(PlayLink)"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink" "Icon" "imageres.dll,-1004"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink\command" "" '"$INSTDIR\${EXE}" --play-link'
   SetShellVarContext current           ; Send To is per user
   CreateShortcut "$SENDTO\${APPNAME}.lnk" "$INSTDIR\${EXE}" "--open" "$INSTDIR\${EXE}" 0
   SetShellVarContext all
@@ -307,6 +310,8 @@ LangString WelcomeText    ${LANG_ENGLISH} "Drag a file, tap a key, drop it on th
 LangString WelcomeText    ${LANG_ARABIC}  "اسحب ملفًا، اضغط مفتاحًا، ثم أفلته على العجلة.$\r$\n$\r$\nاضغط Shift للتحويل، وCtrl لأدوات الملفات (ضغط، قص، تقطيع…)، وAlt لإجراءات الملفات.$\r$\n$\r$\nكل شيء يعمل على جهازك — لا يتم رفع أي ملف.$\r$\n$\r$\nسيتم تثبيت ${APPNAME} لجميع المستخدمين في مجلد Program Files.$\r$\n$\r$\nاضغط التالي للمتابعة."
 LangString PasteHere      ${LANG_ENGLISH} "Save clipboard image here"
 LangString PasteHere      ${LANG_ARABIC}  "حفظ صورة الحافظة هنا"
+LangString PlayLink       ${LANG_ENGLISH} "Play copied link in Float"
+LangString PlayLink       ${LANG_ARABIC}  "تشغيل الرابط المنسوخ في نافذة عائمة"
 LangString UpdateNotNow   ${LANG_ENGLISH} "The update was cancelled so your running jobs can finish. Run setup again when they're done."
 LangString UpdateNotNow   ${LANG_ARABIC}  "أُلغي التحديث حتى تنتهي المهام الجارية. شغّل الإعداد مرة أخرى عند انتهائها."
 LangString UpdateTitle    ${LANG_ENGLISH} "Update ${APPNAME}"

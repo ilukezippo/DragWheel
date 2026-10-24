@@ -361,6 +361,8 @@ class PhoneShare(QDialog):
         class H(http.server.BaseHTTPRequestHandler):
             def do_GET(h):
                 path = urllib.parse.unquote(h.path)
+                winsys.log(f"send to phone: request from {h.client_address[0]}: {path[:60]}")
+                share._seen = h.client_address[0]
                 if not path.startswith(f"/{token}"):
                     h.send_error(404)
                     return
@@ -462,9 +464,18 @@ class PhoneShare(QDialog):
         stop = QPushButton(tr("Stop sharing"))
         stop.clicked.connect(self.close)
         lay.addWidget(stop)
+        self.diag = QLabel()
+        self.diag.setWordWrap(True)
+        self.diag.setFixedWidth(360)
+        self.diag.setStyleSheet(f"color:{theme.hexc('danger')}")
+        self.diag.hide()
+        lay.insertWidget(lay.indexOf(self.count), self.diag)
+        self._seen = None
+        self._diag_lines = None
         self._poll = QTimer(self, interval=500, timeout=self._update)
         self._poll.start()
         self._last = ""
+        threading.Thread(target=self._diagnose, daemon=True).start()
 
     def _show_qr(self, ip):
         self.url = f"http://{ip}:{self._port}/{self._token}/"
@@ -488,6 +499,8 @@ class PhoneShare(QDialog):
                     + "<li>" + tr("Windows Firewall is probably blocking it. Press Allow in firewall below (Windows asks for permission once).") + "</li>"
                     + "<li>" + tr("Make sure the phone is on the same Wi-Fi as this PC, not mobile data or a guest network.") + "</li>"
                     + ("<li>" + tr("Try the other network address in the list under the QR code.") + "</li>" if len(self.ips) > 1 else "")
+                    + "<li>" + tr("Turn off any VPN on the phone and on this PC while sharing.") + "</li>"
+                    + "<li>" + tr("Some routers keep Wi-Fi devices apart ('AP isolation' or 'client isolation'), or put the phone on a separate 2.4/5 GHz or mesh network. If nothing above helps, that's the cause — it can be turned off in the router's settings.") + "</li>"
                     + "</ol>")
         allow = box.addButton(tr("Allow in firewall"), QMessageBox.AcceptRole)
         box.addButton(tr("Close"), QMessageBox.RejectRole)
@@ -496,11 +509,66 @@ class PhoneShare(QDialog):
             if allow_through_firewall():
                 self.count.setText(tr("Allowed. Scan the code again on the phone."))
 
+    def _diagnose(self):
+        """Why a phone may not get through: network set to Public with incoming blocked, Windows' 'block all
+        incoming connections', another security app's firewall, or no allow rule. Read-only, no admin."""
+        if not winsys.IS_WIN:
+            return
+        import subprocess
+        ip = self.url.split("//")[1].split(":")[0]
+        exe = sys.executable.replace("'", "''")
+        ps = f"""
+$ErrorActionPreference='SilentlyContinue'
+$a = Get-NetIPAddress -IPAddress '{ip}'
+if ($a) {{ $p = Get-NetConnectionProfile -InterfaceIndex $a.InterfaceIndex; "iface|$($a.InterfaceAlias)|$($p.NetworkCategory)|$($p.Name)" }}
+Get-NetFirewallProfile | ForEach-Object {{ "profile|$($_.Name)|$($_.Enabled)|$($_.DefaultInboundAction)|$($_.AllowInboundRules)" }}
+Get-NetFirewallApplicationFilter -Program '{exe}' | Get-NetFirewallRule | ForEach-Object {{ "rule|$($_.DisplayName)|$($_.Direction)|$($_.Action)|$($_.Enabled)|$($_.Profile)" }}
+Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct | ForEach-Object {{ "fwproduct|$($_.displayName)" }}
+Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | ForEach-Object {{ "av|$($_.displayName)" }}
+"""
+        try:
+            r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+                               capture_output=True, timeout=40, creationflags=engine.NO_WINDOW)
+            lines = [x.strip() for x in r.stdout.decode("utf-8", "replace").splitlines() if "|" in x]
+        except Exception as e:
+            lines = [f"error|{e}"]
+        for x in lines:
+            winsys.log("send to phone check: " + x)
+        self._diag_lines = lines
+
+    def _diag_text(self, lines):
+        notes = []
+        cat = next((x.split("|")[2] for x in lines if x.startswith("iface|")), "")
+        profiles = {x.split("|")[1].lower(): x.split("|") for x in lines if x.startswith("profile|")}
+        active = profiles.get("public" if cat.lower() == "public" else "private" if cat.lower() == "private" else "domain")
+        if active and active[2].lower() == "true" and active[4].lower() == "false":
+            notes.append(tr("Windows Security is set to block all incoming connections on this network, even for allowed apps. "
+                            "Turn that off in Windows Security → Firewall & network protection → {net} network.", net=active[1]))
+        rules = [x.split("|") for x in lines if x.startswith("rule|") and x.split("|")[2].lower() == "inbound"]
+        if any(r[3].lower() == "block" and r[4].lower() == "true" for r in rules):
+            notes.append(tr("A firewall rule blocks DragWheel. Press Allow in firewall."))
+        elif not any(r[3].lower() == "allow" and r[4].lower() == "true" for r in rules):
+            notes.append(tr("DragWheel isn't allowed in Windows Firewall yet. Press Allow in firewall."))
+        others = [x.split("|", 1)[1] for x in lines if x.startswith("fwproduct|") and "windows" not in x.lower()]
+        if others:
+            notes.append(tr("{app} has its own firewall: allow DragWheel there too (or let it trust your home network).",
+                            app=", ".join(others)))
+        if cat.lower() == "public":
+            notes.append(tr("This Wi-Fi is set as a Public network in Windows. Setting it to Private lets home devices connect."))
+        return notes
+
     def _hit(self, name):
         self.hits += 1
         self._last = name
 
     def _update(self):
+        if self._diag_lines is not None:
+            notes = self._diag_text(self._diag_lines)
+            self._diag_lines = None
+            self._notes = notes
+            if notes:
+                self.diag.setText("⚠ " + "\n\n⚠ ".join(notes))
+                self.diag.show()
         if self.hits:
             self.count.setText(tr("Downloaded {n} time(s) — last: {name}", n=self.hits, name=self._last))
 
@@ -1935,6 +2003,11 @@ class FloatWindow(QWidget):
             busy = now - self._pos_seen[1] > 0.9
         if self.kind == "video" and self.frame is None and (playing or self.link):
             busy = True                                                     # nothing to show yet
+        if busy and not self._busy:
+            self._busy_since = now
+        if busy and self.link and now - getattr(self, "_busy_since", now) > 15 \
+                and now - getattr(self, "_last_refresh", 0) > 45:
+            self.refresh_link(auto=True)                      # stuck: fetch a fresh link by itself
         if busy or busy != self._busy:
             self._spin = (self._spin + 12) % 360
             self._busy = busy
@@ -2097,13 +2170,38 @@ class FloatWindow(QWidget):
             self._relay = None
 
     def restart_live(self, info):
-        """The stream link was renewed: keep the float as it is, restart the relay on the new link."""
+        """The link was renewed: keep the float as it is (size, place, volume) and carry on playing —
+        live streams through a fresh relay, other videos from where they were."""
+        if self.player is None or info.get("audio") or self.companion is not None:
+            pos = 0 if (self.player is None or info.get("live")) else self.player.position()
+            self._play_now = True
+            self._load(info["url"], info)                # picture and sound apart: set both up again
+            self._resume_ms = pos
+            return
+        pos = 0 if info.get("live") else self.player.position()
         self.link = info
         self.path = info["url"]
-        self._start_relay()
-        if self.player is not None and self._relay is not None:
-            self.player.setSource(QUrl(self._relay.url))
-            self.player.play()
+        self._pos_seen = (-1, 0.0)
+        if info.get("live"):
+            self._start_relay()
+            if self._relay is not None:
+                self.player.setSource(QUrl(self._relay.url))
+        else:
+            self._stop_relay()
+            self._resume_ms = pos
+            self.autoplay = True
+            self.player.setSource(QUrl(info["url"]))
+        self.player.play()
+
+    def refresh_link(self, auto=False):
+        """Ask the site again for the video (its links expire) and continue."""
+        if not self.link or _APP is None:
+            return
+        import time
+        self._last_refresh = time.monotonic()
+        winsys.log(f"float: refresh link ({'automatic, stuck loading' if auto else 'from the menu'})")
+        self._live_fixing = time.monotonic()
+        _APP._resolve_and_play(self.link["page"], self, quiet=True)
 
     def _live_continue(self, error=False):
         import time
@@ -2688,6 +2786,8 @@ class FloatWindow(QWidget):
         else:
             m.addAction(tr("Show in Explorer"), lambda: winsys.reveal(self.path))
             m.addAction(tr("Copy path"), lambda: QGuiApplication.clipboard().setText(str(Path(self.path))))
+        if self.link:
+            m.addAction(tr("Refresh"), self.refresh_link)
         if _APP is not None:
             m.addAction(tr("Play copied link"), lambda: _APP.play_link(target=self))
         m.addSeparator()
@@ -4435,7 +4535,7 @@ class SettingsDialog(QDialog):
         s.setValue("theme", self.theme_box.currentData())
         try:
             winsys.set_startup(self.startup.isChecked())
-            winsys.set_context_menu(self.menu.isChecked())
+            winsys.set_context_menu(self.menu.isChecked(), paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"))
         except Exception as e:
             QMessageBox.warning(self, APP, tr("Couldn't update Windows integration:") + f"\n{e}")
         self.accept()
@@ -5341,7 +5441,7 @@ def main():
 
     try:
         if winsys.context_menu_enabled():
-            winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"))
+            winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"))
     except Exception as e:
         winsys.log(f"context menu refresh failed: {e}")
 
@@ -5367,6 +5467,9 @@ def main():
                 if ok:
                     QTimer.singleShot(100, app.quit_for_update)
                 return
+            if "--play-link" in msg.get("flags", []):
+                app.play_link()
+                return
             if "--paste-here" in msg.get("flags", []):
                 app.save_clipboard_image((msg.get("paths") or [None])[0])
             elif msg.get("paths"):
@@ -5381,11 +5484,13 @@ def main():
         settings().setValue("first_run_done", "true")
         if settings().value("installer", "") != "1":   # the installer already applied the user's choice
             try:
-                winsys.set_context_menu(True)
+                winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"))
             except Exception:
                 pass
         QTimer.singleShot(500, app.show_help)
-    if "--paste-here" in flags:
+    if "--play-link" in flags:
+        QTimer.singleShot(400, app.play_link)
+    elif "--paste-here" in flags:
         QTimer.singleShot(300, lambda: app.save_clipboard_image(paths[0] if paths else None))
     elif paths:
         app.queue_paths(paths)
