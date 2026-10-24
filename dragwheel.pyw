@@ -287,6 +287,48 @@ def shred_path(path):
     os.remove(tmp)
 
 
+def _lan_ips() -> list[str]:
+    """IPv4 addresses a phone could reach, best first (the Wi-Fi/LAN one used for the internet, then other
+    private addresses; virtual adapters such as WSL/Hyper-V/VPN last)."""
+    import socket
+    best = _lan_ip()
+    found = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in found and not ip.startswith(("127.", "169.254.")):
+                found.append(ip)
+    except OSError:
+        pass
+
+    def score(ip):
+        if ip == best:
+            return 0
+        if ip.startswith("192.168."):
+            return 1
+        if ip.startswith("10."):
+            return 2
+        if ip.startswith("172."):                         # 172.16-31 is often WSL / Hyper-V / Docker
+            return 3
+        return 4
+    out = sorted(set(found + ([best] if best != "127.0.0.1" else [])), key=score)
+    return out or ["127.0.0.1"]
+
+
+def allow_through_firewall() -> bool:
+    """Ask Windows (UAC) to let phones reach DragWheel: removes old block rules, adds an allow rule."""
+    if not winsys.IS_WIN:
+        return False
+    import ctypes
+    exe = sys.executable
+    cmd = (f'/c netsh advfirewall firewall delete rule name=all program="{exe}" & '
+           f'netsh advfirewall firewall add rule name="DragWheel (Send to phone)" dir=in action=allow protocol=TCP '
+           f'program="{exe}" profile=private,public enable=yes')
+    r = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", cmd, None, 0)
+    winsys.log(f"firewall rule requested: {r}")
+    return r > 32
+
+
 def _lan_ip() -> str:
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -385,26 +427,26 @@ class PhoneShare(QDialog):
         self.server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), H)
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.url = f"http://{_lan_ip()}:{self.server.server_address[1]}/{token}/"
+        self._port, self._token = self.server.server_address[1], token
+        self.ips = _lan_ips()
         lay = QVBoxLayout(self)
         title = QLabel("<b>" + tr("Scan with your phone's camera") + "</b>")
         title.setAlignment(Qt.AlignCenter)
         lay.addWidget(title)
-        qr = QLabel()
-        qr.setAlignment(Qt.AlignCenter)
-        try:
-            import io as _io
-            import segno
-            buf = _io.BytesIO()
-            segno.make(self.url, error="m").save(buf, kind="png", scale=7, border=3, dark="#000", light="#fff")
-            qr.setPixmap(QPixmap.fromImage(QImage.fromData(buf.getvalue())))
-        except Exception as e:
-            winsys.log(f"qr: {e}")
-        lay.addWidget(qr)
-        link = QLabel(f"<span style='color:{theme.hexc('dim')}'>{self.url}</span>")
-        link.setAlignment(Qt.AlignCenter)
-        link.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        lay.addWidget(link)
+        self.qr = QLabel()
+        self.qr.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self.qr)
+        self.link = QLabel()
+        self.link.setAlignment(Qt.AlignCenter)
+        self.link.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.link)
+        if len(self.ips) > 1:                              # several network adapters: let the user switch
+            self.ip_box = QComboBox()
+            for ip in self.ips:
+                self.ip_box.addItem(tr("Network address: {ip}", ip=ip), ip)
+            self.ip_box.currentIndexChanged.connect(lambda _i: self._show_qr(self.ip_box.currentData()))
+            lay.addWidget(self.ip_box)
+        self._show_qr(self.ips[0])
         what = self.paths[0].name if len(self.paths) == 1 else tr("{n} files", n=len(self.paths))
         info = QLabel(tr("Sharing {what}. Your phone must be on the same Wi-Fi. If Windows asks, allow DragWheel on "
                          "private networks. Nothing goes through the internet; sharing stops when you close this window.",
@@ -414,12 +456,45 @@ class PhoneShare(QDialog):
         lay.addWidget(info)
         self.count = QLabel()
         lay.addWidget(self.count)
+        help_b = QPushButton(tr("Phone can't open it?"))
+        help_b.clicked.connect(self._help)
+        lay.addWidget(help_b)
         stop = QPushButton(tr("Stop sharing"))
         stop.clicked.connect(self.close)
         lay.addWidget(stop)
         self._poll = QTimer(self, interval=500, timeout=self._update)
         self._poll.start()
         self._last = ""
+
+    def _show_qr(self, ip):
+        self.url = f"http://{ip}:{self._port}/{self._token}/"
+        winsys.log(f"send to phone: {self.url} (addresses: {', '.join(self.ips)})")
+        self.link.setText(f"<span style='color:{theme.hexc('dim')}'>{self.url}</span>")
+        try:
+            import io as _io
+            import segno
+            buf = _io.BytesIO()
+            segno.make(self.url, error="m").save(buf, kind="png", scale=7, border=3, dark="#000", light="#fff")
+            self.qr.setPixmap(QPixmap.fromImage(QImage.fromData(buf.getvalue())))
+        except Exception as e:
+            winsys.log(f"qr: {e}")
+
+    def _help(self):
+        box = QMessageBox(self)
+        box.setWindowTitle(f"{APP} — " + tr("Send to phone"))
+        box.setStyleSheet(i18n.css(DIALOG_CSS))
+        box.setTextFormat(Qt.RichText)
+        box.setText("<b>" + tr("If the phone says the site can't be reached:") + "</b><ol>"
+                    + "<li>" + tr("Windows Firewall is probably blocking it. Press Allow in firewall below (Windows asks for permission once).") + "</li>"
+                    + "<li>" + tr("Make sure the phone is on the same Wi-Fi as this PC, not mobile data or a guest network.") + "</li>"
+                    + ("<li>" + tr("Try the other network address in the list under the QR code.") + "</li>" if len(self.ips) > 1 else "")
+                    + "</ol>")
+        allow = box.addButton(tr("Allow in firewall"), QMessageBox.AcceptRole)
+        box.addButton(tr("Close"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is allow:
+            if allow_through_firewall():
+                self.count.setText(tr("Allowed. Scan the code again on the phone."))
 
     def _hit(self, name):
         self.hits += 1
@@ -1747,6 +1822,15 @@ class FloatWindow(QWidget):
                 # play until the first frame arrives (silently), then pause on it
                 self.audio.setMuted(True)
         self.player.positionChanged.connect(lambda _p: self.update())
+        # loading circle while the video waits for data (like YouTube's)
+        if getattr(self, "_busy_timer", None) is not None:
+            self._busy_timer.stop()
+            self._busy_timer.deleteLater()
+        self._busy = False
+        self._spin = 0.0
+        self._pos_seen = (-1, 0.0)
+        self._busy_timer = QTimer(self, interval=40, timeout=self._check_busy)
+        self._busy_timer.start()
         self.player.durationChanged.connect(lambda _d: self.update())
         self.player.playbackStateChanged.connect(lambda _s: self.update())
         self.player.errorOccurred.connect(self._on_media_error)
@@ -1834,6 +1918,43 @@ class FloatWindow(QWidget):
         if nxt:
             self._play_now = True
             self._load(nxt)
+
+    def _check_busy(self):
+        import time
+        from PySide6.QtMultimedia import QMediaPlayer
+        if self.player is None:
+            return
+        st = self.player.mediaStatus()
+        now = time.monotonic()
+        pos = self.player.position()
+        if pos != self._pos_seen[0]:
+            self._pos_seen = (pos, now)
+        playing = self.player.playbackState() == QMediaPlayer.PlayingState
+        busy = st in (QMediaPlayer.LoadingMedia, QMediaPlayer.StalledMedia) and (playing or self.link is not None)
+        if not busy and self.link and playing and self.kind == "video":       # stream stuck waiting for data
+            busy = now - self._pos_seen[1] > 0.9
+        if self.kind == "video" and self.frame is None and (playing or self.link):
+            busy = True                                                     # nothing to show yet
+        if busy or busy != self._busy:
+            self._spin = (self._spin + 12) % 360
+            self._busy = busy
+            self.update()
+
+    def _paint_busy(self, p):
+        c = QPointF(self.width() / 2, self.height() / 2)
+        rad = max(14.0, min(self.width(), self.height()) * 0.09)
+        p.save()
+        p.setOpacity(1.0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 90))
+        p.drawEllipse(c, rad + 10, rad + 10)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(255, 255, 255, 60), max(3.0, rad / 5), Qt.SolidLine, Qt.RoundCap))
+        p.drawEllipse(c, rad, rad)
+        p.setPen(QPen(QColor(255, 255, 255, 235), max(3.0, rad / 5), Qt.SolidLine, Qt.RoundCap))
+        box = QRectF(c.x() - rad, c.y() - rad, rad * 2, rad * 2)
+        p.drawArc(box, int(-self._spin * 16), int(-100 * 16))
+        p.restore()
 
     def _on_status(self, status):
         from PySide6.QtMultimedia import QMediaPlayer
@@ -2257,6 +2378,8 @@ class FloatWindow(QWidget):
             text = self._current_subtitle()
             if text:
                 self._paint_subtitle(p, text)
+        if getattr(self, "_busy", False) and self.player is not None and self.kind == "video":
+            self._paint_busy(p)
         # ---- overlay controls (fade with the cursor)
         if self.ctrl > 0.01:
             p.setOpacity(self.ctrl)
@@ -2339,9 +2462,11 @@ class FloatWindow(QWidget):
         p.drawText(box, Qt.AlignCenter | Qt.TextWordWrap, text)
 
     def _paint_player(self, p, fg):
-        # big play / pause in the middle
+        # big play / pause in the middle (hidden while the loading circle shows, like YouTube)
         pc = self._play_center()
         p.setPen(Qt.NoPen)
+        if getattr(self, "_busy", False) and self.kind == "video":
+            p.setOpacity(0.0)
         p.setBrush(ACCENT if self.hover == "play" else QColor(20, 20, 22, 170))
         p.drawEllipse(pc, 26, 26)
         p.setBrush(ON_ACCENT if self.hover == "play" else QColor("#ffffff"))
@@ -2355,7 +2480,7 @@ class FloatWindow(QWidget):
         for name, dx, d in (("prev", -62, -1), ("next", 62, 1)):
             c = QPointF(pc.x() + dx, pc.y())
             have = self._neighbour(d) is not None
-            p.setOpacity(self.ctrl * (1.0 if have else 0.35))
+            p.setOpacity(0.0 if (getattr(self, "_busy", False) and self.kind == "video") else self.ctrl * (1.0 if have else 0.35))
             p.setBrush(ACCENT if (self.hover == name and have) else QColor(20, 20, 22, 150))
             p.drawEllipse(c, 18, 18)
             p.setBrush(ON_ACCENT if (self.hover == name and have) else QColor("#ffffff"))

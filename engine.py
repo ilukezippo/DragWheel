@@ -3018,12 +3018,18 @@ def _fix_arabic_text(raw: bytes) -> tuple[str, str]:
     except UnicodeDecodeError:
         return raw.decode("cp1256", "replace"), "windows-1256"
     if len(_MOJIBAKE.findall(text)) >= 3:                 # UTF-8 that was opened as Western text and saved again
-        for enc in ("cp1252", "latin-1"):
+        data = bytearray()
+        for ch in text:
             try:
-                fixed = text.encode(enc).decode("utf-8")
-                return fixed, "mojibake"
-            except (UnicodeEncodeError, UnicodeDecodeError):
-                continue
+                data += ch.encode("cp1252")
+            except UnicodeEncodeError:
+                if ord(ch) < 256:                          # bytes Windows-1252 leaves undefined (0x81, 0x8D …)
+                    data.append(ord(ch))
+                else:
+                    data += ch.encode("utf-8")
+        fixed = bytes(data).decode("utf-8", "replace")
+        if fixed.count("\ufffd") <= max(2, len(fixed) // 200):
+            return fixed, "mojibake"
     return text, ""
 
 

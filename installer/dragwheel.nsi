@@ -142,6 +142,15 @@ Section "!$(SecCoreName)" SecCore
   Delete "$SENDTO\Satsuma.lnk"
   SetShellVarContext all
 
+  ; Send to phone: let phones on the home Wi-Fi reach DragWheel's sharing page (it only listens while
+  ; the sharing window is open, behind a random link)
+  nsExec::Exec 'netsh advfirewall firewall delete rule name=all program="$INSTDIR\${EXE}"'
+  Pop $0
+  nsExec::Exec 'netsh advfirewall firewall delete rule name="DragWheel (Send to phone)"'
+  Pop $0
+  nsExec::Exec 'netsh advfirewall firewall add rule name="DragWheel (Send to phone)" dir=in action=allow protocol=TCP program="$INSTDIR\${EXE}" profile=private,public enable=yes'
+  Pop $0
+
   ; updating: remove the old version first (settings in the registry are kept)
   ${If} $OldVersion != ""
     DetailPrint "$(RemovingOld)"
@@ -267,6 +276,8 @@ FunctionEnd
 
 Section "Uninstall"
   !insertmacro StopDragWheel
+  nsExec::Exec 'netsh advfirewall firewall delete rule name="DragWheel (Send to phone)"'
+  Pop $0
 
   DeleteRegKey   HKCU "Software\Classes\*\shell\DragWheel"
   DeleteRegKey   HKCU "Software\Classes\Directory\shell\DragWheel"

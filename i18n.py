@@ -797,3 +797,9 @@ from locales import files12 as _f12f  # noqa: E402
 for _code, _vals in _f12f.T.items():
     assert len(_vals) == len(_f12f.KEYS), (_code, len(_vals), len(_f12f.KEYS))
     T[_code].update(dict(zip(_f12f.KEYS, _vals)))
+
+from locales import share12 as _sh12  # noqa: E402
+
+for _code, _vals in _sh12.T.items():
+    assert len(_vals) == len(_sh12.KEYS), _code
+    T[_code].update(dict(zip(_sh12.KEYS, _vals)))
