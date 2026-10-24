@@ -756,3 +756,9 @@ from locales import subs12 as _s12  # noqa: E402
 for _code, _vals in _s12.T.items():
     assert len(_vals) == len(_s12.KEYS), _code
     T[_code].update(dict(zip(_s12.KEYS, _vals)))
+
+from locales import update12 as _u12  # noqa: E402
+
+for _code, _vals in _u12.T.items():
+    assert len(_vals) == len(_u12.KEYS), _code
+    T[_code].update(dict(zip(_u12.KEYS, _vals)))

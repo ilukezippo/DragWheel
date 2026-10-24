@@ -1019,6 +1019,7 @@ class FloatWindow(QWidget):
         self._play_now = play
         self._load(path, link)
         self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
+        self._resume_ms = int((pin or {}).get("pos") or 0)     # where playback was before an update
         if pin is not None:
             self.pin_id = pin.get("id")
             try:
@@ -1220,6 +1221,9 @@ class FloatWindow(QWidget):
 
     def _on_status(self, status):
         from PySide6.QtMultimedia import QMediaPlayer
+        if status == QMediaPlayer.LoadedMedia and self._resume_ms and self.autoplay:
+            self.player.setPosition(self._resume_ms)
+            self._resume_ms = 0
         if status == QMediaPlayer.EndOfMedia and settings().value("float_autoplay", "true") == "true":
             if self._neighbour(1):
                 QTimer.singleShot(300, lambda: self._step(1))
@@ -1233,7 +1237,8 @@ class FloatWindow(QWidget):
             self._first_frame = False
             if not self.autoplay:
                 self.player.pause()
-                self.player.setPosition(0)
+                self.player.setPosition(self._resume_ms or 0)
+                self._resume_ms = 0
                 self.audio.setMuted(False)
             a = img.width() / max(1, img.height())
             if abs(a - (self.aspect or 0)) > 0.01:
@@ -1487,12 +1492,22 @@ class FloatWindow(QWidget):
         if getattr(self, "pin_id", None):
             self._pin_timer.start()
 
+    def state(self) -> dict:
+        """Everything needed to bring this float back: file or link, place, size, playback."""
+        g = self.geometry()
+        st = {"id": self.pin_id, "src": self.link["page"] if self.link else str(self.path), "link": bool(self.link),
+              "x": g.x(), "y": g.y(), "w": g.width(), "on_top": self.on_top}
+        if self.player is not None:
+            st["pos"] = int(self.player.position())
+            st["playing"] = bool(self._playing())
+        return st
+
     def _save_pin(self):
         if not self.pin_id:
             return
-        g = self.geometry()
-        entry = {"id": self.pin_id, "src": self.link["page"] if self.link else str(self.path), "link": bool(self.link),
-                 "x": g.x(), "y": g.y(), "w": g.width(), "on_top": self.on_top}
+        entry = self.state()
+        entry.pop("pos", None)
+        entry.pop("playing", None)
         pins = [x for x in _float_pins() if x.get("id") != self.pin_id] + [entry]
         _save_float_pins(pins)
 
@@ -2880,8 +2895,14 @@ class DragWheelApp(QObject):
         QTimer.singleShot(1200, self.restore_pinned_floats)
 
     def restore_pinned_floats(self):
-        """Reopen the floats set to 'Open when Windows starts', where they were, playing."""
-        for pin in _float_pins():
+        """Reopen the floats that were open before an update, and those set to 'Open when Windows starts'."""
+        try:
+            resume = json.loads(settings().value("float_resume", "[]") or "[]")
+        except (TypeError, ValueError):
+            resume = []
+        settings().remove("float_resume")
+        ids = {r.get("id") for r in resume if r.get("id")}
+        for pin in resume + [x for x in _float_pins() if x.get("id") not in ids]:
             src = pin.get("src")
             if not src:
                 continue
@@ -2892,7 +2913,7 @@ class DragWheelApp(QObject):
             if not os.path.exists(src):
                 winsys.log(f"pinned float missing: {src}")
                 continue
-            w = FloatWindow(src, play=True, pin=pin)
+            w = FloatWindow(src, play=pin.get("playing", True), pin=pin)
             self.floats.append(w)
             w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
             w.show()
@@ -3200,7 +3221,7 @@ class DragWheelApp(QObject):
                 target._fade_to(1.0)
                 QTimer.singleShot(1600, target._maybe_hide_controls)
                 return
-            w = FloatWindow(info["url"], info, play=pin is not None, pin=pin)
+            w = FloatWindow(info["url"], info, play=bool(pin.get("playing", True)) if pin else False, pin=pin)
             self.floats.append(w)
             w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
             w.show()
@@ -3267,6 +3288,63 @@ class DragWheelApp(QObject):
         card = worker.card
         if card is not None and card in self.toast.cards and not worker.cancel_requested:
             card.body.setText(f"{name} — {int(frac * 100)}%")
+
+    # ---- updating: warn about running jobs, keep the open floats
+    def _ask_jobs_before_update(self, installer_waiting):
+        """None = no jobs. Otherwise the button chosen: "now" | "wait" | "cancel"."""
+        jobs = self._active_jobs()
+        if not jobs:
+            return None
+        box = QMessageBox()
+        box.setWindowTitle(f"{APP} — " + tr("Update"))
+        box.setWindowIcon(app_icon())
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        box.setStyleSheet(i18n.css(DIALOG_CSS))
+        box.setIconPixmap(app_icon().pixmap(48, 48))
+        names = "<br>".join(f"• {Path(w.paths[0]).name}" for w in jobs[:5])
+        box.setText(f"<b>{tr('Jobs still running: {n}', n=len(jobs))}</b><br><br>{names}<br><br>"
+                    + tr("Updating closes DragWheel and stops them; their unfinished files are removed."))
+        now = box.addButton(tr("Stop them and update"), QMessageBox.DestructiveRole)
+        wait = None if installer_waiting else box.addButton(tr("Update when they finish"), QMessageBox.AcceptRole)
+        no = box.addButton(tr("Don't update now"), QMessageBox.RejectRole)
+        box.setDefaultButton(wait or no)
+        box.exec()
+        b = box.clickedButton()
+        return "now" if b is now else "wait" if (wait is not None and b is wait) else "cancel"
+
+    def save_open_floats(self):
+        states = []
+        for f in list(self.floats):
+            try:
+                states.append(f.state())
+            except Exception as e:
+                winsys.log(f"float state: {e}")
+        settings().setValue("float_resume", json.dumps(states))
+        settings().sync()
+        winsys.log(f"saved {len(states)} open floats for after the update")
+
+    def prepare_for_update(self) -> bool:
+        """The installer is about to replace DragWheel (asked over the local socket). False = the user said not now."""
+        if not getattr(self, "_update_confirmed", False):
+            choice = self._ask_jobs_before_update(installer_waiting=True)
+            if choice == "cancel":
+                return False
+        for w in self._active_jobs():
+            self._cancel_job(w)
+        self.save_open_floats()
+        return True
+
+    def quit_for_update(self, started=None):
+        """Quit once cancelled jobs have cleaned up (at most ~6 s)."""
+        import time
+        started = started or time.monotonic()
+        if self.running and time.monotonic() - started < 6:
+            QTimer.singleShot(200, lambda: self.quit_for_update(started))
+            return
+        for f in list(self.floats):
+            if f.player:
+                f.player.stop()
+        self.qapp.quit()
 
     def _cancel_job(self, worker):
         if worker.cancel_requested:
@@ -3388,6 +3466,24 @@ class DragWheelApp(QObject):
         if err:
             self.toast.show_msg(tr("Couldn't download the update"), err, "err", 8000)
             return
+        choice = self._ask_jobs_before_update(installer_waiting=False)
+        if choice == "cancel":
+            self.toast.show_msg(tr("Update postponed"), tr("Check for updates again from the tray when you're ready."), "info", 5000)
+            return
+        if choice == "wait":
+            self.toast.show_msg(tr("Update waiting"), tr("It installs when the running jobs finish."), "info", 5000)
+            self._install_when_idle(path)
+            return
+        self._update_confirmed = choice == "now"
+        self._launch_installer(path)
+
+    def _install_when_idle(self, path):
+        if self._active_jobs():
+            QTimer.singleShot(1500, lambda: self._install_when_idle(path))
+            return
+        self._launch_installer(path)
+
+    def _launch_installer(self, path):
         winsys.log(f"launching installer {path}")
         try:
             os.startfile(str(path))          # Windows asks for admin
@@ -3425,6 +3521,35 @@ def send_to_running(args) -> bool:
     sock.waitForBytesWritten(1000)
     sock.disconnectFromServer()
     return True
+
+
+def ask_running_to_close() -> int:
+    sock = QLocalSocket()
+    sock.connectToServer(SERVER_NAME)
+    if not sock.waitForConnected(1000):
+        return 0                                   # not running
+    sock.write(json.dumps({"paths": [], "flags": ["--prepare-update"]}).encode("utf-8"))
+    sock.flush()
+    sock.waitForBytesWritten(1000)
+    reply = b""
+    import time
+    end = time.monotonic() + 15 * 60               # the user may take a while to answer the jobs warning
+    while time.monotonic() < end and not reply:
+        if sock.waitForReadyRead(500):
+            reply = bytes(sock.readAll())
+        elif sock.state() != QLocalSocket.ConnectedState:
+            break
+    if reply.startswith(b"no"):
+        return 1
+    # wait for DragWheel to finish closing (cancelled jobs clean up first)
+    while time.monotonic() < end:
+        probe = QLocalSocket()
+        probe.connectToServer(SERVER_NAME)
+        if not probe.waitForConnected(300):
+            break
+        probe.disconnectFromServer()
+        time.sleep(0.4)
+    return 0
 
 
 def parse_args(argv):
@@ -3477,6 +3602,8 @@ def main():
     flags, paths = parse_args(sys.argv[1:])
     if "--selftest" in flags:
         return selftest()
+    if "--prepare-update" in flags:            # run by the installer: 0 = go ahead, 1 = the user said not now
+        return ask_running_to_close()
     if send_to_running({"paths": paths, "flags": sorted(flags)}):
         return 0
 
@@ -3517,6 +3644,15 @@ def main():
             try:
                 msg = json.loads(bytes(sock.readAll()).decode("utf-8") or "{}")
             except Exception:
+                return
+            if "--prepare-update" in msg.get("flags", []):
+                ok = app.prepare_for_update()
+                winsys.log(f"installer asked to close: {'ok' if ok else 'user said not now'}")
+                sock.write(b"ok" if ok else b"no")
+                sock.flush()
+                sock.waitForBytesWritten(1000)
+                if ok:
+                    QTimer.singleShot(100, app.quit_for_update)
                 return
             if "--paste-here" in msg.get("flags", []):
                 app.save_clipboard_image((msg.get("paths") or [None])[0])

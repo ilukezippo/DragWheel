@@ -103,6 +103,15 @@ FunctionEnd
 ; Close DragWheel. No /T here: when the app's built-in updater started this installer, the installer
 ; is DragWheel's child, and /T (kill the whole process tree) would kill the installer too.
 !macro StopDragWheel
+  ; Ask the running DragWheel to get ready first: it warns about unfinished jobs (the user can say
+  ; "not now"), saves the open floats so they reopen after the update, and closes cleanly.
+  ${If} ${FileExists} "$INSTDIR\${EXE}"
+    ExecWait '"$INSTDIR\${EXE}" --prepare-update' $0
+    ${If} $0 == 1
+      MessageBox MB_OK|MB_ICONINFORMATION "$(UpdateNotNow)"
+      Quit
+    ${EndIf}
+  ${EndIf}
   nsExec::Exec 'taskkill /F /IM ${EXE}'
   Pop $0
   Sleep 800
@@ -287,6 +296,8 @@ LangString WelcomeText    ${LANG_ENGLISH} "Drag a file, tap a key, drop it on th
 LangString WelcomeText    ${LANG_ARABIC}  "اسحب ملفًا، اضغط مفتاحًا، ثم أفلته على العجلة.$\r$\n$\r$\nاضغط Shift للتحويل، وCtrl لأدوات الملفات (ضغط، قص، تقطيع…)، وAlt لإجراءات الملفات.$\r$\n$\r$\nكل شيء يعمل على جهازك — لا يتم رفع أي ملف.$\r$\n$\r$\nسيتم تثبيت ${APPNAME} لجميع المستخدمين في مجلد Program Files.$\r$\n$\r$\nاضغط التالي للمتابعة."
 LangString PasteHere      ${LANG_ENGLISH} "Save clipboard image here"
 LangString PasteHere      ${LANG_ARABIC}  "حفظ صورة الحافظة هنا"
+LangString UpdateNotNow   ${LANG_ENGLISH} "The update was cancelled so your running jobs can finish. Run setup again when they're done."
+LangString UpdateNotNow   ${LANG_ARABIC}  "أُلغي التحديث حتى تنتهي المهام الجارية. شغّل الإعداد مرة أخرى عند انتهائها."
 LangString UpdateTitle    ${LANG_ENGLISH} "Update ${APPNAME}"
 LangString UpdateTitle    ${LANG_ARABIC}  "تحديث ${APPNAME}"
 LangString UpdateText     ${LANG_ENGLISH} "${APPNAME} $OldVersion is installed on this PC.$\r$\n$\r$\nSetup will close it, remove the old version and install ${APPNAME} ${APPVERSION}. Your settings are kept.$\r$\n$\r$\nClick Next to continue."
