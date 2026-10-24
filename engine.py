@@ -520,6 +520,117 @@ def burn_subtitles(paths, p):
               "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
 
 
+# ---- links (Play copied link in Float)
+MEDIA_LINK_EXT = (".mp4", ".m4v", ".mov", ".webm", ".mkv", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav",
+                  ".flac", ".m3u8", ".mpd")
+
+
+def is_link(text) -> bool:
+    t = (text or "").strip()
+    return t.lower().startswith(("http://", "https://")) and " " not in t and "\n" not in t
+
+
+def resolve_link(url, _updated=False) -> dict:
+    """Turn a page link into something the float can play: {"url", "title", "page"}.
+    Direct media links play as they are; other sites go through yt-dlp (QuickJS for YouTube)."""
+    from urllib.parse import urlparse, unquote
+    path = unquote(urlparse(url).path).lower()
+    if path.endswith(MEDIA_LINK_EXT):
+        return {"url": url, "title": Path(path).name or url, "page": url}
+    if not model_ready("yt-dlp"):
+        raise ConversionError("The yt-dlp tool isn't downloaded yet")
+    exe = str(model_path("yt-dlp"))
+    qjs = _asset("js", "qjs.exe")
+    cmd = [exe, "-J", "--no-playlist", "--no-warnings",
+           "-f", "b[protocol^=m3u8][height<=1080]/b[height<=1080]/b[acodec!=none]/b"]
+    if qjs.exists():
+        cmd += ["--js-runtimes", f"quickjs:{qjs}"]
+    r = subprocess.run(cmd + [url], capture_output=True, timeout=90, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    if r.returncode != 0:
+        if not _updated:                                   # sites change: update yt-dlp once and retry
+            subprocess.run([exe, "-U"], capture_output=True, timeout=120, stdin=subprocess.DEVNULL,
+                           creationflags=NO_WINDOW)
+            return resolve_link(url, _updated=True)
+        msg = r.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise ConversionError((msg[-1] if msg else "Couldn't open this link").replace("ERROR: ", ""))
+    info = json.loads(r.stdout.decode("utf-8", "replace") or "{}")
+    media = info.get("url") or next((f.get("url") for f in reversed(info.get("requested_formats") or []) if f.get("url")), None)
+    if not media:
+        raise ConversionError("Couldn't open this link")
+    return {"url": media, "title": info.get("title") or url, "page": info.get("webpage_url") or url}
+
+
+TRANSCRIBE_MODES = ["Detect language", "Arabic", "English", "Translate to English"]
+
+
+def transcribe(src, p):
+    """Speech to subtitles (.srt) and text (.txt) next to the file, offline with whisper.cpp.
+    The .srt has the video's name, so the float and players pick it up automatically."""
+    if not model_ready("whisper-small"):
+        raise ConversionError("The AI model isn't downloaded yet")
+    exe = _asset("whisper", "whisper-cli.exe" if IS_WIN else "whisper-cli")
+    if not exe.exists():
+        raise ConversionError("Speech recognition isn't included in this build")
+    tmp = temp_dir()
+    wav = tmp / "audio.wav"
+    ff(src, wav, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", span=(0.0, 0.05))
+    mode = p.get("Language", TRANSCRIBE_MODES[0])
+    lang = {"Arabic": "ar", "English": "en"}.get(mode, "auto")
+    out_srt = out_for(src, "srt")                         # same name as the video -> auto-loaded
+    base = tmp / "out"
+    cmd = [str(exe), "-m", str(model_path("whisper-small")), "-f", str(wav), "-l", lang, "-osrt", "-otxt",
+           "-of", str(base), "-pp", "-t", str(max(1, min(8, (os.cpu_count() or 4) - 1)))]
+    if mode == "Translate to English":
+        cmd.append("-tr")
+    t = _token()
+    check_cancel()
+    import tempfile
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                cwd=str(exe.parent), creationflags=NO_WINDOW)
+        if t is not None:
+            with t._lock:
+                t.procs.append(proc)
+        tail = []
+
+        def reader():
+            for raw in iter(proc.stderr.readline, b""):
+                line = raw.decode("utf-8", "replace").strip()
+                tail.append(line)
+                del tail[:-6]
+                m = re.search(r"progress\s*=\s*(\d+)%", line)
+                if m:
+                    report_progress(0.05 + 0.95 * int(m.group(1)) / 100, t)
+        rt = threading.Thread(target=reader, daemon=True)
+        rt.start()
+        try:
+            while True:
+                try:
+                    proc.wait(timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    if t is not None and t.cancelled:
+                        proc.kill()
+                        proc.wait()
+                        raise Cancelled()
+        finally:
+            if t is not None:
+                with t._lock:
+                    if proc in t.procs:
+                        t.procs.remove(proc)
+        rt.join(timeout=2)
+    if proc.returncode != 0 or not (base.with_suffix(".srt")).exists():
+        raise ConversionError("\n".join(x for x in tail if x)[-300:] or "Speech recognition failed")
+    shutil.move(str(base.with_suffix(".srt")), str(out_srt))
+    outs = [out_srt]
+    txt = base.with_suffix(".txt")
+    if txt.exists() and txt.read_text(encoding="utf-8", errors="replace").strip():
+        out_txt = out_for(src, "txt", "transcript")
+        shutil.move(str(txt), str(out_txt))
+        outs.append(out_txt)
+    return outs
+
+
 def video_gif_clip(src, p):
     """Make GIF… for videos: the part between Start and End, 12 fps, up to 640 px wide, good colours."""
     def secs(t):
@@ -541,6 +652,9 @@ def video_to_hevc(src, p):
 
 
 def video_compress(src, p):
+    target = p.get("Target size", "Automatic")
+    if target and target != "Automatic":
+        return video_to_size(src, {"Target size": target})
     ext = "mp4"
     return ff(src, out_for(src, ext, "compressed"), "-c:v", "libx264", "-preset", "slow", "-crf", "28",
               "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart")
@@ -578,9 +692,22 @@ def video_snapshot(src, p):
     return ff(src, out_for(src, "png", "frame"), "-frames:v", "1", pre=("-ss", parse_time(p["At time"])))
 
 
+def has_audio(src) -> bool:
+    try:
+        r = subprocess.run([ffmpeg(), "-hide_banner", "-i", str(src)], capture_output=True, timeout=20,
+                           stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+        return b"Audio:" in r.stderr
+    except Exception:
+        return True
+
+
 def video_speed2x(src, p):
-    return ff(src, out_for(src, "mp4", "2x"), "-filter_complex", "[0:v]setpts=0.5*PTS[v];[0:a]atempo=2.0[a]",
-              "-map", "[v]", "-map", "[a]?", "-c:v", "libx264", "-crf", "22", "-pix_fmt", "yuv420p")
+    out = out_for(src, "mp4", "2x")
+    if not has_audio(src):                         # silent videos: speed up the picture only
+        return ff(src, out, "-vf", "setpts=0.5*PTS", "-an", "-c:v", "libx264", "-crf", "22", "-pix_fmt", "yuv420p")
+    return ff(src, out, "-filter_complex", "[0:v]setpts=0.5*PTS[v];[0:a:0]atempo=2.0[a]",
+              "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-crf", "22", "-pix_fmt", "yuv420p",
+              "-c:a", "aac", "-b:a", "160k")
 
 
 def audio_compress(src, p):
@@ -996,6 +1123,12 @@ def images_to_gif(paths, p):
 
 # ---- AI models (downloaded once, then offline)
 MODELS = {
+    # reads video/audio links from YouTube and ~1800 other sites; always the latest version, self-updating
+    "yt-dlp": {"file": "yt-dlp.exe", "size": 0, "sha256": "", "mb": 18,
+               "url": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"},
+    # speech recognition (whisper.cpp), multilingual incl. Arabic; size/sha256 unknown upfront -> Content-Length check
+    "whisper-small": {"file": "ggml-small-q5_1.bin", "size": 0, "sha256": "", "mb": 190,
+                      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin"},
     "isnet": {"file": "isnet-general-use.onnx", "size": 178648008,
               "sha256": "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a",
               "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx"},
@@ -1015,7 +1148,16 @@ def model_path(name) -> Path:
 
 def model_ready(name) -> bool:
     f = model_path(name)
-    return f.is_file() and f.stat().st_size == MODELS[name]["size"]
+    size = MODELS[name]["size"]
+    if size:
+        return f.is_file() and f.stat().st_size == size
+    return f.is_file() and f.with_name(f.name + ".ok").is_file()   # written after a complete download
+
+
+def mark_model_ready(name):
+    f = model_path(name)
+    if f.is_file() and not MODELS[name]["size"]:
+        f.with_name(f.name + ".ok").write_text("ok", encoding="utf-8")
 
 
 _SESSIONS = {}
@@ -2212,7 +2354,7 @@ def tools(paths: list[str]) -> list[Op]:
             ops.append(T("gif", "Make GIF…", images_to_gif, multi=True, ask=[("Seconds per image", "0.5")]))
     elif cat == "video":
         ops += [
-            T("compress", "Compress", video_compress),
+            T("compress", "Compress…", video_compress, ask=[("Target size", ["Automatic"] + TARGET_SIZES)]),
             T("720p", "720p", video_scale(720)),
             T("trim", "Trim…", media_trim, ask=TRIM),
             T("mute", "Mute", video_mute),
@@ -2220,9 +2362,9 @@ def tools(paths: list[str]) -> list[Op]:
             T("snapshot", "Snapshot…", video_snapshot, ask=[("At time", "0:01")]),
             T("speed", "Speed 2×", video_speed2x),
             T("gif", "Make GIF…", video_gif_clip, ask=[("Start", "0:00"), ("End", "0:05")]),
-            T("tosize", "Compress to size…", video_to_size, ask=[("Target size", TARGET_SIZES)]),
             T("social", "Crop for social…", video_social_crop, ask=[("Shape", SOCIAL_SHAPES)]),
             T("ringtone", "Ringtone…", ringtone, ask=[("Start", "0:00"), ("Format", RINGTONE_FORMATS)]),
+            T("transcribe", "Transcribe…", transcribe, ask=[("Language", TRANSCRIBE_MODES)], model="whisper-small"),
         ]
         if n == 1 and _side_subtitles(paths[0]):
             ops.append(T("burn", "Burn subtitles", burn_subtitles, multi=True, hint=Path(_side_subtitles(paths[0])[0]).name))
@@ -2236,6 +2378,7 @@ def tools(paths: list[str]) -> list[Op]:
             T("mono", "Mono", audio_mono),
             T("fade", "Fade in/out", audio_fade),
             T("ringtone", "Ringtone…", ringtone, ask=[("Start", "0:00"), ("Format", RINGTONE_FORMATS)]),
+            T("transcribe", "Transcribe…", transcribe, ask=[("Language", TRANSCRIBE_MODES)], model="whisper-small"),
         ]
         if n > 1:
             ops.append(T("merge", "Merge", media_merge, multi=True))

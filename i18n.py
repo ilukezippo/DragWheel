@@ -730,3 +730,17 @@ from locales import media12 as _md12  # noqa: E402
 for _code, _vals in _md12.T.items():
     assert len(_vals) == len(_md12.KEYS), _code
     T[_code].update(dict(zip(_md12.KEYS, _vals)))
+
+from locales import speech12 as _sp12  # noqa: E402
+
+for _code, _vals in _sp12.T.items():
+    assert len(_vals) == len(_sp12.KEYS), _code
+    T[_code].update(dict(zip(_sp12.KEYS, _vals)))
+
+from locales import float12b as _f12b  # noqa: E402
+
+for _code, _vals in _f12b.T.items():
+    assert len(_vals) == len(_f12b.KEYS), _code
+    T[_code].update(dict(zip(_f12b.KEYS, _vals)))
+    if "Compress" in T[_code]:
+        T[_code].setdefault("Compress…", T[_code]["Compress"] + "…")

@@ -131,7 +131,7 @@ def _tab_hwnd_of(w) -> int:
         return 0
 
 
-def _desktop_selection() -> list[str]:
+def _desktop_selection(focused=False) -> list[str]:
     import pythoncom
     import win32com.client
     sw = win32com.client.Dispatch("{9BA05972-F6A8-11CF-A442-00A0C90A8F39}")   # ShellWindows
@@ -150,15 +150,19 @@ def _desktop_selection() -> list[str]:
                 continue
             if not hasattr(desk, "Document"):
                 desk = win32com.client.Dispatch(desk)
+            if focused:
+                it = desk.Document.FocusedItem
+                return [it.Path] if it is not None else []
             return [it.Path for it in desk.Document.SelectedItems()]
         except Exception as e:
             log(f"desktop selection attempt failed: {e}")
     return []
 
 
-def explorer_selection(hwnd: int | None = None) -> list[str]:
+def explorer_selection(hwnd: int | None = None, focused: bool = False) -> list[str]:
     """Paths selected in an Explorer window (the active tab) or on the desktop.
-    hwnd: top-level window to read; defaults to the foreground window."""
+    hwnd: top-level window to read; defaults to the foreground window.
+    focused=True returns the item with the focus rectangle instead (the one just Ctrl-clicked)."""
     if not IS_WIN:
         return []
     try:
@@ -191,9 +195,12 @@ def explorer_selection(hwnd: int | None = None) -> list[str]:
                 title = window_title(target)
                 by_title = [w for w in matches if title and str(w.LocationName) and title.startswith(str(w.LocationName))]
                 chosen = (by_tab or by_title or matches)[0]
+            if focused:
+                it = chosen.Document.FocusedItem
+                return [it.Path] if it is not None else []
             return [it.Path for it in chosen.Document.SelectedItems()]
         if cls in ("Progman", "WorkerW"):
-            return _desktop_selection()
+            return _desktop_selection(focused)
     except Exception as e:
         log(f"explorer_selection failed ({cls}): {e}")
     return []
@@ -454,9 +461,13 @@ class WheelHook:
     the scroll is kept from the window under the cursor (so Explorer doesn't scroll
     while you pick a slice)."""
 
-    def __init__(self, on_wheel, should_swallow=lambda: False):
+    def __init__(self, on_wheel, should_swallow=lambda: False, on_ctrl_double=None, ctrl_double_enabled=lambda: False):
         self.on_wheel = on_wheel
         self.should_swallow = should_swallow
+        self.on_ctrl_double = on_ctrl_double          # Ctrl + double-click on a file in Explorer -> Float
+        self.ctrl_double_enabled = ctrl_double_enabled
+        self._first = None                            # (time, x, y) of the first Ctrl-click
+        self._eat_up = False
         self._thread = None
         self._tid = 0
         self._proc = None
@@ -489,7 +500,42 @@ class WheelHook:
         user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
         kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 
+        WM_LBUTTONDOWN, WM_LBUTTONUP = 0x0201, 0x0202
+        dbl_ms = user32.GetDoubleClickTime()
+        dbl_dx, dbl_dy = max(4, user32.GetSystemMetrics(36)), max(4, user32.GetSystemMetrics(37))   # SM_CXDOUBLECLK
+
+        def ctrl_click(w_param, info):
+            """True = swallow. The 2nd click of a Ctrl+double-click on Explorer/desktop is kept from
+            Explorer (so it doesn't open the file) and reported to the app instead."""
+            if w_param == WM_LBUTTONUP and self._eat_up:
+                self._eat_up = False
+                return True
+            if w_param != WM_LBUTTONDOWN or self.on_ctrl_double is None:
+                return False
+            if not (user32.GetAsyncKeyState(0x11) & 0x8000) or not self.ctrl_double_enabled():
+                self._first = None
+                return False
+            root = root_window_at(info.pt.x, info.pt.y)
+            if window_class(root) not in ("CabinetWClass", "ExploreWClass", "Progman", "WorkerW"):
+                self._first = None
+                return False
+            f = self._first
+            if f and info.time - f[0] <= dbl_ms and abs(info.pt.x - f[1]) <= dbl_dx and abs(info.pt.y - f[2]) <= dbl_dy:
+                self._first = None
+                self._eat_up = True
+                self.on_ctrl_double(root)
+                return True
+            self._first = (info.time, info.pt.x, info.pt.y)
+            return False
+
         def proc(n_code, w_param, l_param):
+            if n_code == 0 and w_param in (WM_LBUTTONDOWN, WM_LBUTTONUP):
+                try:
+                    info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                    if ctrl_click(w_param, info):
+                        return 1
+                except Exception:
+                    pass
             if n_code == 0 and w_param == WM_MOUSEWHEEL:
                 try:
                     info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
