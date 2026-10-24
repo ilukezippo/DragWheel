@@ -702,9 +702,9 @@ def is_link(text) -> bool:
     return t.lower().startswith(("http://", "https://")) and " " not in t and "\n" not in t
 
 
-_LINK_FORMAT = "b[protocol^=m3u8][height<=1080]/b[height<=1080]/b[acodec!=none]/b"
-# YouTube hands different streams to different "players"; when one gives nothing playable, another usually does
+# YouTube hands different streams to different "players"; asking several at once gets a playable choice in one go
 _YT_CLIENTS = "youtube:player_client=default,web_safari,android_vr,tv,mweb"
+LINK_QUALITIES = ["1080p", "720p", "480p", "360p"]
 
 
 def _link_log(msg):
@@ -715,87 +715,101 @@ def _link_log(msg):
         pass
 
 
-def _pick_formats(info) -> tuple[str | None, str | None]:
-    """(media url, separate audio url or None) from yt-dlp's format list: a stream with sound and picture
-    if there is one (HLS first, up to 1080p), otherwise the best video plus the best audio."""
+def _pick_formats(info, max_h=1080, live=False) -> dict:
+    """Choose what the float plays, up to max_h lines:
+    live -> the HLS stream (DragWheel's relay follows it);
+    videos -> separate picture + sound files (downloaded ahead in parallel, so no pauses), else one file with
+    both, else HLS. Returns {"url", "audio"?, "headers", "size"?, "audio_size"?, "height"}."""
     fmts = [f for f in info.get("formats") or [] if f.get("url") and f.get("protocol") not in ("mhtml",)]
 
     def h(f):
         return f.get("height") or 0
 
-    both = [f for f in fmts if f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")]
-    ok = [f for f in both if h(f) <= 1080] or both
-    if ok:
-        ok.sort(key=lambda f: (str(f.get("protocol", "")).startswith("m3u8"), h(f), f.get("tbr") or 0))
-        return ok[-1]["url"], None
-    vids = [f for f in fmts if f.get("vcodec") not in (None, "none") and h(f) <= 1080]
-    auds = [f for f in fmts if f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")]
-    if vids and auds:
-        vids.sort(key=lambda f: (str(f.get("vcodec", "")).startswith(("avc", "h264")), h(f), f.get("tbr") or 0))
-        auds.sort(key=lambda f: (f.get("ext") == "m4a", f.get("abr") or f.get("tbr") or 0))
-        return vids[-1]["url"], auds[-1]["url"]
-    if auds:                                                  # music-only pages
-        auds.sort(key=lambda f: f.get("abr") or f.get("tbr") or 0)
-        return auds[-1]["url"], None
-    return None, None
+    def pick(cands):
+        ok = [f for f in cands if h(f) <= max_h] or sorted(cands, key=h)[:1]
+        return max(ok, key=lambda f: (h(f), f.get("tbr") or 0)) if ok else None
+
+    has_v = lambda f: f.get("vcodec") not in (None, "none")
+    has_a = lambda f: f.get("acodec") not in (None, "none")
+    is_hls = lambda f: str(f.get("protocol", "")).startswith("m3u8")
+    plain = lambda f: f.get("protocol") in ("https", "http")
+    both = [f for f in fmts if has_v(f) and has_a(f)]
+    out = None
+    if live:
+        f = pick([x for x in both if is_hls(x)]) or pick(both)
+        if f:
+            out = {"url": f["url"], "headers": f.get("http_headers") or {}, "height": h(f)}
+    else:
+        vids = [f for f in fmts if has_v(f) and not has_a(f) and plain(f)
+                and str(f.get("vcodec", "")).startswith(("avc", "h264")) and f.get("ext") == "mp4"]
+        auds = [f for f in fmts if has_a(f) and not has_v(f) and plain(f) and f.get("ext") in ("m4a", "mp4")]
+        v = pick(vids)
+        single = pick([x for x in both if plain(x)])
+        if v and auds and (single is None or h(v) > h(single)):
+            a = max(auds, key=lambda f: f.get("abr") or f.get("tbr") or 0)
+            out = {"url": v["url"], "audio": a["url"], "headers": v.get("http_headers") or {}, "height": h(v),
+                   "size": v.get("filesize"), "audio_size": a.get("filesize")}
+        elif single:
+            out = {"url": single["url"], "headers": single.get("http_headers") or {}, "height": h(single),
+                   "size": single.get("filesize")}
+        else:
+            f = pick([x for x in both if is_hls(x)]) or pick(both)
+            if f:
+                out = {"url": f["url"], "headers": f.get("http_headers") or {}, "height": h(f)}
+            elif fmts and all(has_a(f) and not has_v(f) for f in fmts):          # music-only pages
+                a = max(fmts, key=lambda f: f.get("abr") or f.get("tbr") or 0)
+                out = {"url": a["url"], "headers": a.get("http_headers") or {}, "height": 0, "size": a.get("filesize")}
+    if out is None and info.get("url"):
+        out = {"url": info["url"], "headers": info.get("http_headers") or {}, "height": info.get("height") or 0}
+    return out or {}
 
 
-def resolve_link(url, _updated=False) -> dict:
-    """Turn a page link into something the float can play: {"url", "title", "page"} (+ "audio" when the site
-    only has picture and sound as separate streams). Direct media links play as they are; other sites go
-    through yt-dlp (QuickJS solves YouTube's player challenge)."""
+def resolve_link(url, quality=None, _updated=False) -> dict:
+    """Turn a page link into something the float can play: {"url", "title", "page", "live"?, "audio"?, "headers", …}.
+    Direct media links play as they are; other sites go through yt-dlp (QuickJS solves YouTube's player
+    challenge). One call, several YouTube players asked at once."""
     from urllib.parse import urlparse, unquote
     path = unquote(urlparse(url).path).lower()
     if path.endswith(MEDIA_LINK_EXT):
         return {"url": url, "title": Path(path).name or url, "page": url}
     if not model_ready("yt-dlp"):
         raise ConversionError("The yt-dlp tool isn't downloaded yet")
+    max_h = int(str(quality or "1080p").rstrip("p") or 1080)
     exe = str(model_path("yt-dlp"))
     qjs = _asset("js", "qjs.exe")
-    base = [exe, "-J", "--no-playlist"]
+    cmd = [exe, "-J", "--no-playlist", "--ignore-no-formats-error", "--extractor-args", _YT_CLIENTS]
     if qjs.exists():
-        base += ["--js-runtimes", f"quickjs:{qjs}"]
-    attempts = [["-f", _LINK_FORMAT],
-                ["-f", _LINK_FORMAT, "--extractor-args", _YT_CLIENTS],
-                ["--ignore-no-formats-error", "--extractor-args", _YT_CLIENTS]]     # pick from the list ourselves
-    last = "Couldn't open this link"
-    for extra in attempts:
-        r = subprocess.run(base + extra + [url], capture_output=True, timeout=90, stdin=subprocess.DEVNULL,
-                           creationflags=NO_WINDOW)
-        err = r.stderr.decode("utf-8", "replace").strip().splitlines()
-        if r.returncode != 0:
-            errs = [x for x in err if x.startswith("ERROR")] or err
-            last = (errs[-1] if errs else last).replace("ERROR: ", "")
-            _link_log(f"yt-dlp {' '.join(extra[:2])}: {last} | " + " | ".join(x for x in err if "WARNING" in x)[:600])
-            continue
+        cmd += ["--js-runtimes", f"quickjs:{qjs}"]
+    import time as _t
+    t0 = _t.monotonic()
+    r = subprocess.run(cmd + [url], capture_output=True, timeout=90, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+    info = {}
+    if r.returncode == 0:
         try:
             info = json.loads(r.stdout.decode("utf-8", "replace") or "{}")
         except ValueError:
-            continue
-        audio = None
-        media = info.get("url") or next((f.get("url") for f in reversed(info.get("requested_formats") or [])
-                                         if f.get("url")), None) if "-f" in extra else None
-        if not media:
-            media, audio = _pick_formats(info)
-        if media:
-            if extra is not attempts[0]:
-                _link_log(f"link opened on attempt {attempts.index(extra) + 1}{' (separate audio)' if audio else ''}")
-            out = {"url": media, "title": info.get("title") or url, "page": info.get("webpage_url") or url}
-            if info.get("is_live") or info.get("live_status") == "is_live":
-                out["live"] = True
-                hdr = info.get("http_headers") or next((f.get("http_headers") for f in info.get("requested_formats") or []
-                                                       if f.get("http_headers")), None) or {}
-                out["headers"] = {k: v for k, v in hdr.items() if k.lower() in ("user-agent", "referer", "origin", "cookie")}
-            if audio:
-                out["audio"] = audio
-            return out
-        last = "Requested format is not available"
-        _link_log("yt-dlp: no playable stream; " + " | ".join(x for x in err if "WARNING" in x)[:600])
-    if not _updated:                                   # sites change: update yt-dlp once and retry
-        u = subprocess.run([exe, "-U"], capture_output=True, timeout=120, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
-        _link_log("yt-dlp -U: " + u.stdout.decode("utf-8", "replace").strip().replace("\n", " | ")[-300:])
-        return resolve_link(url, _updated=True)
-    raise ConversionError(last)
+            info = {}
+    live = bool(info.get("is_live") or info.get("live_status") == "is_live")
+    choice = _pick_formats(info, max_h, live) if info else {}
+    if not choice.get("url"):
+        errs = [x for x in err if x.startswith("ERROR")] or err
+        last = (errs[-1] if errs else "Couldn't open this link").replace("ERROR: ", "")
+        _link_log(f"yt-dlp: {last} | " + " | ".join(x for x in err if "WARNING" in x)[:600])
+        if not _updated:                               # sites change: update yt-dlp once and retry
+            u = subprocess.run([exe, "-U"], capture_output=True, timeout=120, stdin=subprocess.DEVNULL,
+                               creationflags=NO_WINDOW)
+            _link_log("yt-dlp -U: " + u.stdout.decode("utf-8", "replace").strip().replace("\n", " | ")[-300:])
+            return resolve_link(url, quality, _updated=True)
+        raise ConversionError(last if r.returncode else "Requested format is not available")
+    out = dict(choice, title=info.get("title") or url, page=info.get("webpage_url") or url)
+    out["headers"] = {k: v for k, v in (out.get("headers") or {}).items()
+                      if k.lower() in ("user-agent", "referer", "origin", "cookie", "accept-language")}
+    if live:
+        out["live"] = True
+    _link_log(f"link opened in {_t.monotonic() - t0:.1f}s: {out.get('height')}p"
+              + (" live" if live else "") + (" (picture + sound apart)" if out.get("audio") else ""))
+    return out
 
 
 TRANSCRIBE_MODES = ["Detect language", "Arabic", "English", "Translate to English"]

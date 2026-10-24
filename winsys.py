@@ -352,7 +352,9 @@ def context_menu_enabled() -> bool:
 
 
 def _sendto(enabled: bool) -> None:
-    lnk = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "SendTo" / "DragWheel.lnk"
+    folder = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "SendTo"
+    (folder / "DragWheel.lnk").unlink(missing_ok=True)            # the old name
+    lnk = folder / "Send to Phone using DragWheel.lnk"
     if not enabled:
         lnk.unlink(missing_ok=True)
         return
@@ -361,9 +363,9 @@ def _sendto(enabled: bool) -> None:
         cmd = app_command()
         sc = win32com.client.Dispatch("WScript.Shell").CreateShortcut(str(lnk))
         sc.TargetPath = cmd[0]
-        sc.Arguments = (_quote(cmd[1:]) + " " if len(cmd) > 1 else "") + "--open"
+        sc.Arguments = (_quote(cmd[1:]) + " " if len(cmd) > 1 else "") + "--send-phone"
         sc.IconLocation = icon_path()
-        sc.Description = "DragWheel"
+        sc.Description = "Send to your phone over Wi-Fi (DragWheel)"
         sc.Save()
     except Exception as e:
         print("SendTo shortcut failed:", e, file=sys.stderr)

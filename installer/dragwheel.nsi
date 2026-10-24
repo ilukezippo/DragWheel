@@ -219,7 +219,9 @@ Section "$(SecMenuName)" SecMenu
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink" "Icon" "imageres.dll,-1004"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink\command" "" '"$INSTDIR\${EXE}" --play-link'
   SetShellVarContext current           ; Send To is per user
-  CreateShortcut "$SENDTO\${APPNAME}.lnk" "$INSTDIR\${EXE}" "--open" "$INSTDIR\${EXE}" 0
+  Delete "$SENDTO\${APPNAME}.lnk"
+  Delete "$SENDTO\Send to Phone using ${APPNAME}.lnk"
+  CreateShortcut "$SENDTO\Send to Phone using ${APPNAME}.lnk" "$INSTDIR\${EXE}" "--send-phone" "$INSTDIR\${EXE}" 0
   SetShellVarContext all
 SectionEnd
 
@@ -294,6 +296,7 @@ Section "Uninstall"
   RMDir /r "$SMPROGRAMS\${APPNAME}"
   SetShellVarContext current
   Delete "$SENDTO\${APPNAME}.lnk"
+  Delete "$SENDTO\Send to Phone using ${APPNAME}.lnk"
   Delete "$DESKTOP\${APPNAME}.lnk"
 
   RMDir /r "$INSTDIR\_internal"

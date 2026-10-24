@@ -16,6 +16,7 @@ import math
 import os
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -550,6 +551,11 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
         elif not any(r[3].lower() == "allow" and r[4].lower() == "true" for r in rules):
             notes.append(tr("DragWheel isn't allowed in Windows Firewall yet. Press Allow in firewall."))
         others = [x.split("|", 1)[1] for x in lines if x.startswith("fwproduct|") and "windows" not in x.lower()]
+        if any("eset" in o.lower() for o in others):
+            notes.append(tr("ESET's firewall is blocking the phone. In ESET open Setup → Network protection → "
+                            "Connected networks, and set this network to Trusted (Home or office). Or add a rule: "
+                            "Firewall → Rules → Add → Allow incoming for DragWheel.exe."))
+            others = [o for o in others if "eset" not in o.lower()]
         if others:
             notes.append(tr("{app} has its own firewall: allow DragWheel there too (or let it trust your home network).",
                             app=", ".join(others)))
@@ -875,14 +881,15 @@ class LinkSignals(QObject):
 
 
 class LinkResolve(QRunnable):
-    def __init__(self, url):
+    def __init__(self, url, quality=None):
         super().__init__()
         self.url = url
+        self.quality = quality or settings().value("link_quality", "1080p")
         self.sig = LinkSignals()
 
     def run(self):
         try:
-            self.sig.done.emit(engine.resolve_link(self.url), None)
+            self.sig.done.emit(engine.resolve_link(self.url, self.quality), None)
         except Exception as e:
             self.sig.done.emit(None, str(e))
 
@@ -1609,6 +1616,198 @@ def _parse_subtitles(path) -> list[tuple[int, int, str]]:
     return cues
 
 
+class StreamCache:
+    """Downloads an online video ahead of playback over several connections into a temp file and serves it to
+    the float from a local address (with seeking). The player then never waits on a slow request; going back
+    is instant. The temp file is deleted when the float closes."""
+    CHUNK = 2 * 1024 * 1024
+    WORKERS = 4
+    AHEAD = 400 * 1024 * 1024          # how far past the playing point to fetch
+
+    def __init__(self, url, headers=None, size=None):
+        import http.server
+        import tempfile
+        import urllib.request
+        self.url = url
+        self.headers = {"User-Agent": "Mozilla/5.0"}
+        self.headers.update(headers or {})
+        if not size:                                     # YouTube links carry the length (clen=…)
+            import urllib.parse as _up
+            size = (_up.parse_qs(_up.urlparse(url).query).get("clen") or [0])[0]
+        self.size = int(size or 0) or self._probe_size()
+        if not self.size:
+            raise OSError("size unknown")
+        self.n = (self.size + self.CHUNK - 1) // self.CHUNK
+        self.have = bytearray(self.n)
+        self.busy = set()
+        self.fails = 0
+        self.focus = 0
+        self.closed = False
+        self.cond = threading.Condition()
+        self.flock = threading.Lock()
+        fd, self.tmp = tempfile.mkstemp(prefix="dragwheel-stream-", suffix=".bin")
+        os.close(fd)
+        self.f = open(self.tmp, "r+b")
+        self.f.truncate(self.size)
+        cache = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def _range(h):
+                import re as _re
+                m = _re.match(r"bytes=(\d*)-(\d*)", h.headers.get("Range", ""))
+                if not m:
+                    return 0, cache.size - 1, False
+                a = int(m.group(1) or 0)
+                b = int(m.group(2)) if m.group(2) else cache.size - 1
+                return a, min(b, cache.size - 1), True
+
+            def do_HEAD(h):
+                h.send_response(200)
+                h.send_header("Content-Type", "video/mp4")
+                h.send_header("Content-Length", str(cache.size))
+                h.send_header("Accept-Ranges", "bytes")
+                h.end_headers()
+
+            def do_GET(h):
+                a, b, partial = h._range()
+                if a >= cache.size:
+                    h.send_response(416)
+                    h.send_header("Content-Range", f"bytes */{cache.size}")
+                    h.send_header("Content-Length", "0")
+                    h.end_headers()
+                    return
+                h.send_response(206 if partial else 200)
+                h.send_header("Content-Type", "video/mp4")
+                h.send_header("Accept-Ranges", "bytes")
+                h.send_header("Content-Length", str(b - a + 1))
+                if partial:
+                    h.send_header("Content-Range", f"bytes {a}-{b}/{cache.size}")
+                h.end_headers()
+                cache.set_focus(a)
+                pos = a
+                try:
+                    while pos <= b and not cache.closed:
+                        i = pos // cache.CHUNK
+                        if not cache.wait_chunk(i):
+                            return
+                        end = min(b + 1, (i + 1) * cache.CHUNK)
+                        with cache.flock:
+                            cache.f.seek(pos)
+                            data = cache.f.read(end - pos)
+                        h.wfile.write(data)
+                        pos = end
+                        if pos > cache.focus + cache.CHUNK:
+                            cache.set_focus(pos)
+                except OSError:
+                    pass                                   # the player seeked or closed this connection
+
+            def log_message(h, *a):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.local = f"http://127.0.0.1:{self.server.server_address[1]}/media"
+        for _ in range(self.WORKERS):
+            threading.Thread(target=self._worker, daemon=True).start()
+
+    def _request(self, a, b, timeout=20):
+        import urllib.request
+        req = urllib.request.Request(self.url, headers=dict(self.headers, Range=f"bytes={a}-{b}"))
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    def _probe_size(self):
+        try:
+            with self._request(0, 0, timeout=6) as r:
+                cr = r.headers.get("Content-Range", "")
+                return int(cr.rsplit("/", 1)[1]) if "/" in cr else int(r.headers.get("Content-Length") or 0)
+        except Exception as e:
+            winsys.log(f"stream cache: size probe failed: {e}")
+            return 0
+
+    def set_focus(self, pos):
+        with self.cond:
+            self.focus = pos
+            self.cond.notify_all()
+
+    def wait_chunk(self, i):
+        with self.cond:
+            while not self.have[i] and not self.closed:
+                self.cond.wait(0.5)
+            return not self.closed
+
+    def _next(self):
+        """The first missing chunk at or after the playing point (within reach), else before it."""
+        start = self.focus // self.CHUNK
+        limit = min(self.n, start + self.AHEAD // self.CHUNK)
+        for i in range(start, limit):
+            if not self.have[i] and i not in self.busy:
+                return i
+        return None
+
+    def _worker(self):
+        while not self.closed:
+            with self.cond:
+                i = self._next()
+                if i is None:
+                    if all(self.have):
+                        return
+                    self.cond.wait(0.5)
+                    continue
+                self.busy.add(i)
+            a = i * self.CHUNK
+            b = min(self.size, a + self.CHUNK) - 1
+            ok = False
+            for attempt in range(3):
+                try:
+                    with self._request(a, b) as r:
+                        data = r.read()
+                    if len(data) == b - a + 1:
+                        with self.flock:
+                            self.f.seek(a)
+                            self.f.write(data)
+                        ok = True
+                        break
+                except Exception as e:
+                    if attempt == 2:
+                        winsys.log(f"stream cache: chunk {i} failed: {e}")
+                    time.sleep(0.5 * (attempt + 1))
+            with self.cond:
+                self.busy.discard(i)
+                if ok:
+                    self.have[i] = 1
+                else:
+                    self.fails += 1
+                self.cond.notify_all()
+            if not ok:
+                time.sleep(1.0)
+
+    def close(self):
+        with self.cond:
+            self.closed = True
+            self.cond.notify_all()
+        try:
+            self.server.shutdown()
+            self.server.server_close()
+        except Exception:
+            pass
+        try:
+            with self.flock:
+                self.f.close()
+            os.remove(self.tmp)
+        except OSError:
+            pass
+
+
+def _cacheable(url) -> bool:
+    u = str(url).lower()
+    own = u.startswith("http://127.0.0.1:") and u.endswith(("/media", "/live.ts"))     # DragWheel's own
+    return u.startswith(("http://", "https://")) and "m3u8" not in u and "hls_playlist" not in u \
+        and not own and ".mpd" not in u
+
+
 LIVE_OUTPUT = ["-f", "mpegts"]
 LIVE_INPUT_EXTRA = []          # tests add "-re" to feed a recorded stream at live speed
 
@@ -1630,6 +1829,8 @@ class LiveRelay:
         extra = "".join(f"{k}: {v}\r\n" for k, v in hdr.items() if k.lower() != "user-agent")
         if extra:
             args += ["-headers", extra]
+        if "m3u8" in url or "hls" in url:
+            args += ["-live_start_index", "-6", "-http_persistent", "1", "-http_multiple", "1"]
         cmd = [engine.ffmpeg(), *args, *LIVE_INPUT_EXTRA, "-i", url, "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
                *LIVE_OUTPUT, "pipe:1"]
 
@@ -1778,6 +1979,14 @@ class FloatWindow(QWidget):
                 self.aspect = img.width / max(1, img.height)
             except Exception:
                 self.src = None
+        elif link and link.get("pending"):           # reopening: the window shows now, the video when it's fetched
+            self.kind = "video"
+            self.aspect = 16 / 9
+            self.src = QPixmap(2, 2)
+            self.src.fill(QColor(0, 0, 0))
+            self._busy, self._spin = True, 0.0
+            self._pending_timer = QTimer(self, interval=40, timeout=self._pending_tick)
+            self._pending_timer.start()
         elif cat in ("video", "audio") and self._start_player(cat):
             self.kind = cat
             if cat == "video":
@@ -1907,7 +2116,9 @@ class FloatWindow(QWidget):
         self.player.mediaStatusChanged.connect(self._on_status)
         if self.link and self.link.get("audio"):
             self._add_companion(self.link["audio"])
-        if self._live():
+        if self.link and not self._live() and _cacheable(self.path):
+            self.player.setSource(QUrl(self._cached(self.path, self.link.get("size"))))
+        elif self._live():
             self._start_relay()
             self.player.mediaStatusChanged.connect(lambda st: winsys.log(f"float: live status {st.name}"))
             self.player.setSource(QUrl(self._relay.url))
@@ -1927,7 +2138,8 @@ class FloatWindow(QWidget):
         self.player.setAudioOutput(None)                    # the picture stream is silent anyway
         self.companion = QMediaPlayer(self)
         self.companion.setAudioOutput(self.audio)           # volume slider and mute keep working
-        self.companion.setSource(QUrl(audio_url))
+        self.companion.setSource(QUrl(self._cached(audio_url, (self.link or {}).get("audio_size"))
+                                      if _cacheable(audio_url) else audio_url))
         self.player.playbackStateChanged.connect(self._sync_companion_state)
         self.player.positionChanged.connect(self._sync_companion_pos)
 
@@ -2006,12 +2218,19 @@ class FloatWindow(QWidget):
         if busy and not self._busy:
             self._busy_since = now
         if busy and self.link and now - getattr(self, "_busy_since", now) > 15 \
-                and now - getattr(self, "_last_refresh", 0) > 45:
+                and now - getattr(self, "_last_refresh", 0) > 45 and now - getattr(self, "_live_fixing", 0) > 25:
             self.refresh_link(auto=True)                      # stuck: fetch a fresh link by itself
         if busy or busy != self._busy:
             self._spin = (self._spin + 12) % 360
             self._busy = busy
             self.update()
+
+    def _pending_tick(self):
+        if not (self.link or {}).get("pending"):
+            self._pending_timer.stop()
+            return
+        self._spin = (self._spin + 12) % 360
+        self.update()
 
     def _paint_busy(self, p):
         c = QPointF(self.width() / 2, self.height() / 2)
@@ -2168,12 +2387,26 @@ class FloatWindow(QWidget):
         if r is not None:
             r.close()
             self._relay = None
+        for c in getattr(self, "_caches", []):
+            threading.Thread(target=c.close, daemon=True).start()
+        self._caches = []
+
+    def _cached(self, url, size=None):
+        """Local address of the download-ahead copy of `url` (or the url itself if that can't be set up)."""
+        try:
+            c = StreamCache(url, (self.link or {}).get("headers"), size)
+        except Exception as e:
+            winsys.log(f"stream cache not used: {e}")
+            return url
+        self._caches = getattr(self, "_caches", []) + [c]
+        return c.local
 
     def restart_live(self, info):
         """The link was renewed: keep the float as it is (size, place, volume) and carry on playing —
         live streams through a fresh relay, other videos from where they were."""
         if self.player is None or info.get("audio") or self.companion is not None:
-            pos = 0 if (self.player is None or info.get("live")) else self.player.position()
+            keep = getattr(self, "_resume_ms", 0)
+            pos = 0 if info.get("live") else (self.player.position() if self.player is not None else keep)
             self._play_now = True
             self._load(info["url"], info)                # picture and sound apart: set both up again
             self._resume_ms = pos
@@ -2190,10 +2423,14 @@ class FloatWindow(QWidget):
             self._stop_relay()
             self._resume_ms = pos
             self.autoplay = True
-            self.player.setSource(QUrl(info["url"]))
+            self.player.setSource(QUrl(self._cached(info["url"], info.get("size")) if _cacheable(info["url"]) else info["url"]))
         self.player.play()
 
-    def refresh_link(self, auto=False):
+    def _set_quality(self, q):
+        settings().setValue("link_quality", q)
+        self.refresh_link(quality=q)
+
+    def refresh_link(self, auto=False, quality=None):
         """Ask the site again for the video (its links expire) and continue."""
         if not self.link or _APP is None:
             return
@@ -2201,14 +2438,15 @@ class FloatWindow(QWidget):
         self._last_refresh = time.monotonic()
         winsys.log(f"float: refresh link ({'automatic, stuck loading' if auto else 'from the menu'})")
         self._live_fixing = time.monotonic()
-        _APP._resolve_and_play(self.link["page"], self, quiet=True)
+        _APP._resolve_and_play(self.link["page"], self, quiet=True, quality=quality)
 
     def _live_continue(self, error=False):
         import time
         now = time.monotonic()
-        recent = [t for t in getattr(self, "_live_reloads", []) if now - t < 20] + [now]
+        recent = [t for t in getattr(self, "_live_reloads", []) if now - t < 60] + [now]
         self._live_reloads = recent
-        if len(recent) > 4 or error:                    # the link expired or keeps failing: ask YouTube again
+        # a hiccup: just restart the local relay (2-3 s). Several in a minute: the link has expired, ask YouTube again
+        if len(recent) > 3:
             self._live_reloads = []
             if _APP is not None:
                 winsys.log(f"float: live stream re-opened ({'error' if error else 'stalled'})")
@@ -2225,7 +2463,7 @@ class FloatWindow(QWidget):
                 return
             self._live_fixing = time.monotonic()
             winsys.log(f"float: live stream error, reconnecting: {self.player.errorString()}")
-            QTimer.singleShot(500, lambda: self._live_continue(error=True))
+            QTimer.singleShot(300, self._live_continue)
             return
         winsys.log(f"float: cannot play {self.path}: {self.player.errorString()}")
         self.player.stop()
@@ -2386,6 +2624,7 @@ class FloatWindow(QWidget):
         """Everything needed to bring this float back: file or link, place, size, playback."""
         g = self.geometry()
         st = {"id": self.pin_id, "src": self.link["page"] if self.link else str(self.path), "link": bool(self.link),
+              "title": (self.link or {}).get("title", ""),
               "x": g.x(), "y": g.y(), "w": g.width(), "on_top": self.on_top}
         if self.player is not None and not self._live():
             st["pos"] = int(self.player.position())
@@ -2476,7 +2715,7 @@ class FloatWindow(QWidget):
             text = self._current_subtitle()
             if text:
                 self._paint_subtitle(p, text)
-        if getattr(self, "_busy", False) and self.player is not None and self.kind == "video":
+        if getattr(self, "_busy", False) and self.kind == "video" and (self.player is not None or (self.link or {}).get("pending")):
             self._paint_busy(p)
         # ---- overlay controls (fade with the cursor)
         if self.ctrl > 0.01:
@@ -2788,6 +3027,13 @@ class FloatWindow(QWidget):
             m.addAction(tr("Copy path"), lambda: QGuiApplication.clipboard().setText(str(Path(self.path))))
         if self.link:
             m.addAction(tr("Refresh"), self.refresh_link)
+            qm = m.addMenu(tr("Quality"))
+            cur = settings().value("link_quality", "1080p")
+            for q in engine.LINK_QUALITIES:
+                a = qm.addAction(q + (f"  ({tr('now playing')})" if self.link.get("height") and str(self.link.get("height")) + "p" == q else ""))
+                a.setCheckable(True)
+                a.setChecked(q == cur)
+                a.triggered.connect(lambda _=False, q=q: self._set_quality(q))
         if _APP is not None:
             m.addAction(tr("Play copied link"), lambda: _APP.play_link(target=self))
         m.addSeparator()
@@ -4687,7 +4933,7 @@ class DragWheelApp(QObject):
         self.tray.show()
         self._update_jobs = set()
         QTimer.singleShot(8000, self._auto_update_check)
-        QTimer.singleShot(1200, self.restore_pinned_floats)
+        QTimer.singleShot(150, self.restore_pinned_floats)
 
     def restore_pinned_floats(self):
         """Reopen the floats that were open before an update, and those set to 'Open when Windows starts'."""
@@ -4703,7 +4949,11 @@ class DragWheelApp(QObject):
                 continue
             if pin.get("link"):
                 if engine.model_ready("yt-dlp"):
-                    self._resolve_and_play(src, None, pin=pin)
+                    w = FloatWindow("", {"page": src, "title": pin.get("title") or src, "pending": True}, pin=pin)
+                    self.floats.append(w)
+                    w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
+                    w.show()
+                    self._resolve_and_play(src, w, pin=pin, quiet=True)
                 continue
             if not os.path.exists(src):
                 winsys.log(f"pinned float missing: {src}")
@@ -4993,8 +5243,8 @@ class DragWheelApp(QObject):
         else:
             self._ensure_model("yt-dlp", tr("Play copied link"), lambda: self._resolve_and_play(url, target))
 
-    def _resolve_and_play(self, url, target, pin=None, quiet=False):
-        job = LinkResolve(url)
+    def _resolve_and_play(self, url, target, pin=None, quiet=False, quality=None):
+        job = LinkResolve(url, quality)
         job.setAutoDelete(False)
         self._update_jobs.add(job)
         card = None if (pin or quiet) else self.toast.show_busy(tr("Opening link…"), url[:70])
@@ -5470,6 +5720,9 @@ def main():
             if "--play-link" in msg.get("flags", []):
                 app.play_link()
                 return
+            if "--send-phone" in msg.get("flags", []) and msg.get("paths"):
+                app.actions.phone(msg["paths"], {})
+                return
             if "--paste-here" in msg.get("flags", []):
                 app.save_clipboard_image((msg.get("paths") or [None])[0])
             elif msg.get("paths"):
@@ -5488,7 +5741,9 @@ def main():
             except Exception:
                 pass
         QTimer.singleShot(500, app.show_help)
-    if "--play-link" in flags:
+    if "--send-phone" in flags and paths:
+        QTimer.singleShot(300, lambda: app.actions.phone(paths, {}))
+    elif "--play-link" in flags:
         QTimer.singleShot(400, app.play_link)
     elif "--paste-here" in flags:
         QTimer.singleShot(300, lambda: app.save_clipboard_image(paths[0] if paths else None))
