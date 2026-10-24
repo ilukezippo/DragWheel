@@ -153,6 +153,7 @@ CANCELLED = "__cancelled__"
 
 class WorkerSignals(QObject):
     done = Signal(object, object, object)   # worker, outputs, error
+    progress = Signal(object, float)         # worker, 0..1
 
 
 class Worker(QRunnable):
@@ -171,7 +172,8 @@ class Worker(QRunnable):
         try:
             import jobproc
             job = jobproc.JobProcess(self.op.group, self.op.id, self.paths, self.params,
-                                     getattr(self, "output_dir", None) or engine.OUTPUT_DIR)
+                                     getattr(self, "output_dir", None) or engine.OUTPUT_DIR,
+                                     on_progress=lambda f: self.sig.progress.emit(self, f))
             kind, val = job.run(lambda: self.cancel_requested)
             if kind == "done":
                 self.sig.done.emit(self, [Path(v) for v in val], None)
@@ -2552,7 +2554,13 @@ class DragWheelApp(QObject):
         w.setAutoDelete(False)
         self.running.add(w)                       # keep Python refs alive until done
         w.sig.done.connect(self._done, Qt.QueuedConnection)
+        w.sig.progress.connect(lambda wk, f, name=name: self._job_progress(wk, f, name), Qt.QueuedConnection)
         self.pool.start(w)
+
+    def _job_progress(self, worker, frac, name):
+        card = worker.card
+        if card is not None and card in self.toast.cards and not worker.cancel_requested:
+            card.body.setText(f"{name} — {int(frac * 100)}%")
 
     def _cancel_job(self, worker):
         if worker.cancel_requested:

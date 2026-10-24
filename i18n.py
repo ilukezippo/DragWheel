@@ -724,3 +724,9 @@ for _code, _v in {"ar": "يجب أن يكون وقت النهاية بعد ال�
                   "hi": "अंत, शुरुआत के बाद होना चाहिए", "fa": "پایان باید بعد از شروع باشد",
                   "ur": "اختتام آغاز کے بعد ہونا چاہیے"}.items():
     T[_code]["End must be after Start"] = _v
+
+from locales import media12 as _md12  # noqa: E402
+
+for _code, _vals in _md12.T.items():
+    assert len(_vals) == len(_md12.KEYS), _code
+    T[_code].update(dict(zip(_md12.KEYS, _vals)))

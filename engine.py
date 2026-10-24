@@ -187,14 +187,41 @@ def out_dir_for(src: str | Path, tag: str) -> Path:
     return unique_path(_target_dir(src) / f"{src.stem} {tag}")
 
 
-def run(cmd: list[str], cwd: str | None = None, ok_codes=(0,)) -> None:
-    """Run an external tool; killed immediately if the job is cancelled."""
+def report_progress(frac: float, token=None) -> None:
+    """Tell the app how far the current job is (0..1); shown as a percentage on its notification."""
+    t = token or _token()
+    if t is not None and t.on_path:
+        try:
+            t.on_path("progress", f"{max(0.0, min(1.0, frac)):.4f}")
+        except Exception:
+            pass
+
+
+def run(cmd: list[str], cwd: str | None = None, ok_codes=(0,), progress_total: float = 0.0,
+        span: tuple = (0.0, 1.0)) -> None:
+    """Run an external tool; killed immediately if the job is cancelled.
+    With progress_total (seconds), cmd must write ffmpeg's -progress to stdout; it's turned into %."""
     check_cancel()
     import tempfile
     t = _token()
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err, stdin=subprocess.DEVNULL,
-                                cwd=cwd, creationflags=NO_WINDOW)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE if progress_total else subprocess.DEVNULL,
+                                stderr=err, stdin=subprocess.DEVNULL, cwd=cwd, creationflags=NO_WINDOW)
+        if progress_total:
+            def reader(stream=proc.stdout):
+                last = -1.0
+                for raw in iter(stream.readline, b""):
+                    line = raw.decode("ascii", "ignore").strip()
+                    if line.startswith(("out_time_us=", "out_time_ms=")):
+                        try:
+                            done = int(line.split("=", 1)[1]) / 1_000_000
+                        except ValueError:
+                            continue
+                        frac = span[0] + (span[1] - span[0]) * min(1.0, done / progress_total)
+                        if frac - last >= 0.005:
+                            last = frac
+                            report_progress(frac, t)
+            threading.Thread(target=reader, daemon=True).start()
         if t is not None:
             with t._lock:
                 t.procs.append(proc)
@@ -263,8 +290,51 @@ def cover_art(src) -> bytes | None:
         return None
 
 
-def ff(src, out, *args, pre: tuple = ()) -> Path:
-    run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *pre, "-i", str(src), *args, str(out)])
+_DURATIONS = {}
+
+
+def _secs(t) -> float:
+    try:
+        return sum(float(v) * 60 ** i for i, v in enumerate(reversed(str(t).strip().split(":"))))
+    except ValueError:
+        return 0.0
+
+
+def media_duration(src) -> float:
+    """Length of a video or audio file in seconds (0 if unknown)."""
+    key = str(src)
+    if key not in _DURATIONS:
+        try:
+            r = subprocess.run([ffmpeg(), "-hide_banner", "-i", key], capture_output=True, timeout=20,
+                               stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+            m = re.search(rb"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr)
+            _DURATIONS[key] = (int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))) if m else 0.0
+        except Exception:
+            _DURATIONS[key] = 0.0
+    return _DURATIONS[key]
+
+
+def _expected_seconds(src, args, pre) -> float:
+    """How long the output will be, for the progress percentage."""
+    a = [str(x) for x in args]
+    if "-t" in a:
+        return _secs(a[a.index("-t") + 1])
+    total = media_duration(src) if EXT_CATEGORY.get(ext_of(src)) in ("video", "audio") else 0.0
+    pre = [str(x) for x in pre]
+    if "-ss" in pre:
+        total -= _secs(pre[pre.index("-ss") + 1])
+    if "-to" in a:
+        total = min(total, _secs(a[a.index("-to") + 1])) if total > 0 else _secs(a[a.index("-to") + 1])
+    if any("setpts=0.5" in x for x in a):
+        total /= 2
+    return max(0.0, total)
+
+
+def ff(src, out, *args, pre: tuple = (), span: tuple = (0.0, 1.0)) -> Path:
+    total = _expected_seconds(src, args, pre) if _token() is not None else 0.0
+    prog = ["-progress", "pipe:1", "-nostats"] if total > 1 else []
+    run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *prog, *pre, "-i", str(src), *args, str(out)],
+        progress_total=total if prog else 0.0, span=span)
     return Path(out)
 
 
@@ -313,6 +383,141 @@ def video_to_gif(src, p):
     out = out_for(src, "gif")
     vf = "fps=12,scale='min(640,iw)':-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4"
     return ff(src, out, "-vf", vf, "-loop", "0")
+
+
+# ---- 1.2 video & audio tools
+TARGET_SIZES = ["8 MB", "10 MB", "25 MB", "50 MB", "100 MB", "500 MB"]
+
+
+def video_to_size(src, p):
+    """Compress to a target size (two-pass H.264), lowering the resolution when the bitrate gets small."""
+    target_mb = float(str(p.get("Target size", "25 MB")).split()[0])
+    dur = media_duration(src)
+    if dur <= 0:
+        raise ConversionError("Couldn't read the length of this video")
+    audio_k = 96 if target_mb >= 10 else 64
+    video_k = int(target_mb * 8 * 1024 * 0.95 / dur - audio_k)
+    if video_k < 90:
+        raise ConversionError("This video is too long for that size")
+    if Path(src).stat().st_size <= target_mb * 1024 * 1024:
+        raise ConversionError("This file is already smaller than that")
+    h = 1080 if video_k > 3500 else 720 if video_k > 1200 else 480 if video_k > 450 else 360
+    vf = f"scale=-2:'min({h},ih)'"
+    tmp = temp_dir()
+    log = str(tmp / "pass")
+    null = "NUL" if IS_WIN else "/dev/null"
+    common = ["-vf", vf, "-c:v", "libx264", "-preset", "medium", "-b:v", f"{video_k}k", "-pix_fmt", "yuv420p",
+              "-passlogfile", log]
+    ff(src, null, *common, "-pass", "1", "-an", "-f", "mp4", span=(0.0, 0.5))
+    out = out_for(src, "mp4", f"{int(target_mb)}MB")
+    return ff(src, out, *common, "-pass", "2", "-c:a", "aac", "-b:a", f"{audio_k}k", "-movflags", "+faststart",
+              span=(0.5, 1.0))
+
+
+SOCIAL_SHAPES = ["9:16", "1:1", "4:5", "16:9"]
+
+
+def _face_center_x(src, samples=6) -> float | None:
+    """Where faces are, horizontally (0..1), from a few frames — so the crop keeps the subject in view."""
+    try:
+        import cv2
+        import numpy as np
+        dur = media_duration(src)
+        tmp = temp_dir()
+        xs = []
+        det = None
+        for i in range(samples):
+            check_cancel()
+            at = dur * (i + 0.5) / samples
+            png = tmp / f"f{i}.png"
+            run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{at:.2f}", "-i", str(src),
+                 "-frames:v", "1", "-vf", "scale=640:-2", str(png)])
+            img = cv2.imread(str(png))
+            if img is None:
+                continue
+            if det is None:
+                det = cv2.FaceDetectorYN.create(str(_asset("models", "face_detection_yunet_2023mar.onnx")), "",
+                                                (img.shape[1], img.shape[0]), 0.6, 0.3, 5000)
+            det.setInputSize((img.shape[1], img.shape[0]))
+            _, faces = det.detect(img)
+            if faces is not None:
+                for f in faces:
+                    xs.append((f[0] + f[2] / 2) / img.shape[1])
+        return float(np.median(xs)) if xs else None
+    except Exception:
+        return None
+
+
+def video_social_crop(src, p):
+    """Crop to 9:16 / 1:1 / 4:5 / 16:9 for Reels, TikTok and Stories, centred on the people in it."""
+    shape = p.get("Shape", "9:16")
+    a, b = (int(x) for x in shape.split(":"))
+    cx = _face_center_x(src)
+    cx = 0.5 if cx is None else cx
+    ratio = f"{a}/{b}"
+    # crop width/height from the source, x offset centred on the faces (clamped inside the frame)
+    vf = (f"crop='if(gt(iw/ih,{ratio}),ih*{ratio},iw)':'if(gt(iw/ih,{ratio}),ih,iw/({ratio}))':"
+          f"'max(0,min(iw-ow,iw*{cx:.4f}-ow/2))':'(ih-oh)/2',scale='trunc(min(iw,1080)/2)*2':-2,setsar=1")
+    out = out_for(src, "mp4", shape.replace(":", "x"))
+    return ff(src, out, "-vf", vf, "-c:v", "libx264", "-crf", "21", "-preset", "medium", "-pix_fmt", "yuv420p",
+              "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart")
+
+
+RINGTONE_FORMATS = ["iPhone (M4R)", "Android (MP3)"]
+
+
+def ringtone(src, p):
+    """30-second ringtone with a short fade in and out."""
+    start = _secs(parse_time(p.get("Start", "0:00")))
+    length = min(30.0, max(1.0, media_duration(src) - start)) if media_duration(src) else 30.0
+    af = f"afade=t=in:d=0.5,afade=t=out:st={max(0.0, length - 1.5):.2f}:d=1.5"
+    if p.get("Format", RINGTONE_FORMATS[0]).startswith("iPhone"):
+        out = out_for(src, "m4r", "ringtone")
+        return ff(src, out, "-t", f"{length:.2f}", "-vn", "-af", af, "-c:a", "aac", "-b:a", "192k", "-f", "ipod",
+                  pre=("-ss", f"{start:.2f}"))
+    out = out_for(src, "mp3", "ringtone")
+    return ff(src, out, "-t", f"{length:.2f}", "-vn", "-af", af, "-c:a", "libmp3lame", "-q:a", "2",
+              pre=("-ss", f"{start:.2f}"))
+
+
+def _side_subtitles(video) -> list[str]:
+    v = Path(video)
+    try:
+        return sorted(str(f) for f in v.parent.iterdir()
+                      if f.suffix.lower() in (".srt", ".ass", ".ssa", ".vtt") and f.name.lower().startswith(v.stem.lower()))
+    except OSError:
+        return []
+
+
+def _ff_filter_path(path) -> str:
+    """Quote a file path for an ffmpeg filter argument (Windows drive colons and quotes)."""
+    s = str(Path(path)).replace("\\", "/")
+    return s.replace(":", "\\:").replace("'", "\\'")
+
+
+def burn_subtitles(paths, p):
+    """Burn subtitles into the picture: the video plus a subtitle file dragged with it, or one next to it."""
+    video = next(x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "video")
+    subs = [x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "subtitle"] or _side_subtitles(video)
+    if not subs:
+        raise ConversionError("No subtitle file found")
+    sub = Path(subs[0])
+    tmp = temp_dir()
+    # libass reads UTF-8: convert other encodings (e.g. Arabic Windows-1256) first; copy to a simple path
+    raw = sub.read_bytes()
+    for enc in ("utf-8-sig", "cp1256", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    local = tmp / ("subs" + sub.suffix.lower())
+    local.write_text(text, encoding="utf-8")
+    style = ":force_style='FontName=Segoe UI,FontSize=22,Outline=2,Shadow=0,MarginV=28'" if sub.suffix.lower() in (".srt", ".vtt") else ""
+    vf = f"subtitles='{_ff_filter_path(local)}'{style}"
+    out = out_for(video, "mp4", "subtitled")
+    return ff(video, out, "-vf", vf, "-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p",
+              "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
 
 
 def video_gif_clip(src, p):
@@ -2015,7 +2220,12 @@ def tools(paths: list[str]) -> list[Op]:
             T("snapshot", "Snapshot…", video_snapshot, ask=[("At time", "0:01")]),
             T("speed", "Speed 2×", video_speed2x),
             T("gif", "Make GIF…", video_gif_clip, ask=[("Start", "0:00"), ("End", "0:05")]),
+            T("tosize", "Compress to size…", video_to_size, ask=[("Target size", TARGET_SIZES)]),
+            T("social", "Crop for social…", video_social_crop, ask=[("Shape", SOCIAL_SHAPES)]),
+            T("ringtone", "Ringtone…", ringtone, ask=[("Start", "0:00"), ("Format", RINGTONE_FORMATS)]),
         ]
+        if n == 1 and _side_subtitles(paths[0]):
+            ops.append(T("burn", "Burn subtitles", burn_subtitles, multi=True, hint=Path(_side_subtitles(paths[0])[0]).name))
         if n > 1:
             ops.append(T("merge", "Merge", media_merge, multi=True))
     elif cat == "audio":
@@ -2025,6 +2235,7 @@ def tools(paths: list[str]) -> list[Op]:
             T("normalize", "Normalize", audio_normalize),
             T("mono", "Mono", audio_mono),
             T("fade", "Fade in/out", audio_fade),
+            T("ringtone", "Ringtone…", ringtone, ask=[("Start", "0:00"), ("Format", RINGTONE_FORMATS)]),
         ]
         if n > 1:
             ops.append(T("merge", "Merge", media_merge, multi=True))
@@ -2042,6 +2253,8 @@ def tools(paths: list[str]) -> list[Op]:
             ops.append(T("merge", "Merge", pdf_merge, multi=True))
     elif cat == "archive":
         ops.append(T("extract", "Extract", archive_extract))
+    elif cat == "mixed" and sorted(EXT_CATEGORY.get(ext_of(x)) for x in paths) == ["subtitle", "video"]:
+        ops.append(T("burn", "Burn subtitles", burn_subtitles, multi=True))
     # Folders, archives and "other" files already get ZIP/7Z/... in the Convert wheel
     if cat not in ("archive", "folder", "mixed", "other"):
         ops.append(T("zip", "Zip", to_zip, multi=True))

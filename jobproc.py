@@ -85,8 +85,9 @@ def _remove(path: str):
 
 
 class JobProcess:
-    def __init__(self, group, op_id, paths, params, output_dir):
+    def __init__(self, group, op_id, paths, params, output_dir, on_progress=None):
         self.args = (group, op_id, list(paths), dict(params or {}), output_dir)
+        self.on_progress = on_progress
         self.outputs: list[str] = []     # planned output paths
         self.temps: list[str] = []
 
@@ -147,7 +148,13 @@ class JobProcess:
         return result
 
     def _note(self, kind, val):
-        if kind == "out":
+        if kind == "progress":
+            if self.on_progress:
+                try:
+                    self.on_progress(float(val))
+                except Exception:
+                    pass
+        elif kind == "out":
             self.outputs.append(val)
         elif kind == "tmp":
             self.temps.append(val)
