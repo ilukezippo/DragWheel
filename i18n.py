@@ -707,3 +707,20 @@ from locales import images12 as _im12  # noqa: E402
 for _code, _vals in _im12.T.items():
     assert len(_vals) == len(_im12.KEYS), _code
     T[_code].update(dict(zip(_im12.KEYS, _vals)))
+
+for _code, _v in {"ar": "حفظ صورة الحافظة هنا", "fr": "Enregistrer l'image du presse-papiers ici",
+                  "es": "Guardar aquí la imagen del portapapeles", "tr": "Panodaki görüntüyü buraya kaydet",
+                  "de": "Bild aus der Zwischenablage hier speichern", "ru": "Сохранить сюда изображение из буфера",
+                  "zh": "将剪贴板图片保存到这里", "ja": "クリップボードの画像をここに保存",
+                  "pt": "Salvar aqui a imagem da área de transferência", "it": "Salva qui l'immagine degli appunti",
+                  "hi": "क्लिपबोर्ड की छवि यहाँ सहेजें", "fa": "ذخیرهٔ تصویر کلیپ‌بورد در اینجا",
+                  "ur": "کلپ بورڈ کی تصویر یہاں محفوظ کریں"}.items():
+    T[_code]["Save clipboard image here"] = _v
+for _code, _v in {"ar": "يجب أن يكون وقت النهاية بعد البداية", "fr": "La fin doit être après le début",
+                  "es": "El final debe ser posterior al inicio", "tr": "Bitiş, başlangıçtan sonra olmalı",
+                  "de": "Das Ende muss nach dem Anfang liegen", "ru": "Конец должен быть позже начала",
+                  "zh": "结束时间必须晚于开始时间", "ja": "終了は開始より後にしてください",
+                  "pt": "O fim deve ser depois do início", "it": "La fine deve essere dopo l'inizio",
+                  "hi": "अंत, शुरुआत के बाद होना चाहिए", "fa": "پایان باید بعد از شروع باشد",
+                  "ur": "اختتام آغاز کے بعد ہونا چاہیے"}.items():
+    T[_code]["End must be after Start"] = _v

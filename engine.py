@@ -315,6 +315,19 @@ def video_to_gif(src, p):
     return ff(src, out, "-vf", vf, "-loop", "0")
 
 
+def video_gif_clip(src, p):
+    """Make GIF… for videos: the part between Start and End, 12 fps, up to 640 px wide, good colours."""
+    def secs(t):
+        parts = [float(x) for x in parse_time(t).split(":")]
+        return sum(v * 60 ** i for i, v in enumerate(reversed(parts)))
+    start, end = secs(p.get("Start", "0")), secs(p.get("End", "5"))
+    if end <= start:
+        raise ConversionError("End must be after Start")
+    out = out_for(src, "gif", "clip")
+    vf = "fps=12,scale='min(640,iw)':-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4"
+    return ff(src, out, "-t", f"{end - start:.3f}", "-vf", vf, "-loop", "0", pre=("-ss", f"{start:.3f}"))
+
+
 def video_to_hevc(src, p):
     """H.265 in MP4: about half the size of H.264 at the same quality (plays on Windows 10/11, phones)."""
     return ff(src, out_for(src, "mp4", "hevc"), "-c:v", "libx265", "-preset", "medium", "-crf", "26",
@@ -2001,6 +2014,7 @@ def tools(paths: list[str]) -> list[Op]:
             T("rotate", "Rotate 90°", video_rotate),
             T("snapshot", "Snapshot…", video_snapshot, ask=[("At time", "0:01")]),
             T("speed", "Speed 2×", video_speed2x),
+            T("gif", "Make GIF…", video_gif_clip, ask=[("Start", "0:00"), ("End", "0:05")]),
         ]
         if n > 1:
             ops.append(T("merge", "Merge", media_merge, multi=True))

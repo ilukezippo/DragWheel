@@ -190,6 +190,13 @@ Section "$(SecMenuName)" SecMenu
   WriteRegStr HKCU "Software\Classes\Directory\shell\DragWheel" "Icon" "$INSTDIR\${EXE},0"
   WriteRegStr HKCU "Software\Classes\Directory\shell\DragWheel" "MultiSelectModel" "Player"
   WriteRegStr HKCU "Software\Classes\Directory\shell\DragWheel\command" "" '"$INSTDIR\${EXE}" --open "%1"'
+  ; desktop / empty folder space: DragWheel > Save clipboard image here
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel" "MUIVerb" "DragWheel"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel" "Icon" "$INSTDIR\${EXE},0"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel" "SubCommands" ""
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\paste" "MUIVerb" "$(PasteHere)"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\paste" "Icon" "imageres.dll,-5302"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\paste\command" "" '"$INSTDIR\${EXE}" --paste-here "%V"'
   SetShellVarContext current           ; Send To is per user
   CreateShortcut "$SENDTO\${APPNAME}.lnk" "$INSTDIR\${EXE}" "--open" "$INSTDIR\${EXE}" 0
   SetShellVarContext all
@@ -254,6 +261,7 @@ Section "Uninstall"
 
   DeleteRegKey   HKCU "Software\Classes\*\shell\DragWheel"
   DeleteRegKey   HKCU "Software\Classes\Directory\shell\DragWheel"
+  DeleteRegKey   HKCU "Software\Classes\Directory\Background\shell\DragWheel"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APPNAME}"
   DeleteRegKey   HKLM "${UNINST_KEY}"
   DeleteRegKey   HKCU "Software\DragWheel"
@@ -277,6 +285,8 @@ LangString WelcomeTitle   ${LANG_ENGLISH} "Welcome to ${APPNAME}"
 LangString WelcomeTitle   ${LANG_ARABIC}  "مرحبًا بك في ${APPNAME}"
 LangString WelcomeText    ${LANG_ENGLISH} "Drag a file, tap a key, drop it on the wheel.$\r$\n$\r$\nTap Shift to convert, Ctrl for file tools (compress, crop, trim…) or Alt for file actions.$\r$\n$\r$\nEverything runs on your PC — nothing is uploaded.$\r$\n$\r$\n${APPNAME} will be installed for all users in Program Files.$\r$\n$\r$\nClick Next to continue."
 LangString WelcomeText    ${LANG_ARABIC}  "اسحب ملفًا، اضغط مفتاحًا، ثم أفلته على العجلة.$\r$\n$\r$\nاضغط Shift للتحويل، وCtrl لأدوات الملفات (ضغط، قص، تقطيع…)، وAlt لإجراءات الملفات.$\r$\n$\r$\nكل شيء يعمل على جهازك — لا يتم رفع أي ملف.$\r$\n$\r$\nسيتم تثبيت ${APPNAME} لجميع المستخدمين في مجلد Program Files.$\r$\n$\r$\nاضغط التالي للمتابعة."
+LangString PasteHere      ${LANG_ENGLISH} "Save clipboard image here"
+LangString PasteHere      ${LANG_ARABIC}  "حفظ صورة الحافظة هنا"
 LangString UpdateTitle    ${LANG_ENGLISH} "Update ${APPNAME}"
 LangString UpdateTitle    ${LANG_ARABIC}  "تحديث ${APPNAME}"
 LangString UpdateText     ${LANG_ENGLISH} "${APPNAME} $OldVersion is installed on this PC.$\r$\n$\r$\nSetup will close it, remove the old version and install ${APPNAME} ${APPVERSION}. Your settings are kept.$\r$\n$\r$\nClick Next to continue."

@@ -170,7 +170,8 @@ class Worker(QRunnable):
         """The job runs in its own process (jobproc) so Cancel can stop it instantly."""
         try:
             import jobproc
-            job = jobproc.JobProcess(self.op.group, self.op.id, self.paths, self.params, engine.OUTPUT_DIR)
+            job = jobproc.JobProcess(self.op.group, self.op.id, self.paths, self.params,
+                                     getattr(self, "output_dir", None) or engine.OUTPUT_DIR)
             kind, val = job.run(lambda: self.cancel_requested)
             if kind == "done":
                 self.sig.done.emit(self, [Path(v) for v in val], None)
@@ -1022,10 +1023,10 @@ class FloatWindow(QWidget):
             w = 200
         if self.isVisible() and self.kind == prev_kind and self.kind != "other":
             w = prev_w                                   # next/previous keeps the size you chose
-        c = self.frameGeometry().center() if self.isVisible() else None
+        tl = self.pos() if self.isVisible() else None
         self._apply_size(w, self._height_for(w))
-        if c is not None:
-            self.move(c - QPoint(self.width() // 2, self.height() // 2))
+        if tl is not None:
+            self.move(tl)                                # stay exactly where it is
         self.setToolTip(f"{path}\n" + tr("Drag to move · drag ⠿ to drop the file · double-click to open · scroll to resize"))
         self.update()
 
@@ -1048,9 +1049,9 @@ class FloatWindow(QWidget):
             img = md.value(key)
             if isinstance(img, QImage) and not img.isNull():
                 self._set_cover(img)
-                c = self.frameGeometry().center()
-                self._apply_size(280, self._height_for(280))
-                self.move(c - QPoint(self.width() // 2, self.height() // 2))
+                tl = self.pos()
+                self._apply_size(self.width() if self.width() > 200 else 280, self._height_for(280))
+                self.move(tl)
                 return
 
     # ---------------------------------------------------------------- drop to replace
@@ -1166,9 +1167,9 @@ class FloatWindow(QWidget):
             a = img.width() / max(1, img.height())
             if abs(a - (self.aspect or 0)) > 0.01:
                 self.aspect = a
-                c = self.frameGeometry().center()
+                tl = self.pos()
                 self._apply_size(self.width(), self._height_for(self.width()))
-                self.move(c - QPoint(self.width() // 2, self.height() // 2))
+                self.move(tl)
         self.update()
 
     def _on_subtitle(self, text):
@@ -1272,6 +1273,18 @@ class FloatWindow(QWidget):
     def _playing(self):
         from PySide6.QtMultimedia import QMediaPlayer
         return self.player is not None and self.player.playbackState() == QMediaPlayer.PlayingState
+
+    def media_key(self, key):
+        """Play/pause, next, previous, stop from the keyboard's media keys."""
+        if not self.player:
+            return
+        if key == "play":
+            self._toggle_play()
+        elif key == "stop":
+            self.player.pause()
+            self.player.setPosition(0)
+        else:
+            self._step(1 if key == "next" else -1)
 
     def _toggle_play(self):
         if not self.player:
@@ -1554,7 +1567,10 @@ class FloatWindow(QWidget):
             frac = min(1.0, max(0.0, (x - sr.left()) / max(1.0, sr.width())))
             self.player.setPosition(int(self.player.duration() * frac))
 
+    last_used = None                 # the float the keyboard media keys control
+
     def mousePressEvent(self, e):
+        FloatWindow.last_used = self
         if e.button() == Qt.RightButton:
             self._menu(e.globalPosition().toPoint())
             return
@@ -2212,6 +2228,10 @@ class DragWheelApp(QObject):
         self.pool.setMaxThreadCount(max(2, (os.cpu_count() or 4) // 2))
         self.actions = Actions(self)
         self.floats = []
+        self.out_override = {}           # temp file -> folder its results go to (clipboard "save here")
+        self._media_down = {}
+        self._media_timer = QTimer(self, interval=60, timeout=self._media_tick)
+        self._media_timer.start()
         self.wheel = Wheel(self)
         self.toast = ToastManager()
         self.running = set()
@@ -2479,10 +2499,12 @@ class DragWheelApp(QObject):
         job.sig.downloaded.connect(finished, Qt.QueuedConnection)
         self.pool.start(job)
 
-    def save_clipboard_image(self):
-        """Tray: save an image from the clipboard as a PNG (Pictures\\DragWheel) and open the wheel on it.
+    def save_clipboard_image(self, folder=None):
+        """Save the image on the clipboard: the Convert wheel opens on it so you pick the file type, and the
+        file is saved in `folder` (the folder you right-clicked in), or Pictures\\DragWheel from the tray.
         Files copied in Explorer open the wheel directly."""
         import datetime
+        import tempfile
         cb = QGuiApplication.clipboard()
         md = cb.mimeData()
         files = [u.toLocalFile() for u in (md.urls() if md and md.hasUrls() else []) if u.isLocalFile()]
@@ -2493,17 +2515,35 @@ class DragWheelApp(QObject):
         if img.isNull():
             self.toast.show_msg(tr("No image on the clipboard"), tr("Copy a picture or take a screenshot first."), "info", 4000)
             return
-        folder = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Pictures" / APP
-        folder.mkdir(parents=True, exist_ok=True)
-        path = engine.unique_path(folder / f"Clipboard {datetime.datetime.now():%Y-%m-%d %H-%M-%S}.png")
-        if not img.save(str(path), "PNG"):
+        if not folder or not os.path.isdir(folder):
+            folder = str(Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Pictures" / APP)
+            Path(folder).mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.gettempdir()) / "DragWheel-clipboard"
+        tmp.mkdir(exist_ok=True)
+        path = tmp / f"Clipboard {datetime.datetime.now():%Y-%m-%d %H-%M-%S}.bmp"
+        if not img.save(str(path), "BMP"):
             self.toast.show_msg(tr("Couldn't do that"), str(path), "err", 6000)
             return
-        self.open_paths([str(path)])
+        self.out_override[str(path)] = folder
+        self.wheel.popup("convert", [str(path)], click_mode=True)
+
+    def _media_tick(self):
+        """Keyboard media keys control the float that was used last (or one that is playing)."""
+        floats = [f for f in self.floats if getattr(f, "player", None)]
+        if not floats:
+            return
+        for vk, key in ((0xB3, "play"), (0xB0, "next"), (0xB1, "prev"), (0xB2, "stop")):
+            down = winsys.key_down(vk)
+            if down and not self._media_down.get(vk):
+                target = FloatWindow.last_used if FloatWindow.last_used in floats else None
+                target = target or next((f for f in floats if f._playing()), floats[-1])
+                target.media_key(key)
+            self._media_down[vk] = down
 
     def _start(self, op, paths, params):
         name = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
         w = Worker(op, paths, params)
+        w.output_dir = self.out_override.get(paths[0])     # e.g. clipboard image saved "here"
         cancel = lambda w=w: self._cancel_job(w)
         if op.group == "convert":
             w.card = self.toast.show_busy(tr("Converting to {fmt}…", fmt=tr(op.label)), name, cancel)
@@ -2744,6 +2784,12 @@ def main():
     except Exception as e:
         winsys.log(f"Satsuma cleanup failed: {e}")
 
+    try:
+        if winsys.context_menu_enabled():
+            winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"))
+    except Exception as e:
+        winsys.log(f"context menu refresh failed: {e}")
+
     QLocalServer.removeServer(SERVER_NAME)
     server = QLocalServer()
     server.listen(SERVER_NAME)
@@ -2757,7 +2803,9 @@ def main():
                 msg = json.loads(bytes(sock.readAll()).decode("utf-8") or "{}")
             except Exception:
                 return
-            if msg.get("paths"):
+            if "--paste-here" in msg.get("flags", []):
+                app.save_clipboard_image((msg.get("paths") or [None])[0])
+            elif msg.get("paths"):
                 app.queue_paths(msg["paths"])
             elif "--tray" not in msg.get("flags", []):
                 app.show_help()
@@ -2773,7 +2821,9 @@ def main():
             except Exception:
                 pass
         QTimer.singleShot(500, app.show_help)
-    if paths:
+    if "--paste-here" in flags:
+        QTimer.singleShot(300, lambda: app.save_clipboard_image(paths[0] if paths else None))
+    elif paths:
         app.queue_paths(paths)
     elif "--tray" not in flags and not first_run:
         app.tray.showMessage(APP, tr("Running in the tray. Drag a file and tap {key}.", key=tr(mode_keys()["convert"])),
