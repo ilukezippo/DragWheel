@@ -681,3 +681,23 @@ for _code, (_a, _b) in {
     "ur": ("کوئی ٹول نہیں", "تبدیل کریں یا افعال آزمائیں"),
 }.items():
     T[_code].update({"No tools": _a, "try Convert or Actions": _b})
+
+# --------------------------------------------------------------------------- strings added in 1.2 (Float)
+_F12 = {
+    "ar": ("مسار الصوت", "إيقاف", "المسار {n}", "تشغيل الفيديو والموسيقى فور فتحها في النافذة العائمة"),
+    "fr": ("Piste audio", "Désactivés", "Piste {n}", "Lire les vidéos et la musique dès leur ouverture en mode flottant"),
+    "es": ("Pista de audio", "Desactivados", "Pista {n}", "Reproducir vídeos y música en cuanto se abran en flotante"),
+    "tr": ("Ses parçası", "Kapalı", "Parça {n}", "Videoları ve müziği yüzen pencerede açılır açılmaz oynat"),
+    "de": ("Tonspur", "Aus", "Spur {n}", "Videos und Musik sofort abspielen, wenn sie schwebend geöffnet werden"),
+    "ru": ("Звуковая дорожка", "Выкл.", "Дорожка {n}", "Сразу воспроизводить видео и музыку, открытые поверх окон"),
+    "zh": ("音轨", "关闭", "轨道 {n}", "在置顶浮窗中打开视频和音乐时立即播放"),
+    "ja": ("音声トラック", "オフ", "トラック {n}", "最前面に固定したビデオや音楽をすぐに再生する"),
+    "pt": ("Faixa de áudio", "Desativadas", "Faixa {n}", "Reproduzir vídeos e música assim que abrirem no modo flutuante"),
+    "it": ("Traccia audio", "Disattivati", "Traccia {n}", "Riproduci video e musica appena si aprono in modalità fluttuante"),
+    "hi": ("ऑडियो ट्रैक", "बंद", "ट्रैक {n}", "ऊपर टिकाए जाने पर वीडियो और संगीत तुरंत चलाएँ"),
+    "fa": ("ترک صدا", "خاموش", "ترک {n}", "پخش ویدیو و موسیقی به‌محض باز شدن در حالت شناور"),
+    "ur": ("آڈیو ٹریک", "بند", "ٹریک {n}", "اوپر رکھے جانے پر ویڈیو اور موسیقی فوراً چلائیں"),
+}
+for _code, (_a, _b, _c, _d) in _F12.items():
+    T[_code].update({"Audio track": _a, "Off": _b, "Track {n}": _c,
+                     "Play videos and music as soon as they open in Float": _d})

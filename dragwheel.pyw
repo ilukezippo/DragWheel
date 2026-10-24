@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PySide6.QtCore import (QEasingCurve, QObject, QPointF, QPropertyAnimation, QRectF, QRunnable, QSizeF, QVariantAnimation,
-                            QSettings, QSize, Qt, QThreadPool, QTimer, QUrl, Signal, QMimeData, QPoint)
+                            QRect, QSettings, QSize, Qt, QThreadPool, QTimer, QUrl, Signal, QMimeData, QPoint)
 from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QDesktopServices, QDrag, QFont, QFontMetrics,
                            QGuiApplication, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                            QPolygonF, QRadialGradient)
@@ -877,6 +877,54 @@ def _fmt_time(ms):
     return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
 
 
+def _find_side_subtitles(video) -> list[str]:
+    """Subtitle files next to a video with the same name: movie.srt, movie.en.srt, movie.vtt ..."""
+    v = Path(video)
+    try:
+        return sorted(str(f) for f in v.parent.iterdir()
+                      if f.suffix.lower() in (".srt", ".vtt") and f.name.lower().startswith(v.stem.lower()))
+    except OSError:
+        return []
+
+
+def _parse_subtitles(path) -> list[tuple[int, int, str]]:
+    """Read an SRT or WebVTT file into (start ms, end ms, text) cues. Handles UTF-8 and Arabic (Windows-1256)."""
+    import re
+    raw = Path(path).read_bytes()
+    for enc in ("utf-8-sig", "cp1256", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    ts = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{1,3})|(\d\d):(\d\d)[,.](\d{1,3})")
+
+    def ms(t):
+        m = ts.fullmatch(t.strip().split(" ")[0])
+        if not m:
+            return None
+        if m.group(1):
+            h, mi, se, fr = m.group(1, 2, 3, 4)
+        else:
+            h, (mi, se, fr) = "0", m.group(5, 6, 7)
+        return ((int(h) * 60 + int(mi)) * 60 + int(se)) * 1000 + int(fr.ljust(3, "0"))
+
+    cues = []
+    for block in re.split(r"\r?\n\s*\r?\n", text.replace("\r\n", "\n")):
+        lines = [l for l in block.split("\n") if l.strip()]
+        for i, line in enumerate(lines):
+            if "-->" in line:
+                a, b = line.split("-->", 1)
+                start, end = ms(a), ms(b)
+                if start is not None and end is not None:
+                    body = "\n".join(lines[i + 1:])
+                    body = re.sub(r"<[^>]+>|\{[^}]*\}", "", body).strip()
+                    if body:
+                        cues.append((start, end, body))
+                break
+    return cues
+
+
 class FloatWindow(QWidget):
     closed = Signal()
     RADIUS = 14
@@ -1017,13 +1065,18 @@ class FloatWindow(QWidget):
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
         self.player.setAudioOutput(self.audio)
+        self.autoplay = settings().value("float_autoplay", "true") == "true"
+        self.subs = None             # external subtitles: list of (start ms, end ms, text)
+        self.sub_text = ""           # built-in subtitle line currently shown
         if cat == "video":
             self.sink = QVideoSink(self)
             self.player.setVideoSink(self.sink)
             self.sink.videoFrameChanged.connect(self._on_frame)
-            # play until the first frame arrives (silently), then pause on it
+            self.sink.subtitleTextChanged.connect(self._on_subtitle)
             self._first_frame = True
-            self.audio.setMuted(True)
+            if not self.autoplay:
+                # play until the first frame arrives (silently), then pause on it
+                self.audio.setMuted(True)
         self.player.positionChanged.connect(lambda _p: self.update())
         self.player.durationChanged.connect(lambda _d: self.update())
         self.player.playbackStateChanged.connect(lambda _s: self.update())
@@ -1031,8 +1084,12 @@ class FloatWindow(QWidget):
         if cat == "audio":
             self.player.metaDataChanged.connect(self._on_metadata)
         self.player.setSource(QUrl.fromLocalFile(self.path))
-        if cat == "video":
+        if cat == "video" or self.autoplay:
             self.player.play()
+        if cat == "video":
+            side = _find_side_subtitles(self.path)
+            if side:
+                self._load_subs(side[0])
         return True
 
     def _on_frame(self, frame):
@@ -1042,9 +1099,10 @@ class FloatWindow(QWidget):
         self.frame = img
         if getattr(self, "_first_frame", False):
             self._first_frame = False
-            self.player.pause()
-            self.player.setPosition(0)
-            self.audio.setMuted(False)
+            if not self.autoplay:
+                self.player.pause()
+                self.player.setPosition(0)
+                self.audio.setMuted(False)
             a = img.width() / max(1, img.height())
             if abs(a - (self.aspect or 0)) > 0.01:
                 self.aspect = a
@@ -1052,6 +1110,94 @@ class FloatWindow(QWidget):
                 self._apply_size(self.width(), self._height_for(self.width()))
                 self.move(c - QPoint(self.width() // 2, self.height() // 2))
         self.update()
+
+    def _on_subtitle(self, text):
+        self.sub_text = text or ""
+        self.update()
+
+    def _load_subs(self, path):
+        try:
+            self.subs = _parse_subtitles(path)
+            self.subs_path = path
+            self.player.setActiveSubtitleTrack(-1)        # one subtitle source at a time
+        except Exception as e:
+            winsys.log(f"float: cannot read subtitles {path}: {e}")
+            self.subs = None
+        self.update()
+
+    def _current_subtitle(self):
+        if self.subs:
+            pos = self.player.position()
+            return "\n".join(t for a, b, t in self.subs if a <= pos <= b)
+        return self.sub_text
+
+    @staticmethod
+    def _track_name(md, i):
+        from PySide6.QtCore import QLocale
+        from PySide6.QtMultimedia import QMediaMetaData
+        parts = []
+        lang = md.value(QMediaMetaData.Language)
+        try:
+            if lang is not None and lang != QLocale.AnyLanguage:
+                parts.append(QLocale.languageToString(lang))
+        except Exception:
+            pass
+        title = md.stringValue(QMediaMetaData.Title)
+        if title and title not in parts:
+            parts.append(title)
+        return " · ".join(parts) or tr("Track {n}", n=i + 1)
+
+    def _add_track_menus(self, m):
+        from PySide6.QtGui import QActionGroup
+        audio = self.player.audioTracks()
+        am = m.addMenu(tr("Audio track"))
+        grp = QActionGroup(am)
+        for i, md in enumerate(audio):
+            a = am.addAction(self._track_name(md, i))
+            a.setCheckable(True)
+            a.setChecked(i == self.player.activeAudioTrack() or (len(audio) == 1))
+            a.triggered.connect(lambda _c=False, i=i: self.player.setActiveAudioTrack(i))
+            grp.addAction(a)
+        if not audio:
+            am.setEnabled(False)
+        sm = m.addMenu(tr("Subtitles"))
+        grp2 = QActionGroup(sm)
+        off = sm.addAction(tr("Off"))
+        off.setCheckable(True)
+        off.setChecked(not self.subs and self.player.activeSubtitleTrack() < 0)
+        off.triggered.connect(self._subs_off)
+        grp2.addAction(off)
+        for i, md in enumerate(self.player.subtitleTracks()):
+            a = sm.addAction(self._track_name(md, i))
+            a.setCheckable(True)
+            a.setChecked(not self.subs and i == self.player.activeSubtitleTrack())
+            a.triggered.connect(lambda _c=False, i=i: self._subs_track(i))
+            grp2.addAction(a)
+        for f in _find_side_subtitles(self.path):
+            a = sm.addAction(Path(f).name)
+            a.setCheckable(True)
+            a.setChecked(bool(self.subs) and getattr(self, "subs_path", "") == f)
+            a.triggered.connect(lambda _c=False, f=f: self._load_subs(f))
+            grp2.addAction(a)
+        sm.addSeparator()
+        sm.addAction(tr("Browse…"), self._browse_subs)
+
+    def _subs_off(self):
+        self.subs = None
+        self.player.setActiveSubtitleTrack(-1)
+        self.sub_text = ""
+        self.update()
+
+    def _subs_track(self, i):
+        self.subs = None
+        self.player.setActiveSubtitleTrack(i)
+        self.update()
+
+    def _browse_subs(self):
+        f, _ = QFileDialog.getOpenFileName(self, tr("Subtitles"), str(Path(self.path).parent),
+                                           "Subtitles (*.srt *.vtt)")
+        if f:
+            self._load_subs(f)
 
     def _on_media_error(self, *_a):
         winsys.log(f"float: cannot play {self.path}: {self.player.errorString()}")
@@ -1207,6 +1353,11 @@ class FloatWindow(QWidget):
                 p.drawRoundedRect(ir.adjusted(-12, -12, 12, 12), 16, 16)
             p.drawPixmap(ir.toRect(), self.src.scaled(int(ir.width()), int(ir.height()),
                                                        Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        # ---- subtitles (above the controls when they are showing)
+        if self.kind == "video" and self.player:
+            text = self._current_subtitle()
+            if text:
+                self._paint_subtitle(p, text)
         # ---- overlay controls (fade with the cursor)
         if self.ctrl > 0.01:
             p.setOpacity(self.ctrl)
@@ -1260,6 +1411,23 @@ class FloatWindow(QWidget):
         else:
             p.setPen(QPen(ACCENT if (self.hover and self.hover != "icon") else C("line"), 1.2))
             p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
+
+    def _paint_subtitle(self, p, text):
+        size = max(10, min(22, self.height() / 18))
+        f = QFont(i18n.ui_font(), 1)
+        f.setPointSizeF(size)
+        f.setWeight(QFont.DemiBold)
+        fm = QFontMetrics(f)
+        bottom = self.height() - (self._band_h() + 8) * self.ctrl - 12
+        width = self.width() - 32
+        rect = fm.boundingRect(QRect(0, 0, int(width), 1000), Qt.AlignHCenter | Qt.TextWordWrap, text)
+        box = QRectF((self.width() - rect.width()) / 2 - 8, bottom - rect.height() - 4, rect.width() + 16, rect.height() + 8)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 150))
+        p.drawRoundedRect(box, 6, 6)
+        p.setFont(f)
+        p.setPen(QColor("#ffffff"))
+        p.drawText(box, Qt.AlignCenter | Qt.TextWordWrap, text)
 
     def _paint_player(self, p, fg):
         # big play / pause in the middle
@@ -1433,6 +1601,9 @@ class FloatWindow(QWidget):
 
     def _menu(self, at):
         m = QMenu(self)
+        if self.kind == "video" and self.player:
+            self._add_track_menus(m)
+            m.addSeparator()
         m.addAction(tr("Open"), lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self.path)))
         m.addAction(tr("Show in Explorer"), lambda: winsys.reveal(self.path))
         m.addAction(tr("Copy path"), lambda: QGuiApplication.clipboard().setText(str(Path(self.path))))
@@ -1558,6 +1729,7 @@ class SettingsDialog(QDialog):
             "menu": self.menu.isChecked(),
             "hotkey": self.hotkey.isChecked(),
             "auto_update": self.auto_update.isChecked(),
+            "autoplay": self.autoplay.isChecked(),
         }
 
     def _initial(self) -> dict:
@@ -1571,6 +1743,7 @@ class SettingsDialog(QDialog):
             "menu": winsys.context_menu_enabled(),
             "hotkey": s.value("hotkey", "true") == "true",
             "auto_update": s.value("check_updates", "true") == "true",
+            "autoplay": s.value("float_autoplay", "true") == "true",
         }
 
     def _theme_changed(self, _idx):
@@ -1685,6 +1858,13 @@ class SettingsDialog(QDialog):
         row.addWidget(b)
         f2.addRow(tr("Save to"), row)
         lay.addWidget(g2)
+
+        gf = QGroupBox(tr("Float"))
+        vf = QVBoxLayout(gf)
+        self.autoplay = QCheckBox(tr("Play videos and music as soon as they open in Float"))
+        self.autoplay.setChecked(st["autoplay"])
+        vf.addWidget(self.autoplay)
+        lay.addWidget(gf)
 
         g3 = QGroupBox("Windows")
         v3 = QVBoxLayout(g3)
@@ -1820,6 +2000,7 @@ class SettingsDialog(QDialog):
         s.setValue("hotkey", "true" if self.hotkey.isChecked() else "false")
         s.setValue("scroll", "true" if self.scroll.isChecked() else "false")
         s.setValue("check_updates", "true" if self.auto_update.isChecked() else "false")
+        s.setValue("float_autoplay", "true" if self.autoplay.isChecked() else "false")
         self.app.watcher.refresh_settings()
         engine.OUTPUT_DIR = self.out.text().strip() or None
         s.setValue("language", self.lang.currentData())
