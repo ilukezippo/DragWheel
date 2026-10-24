@@ -961,6 +961,7 @@ class FloatWindow(QWidget):
             self.player.setSource(QUrl())
             self.player.deleteLater()
             self.player = None
+        prev_kind, prev_w = getattr(self, "kind", None), self.width()
         self.path = path
         cat = engine.EXT_CATEGORY.get(engine.ext_of(path))
         self.kind = "other"          # image | video | audio | other
@@ -998,6 +999,8 @@ class FloatWindow(QWidget):
             w = 280
         else:
             w = 200
+        if self.isVisible() and self.kind == prev_kind and self.kind != "other":
+            w = prev_w                                   # next/previous keeps the size you chose
         c = self.frameGeometry().center() if self.isVisible() else None
         self._apply_size(w, self._height_for(w))
         if c is not None:
@@ -1065,7 +1068,8 @@ class FloatWindow(QWidget):
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
         self.player.setAudioOutput(self.audio)
-        self.autoplay = settings().value("float_autoplay", "true") == "true"
+        self.autoplay = settings().value("float_autoplay", "true") == "true" or getattr(self, "_play_now", False)
+        self._play_now = False
         self.subs = None             # external subtitles: list of (start ms, end ms, text)
         self.sub_text = ""           # built-in subtitle line currently shown
         if cat == "video":
@@ -1083,6 +1087,7 @@ class FloatWindow(QWidget):
         self.player.errorOccurred.connect(self._on_media_error)
         if cat == "audio":
             self.player.metaDataChanged.connect(self._on_metadata)
+        self.player.mediaStatusChanged.connect(self._on_status)
         self.player.setSource(QUrl.fromLocalFile(self.path))
         if cat == "video" or self.autoplay:
             self.player.play()
@@ -1091,6 +1096,40 @@ class FloatWindow(QWidget):
             if side:
                 self._load_subs(side[0])
         return True
+
+    # ---- previous / next file in the same folder
+    def _siblings(self):
+        import re
+        cat = engine.EXT_CATEGORY.get(engine.ext_of(self.path))
+        here = Path(self.path)
+        try:
+            files = [str(f) for f in here.parent.iterdir()
+                     if f.is_file() and engine.EXT_CATEGORY.get(engine.ext_of(str(f))) == cat]
+        except OSError:
+            return []
+        natural = lambda t: [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", Path(t).name)]
+        return sorted(files, key=natural)
+
+    def _neighbour(self, step):
+        files = self._siblings()
+        try:
+            i = [os.path.normcase(f) for f in files].index(os.path.normcase(self.path))
+        except ValueError:
+            return None
+        j = i + step
+        return files[j] if 0 <= j < len(files) else None
+
+    def _step(self, step):
+        nxt = self._neighbour(step)
+        if nxt:
+            self._play_now = True
+            self._load(nxt)
+
+    def _on_status(self, status):
+        from PySide6.QtMultimedia import QMediaPlayer
+        if status == QMediaPlayer.EndOfMedia and settings().value("float_autoplay", "true") == "true":
+            if self._neighbour(1):
+                QTimer.singleShot(300, lambda: self._step(1))
 
     def _on_frame(self, frame):
         img = frame.toImage()
@@ -1293,6 +1332,9 @@ class FloatWindow(QWidget):
             pc = self._play_center()
             if (pos.x() - pc.x()) ** 2 + (pos.y() - pc.y()) ** 2 <= 30 ** 2:
                 return "play"
+            for name, dx in (("prev", -62), ("next", 62)):
+                if (pos.x() - pc.x() - dx) ** 2 + (pos.y() - pc.y()) ** 2 <= 22 ** 2:
+                    return name
         if self.kind == "other" and self._icon_rect().contains(pos):
             return "icon"
         return "body"
@@ -1442,6 +1484,19 @@ class FloatWindow(QWidget):
         else:
             tri = QPolygonF([QPointF(pc.x() - 7, pc.y() - 11), QPointF(pc.x() - 7, pc.y() + 11), QPointF(pc.x() + 11, pc.y())])
             p.drawPolygon(tri)
+        # previous / next in the folder (dimmed at the ends)
+        for name, dx, d in (("prev", -62, -1), ("next", 62, 1)):
+            c = QPointF(pc.x() + dx, pc.y())
+            have = self._neighbour(d) is not None
+            p.setOpacity(self.ctrl * (1.0 if have else 0.35))
+            p.setBrush(ACCENT if (self.hover == name and have) else QColor(20, 20, 22, 150))
+            p.drawEllipse(c, 18, 18)
+            p.setBrush(ON_ACCENT if (self.hover == name and have) else QColor("#ffffff"))
+            sgn = 1 if d > 0 else -1
+            p.drawPolygon(QPolygonF([QPointF(c.x() - 5 * sgn, c.y() - 7), QPointF(c.x() - 5 * sgn, c.y() + 7),
+                                     QPointF(c.x() + 4 * sgn, c.y())]))
+            p.drawRect(QRectF(c.x() + 4 * sgn - (2 if sgn > 0 else 0), c.y() - 7, 2, 14))
+        p.setOpacity(self.ctrl)
         # seek bar
         sr = self._seek_rect()
         p.setBrush(QColor(255, 255, 255, 70) if (self.kind == "video" or self.art) else C("busy_track"))
@@ -1529,7 +1584,7 @@ class FloatWindow(QWidget):
                        else Qt.SizeHorCursor if (l or r) else Qt.SizeVerCursor)
             else:
                 cur = {"close": Qt.PointingHandCursor, "grip": Qt.OpenHandCursor, "icon": Qt.PointingHandCursor,
-                       "play": Qt.PointingHandCursor, "seek": Qt.PointingHandCursor, "mute": Qt.PointingHandCursor
+                       "play": Qt.PointingHandCursor, "prev": Qt.PointingHandCursor, "next": Qt.PointingHandCursor, "seek": Qt.PointingHandCursor, "mute": Qt.PointingHandCursor
                        }.get(h, Qt.SizeAllCursor)
             self.setCursor(cur)
             self.update()
@@ -1566,6 +1621,8 @@ class FloatWindow(QWidget):
         kind = press[0]
         if kind == "icon":
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.path))
+        elif kind in ("prev", "next"):
+            self._step(-1 if kind == "prev" else 1)
         elif kind == "play" or (kind == "body" and self.kind == "video"):
             self._toggle_play()
         if not self.underMouse():
@@ -1587,6 +1644,8 @@ class FloatWindow(QWidget):
             self.close()
         elif e.key() == Qt.Key_Space and self.player:
             self._toggle_play()
+        elif e.key() in (Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_MediaPrevious, Qt.Key_MediaNext) and self.player:
+            self._step(-1 if e.key() in (Qt.Key_PageUp, Qt.Key_MediaPrevious) else 1)
         elif e.key() in (Qt.Key_Left, Qt.Key_Right) and self.player:
             self.player.setPosition(max(0, self.player.position() + (5000 if e.key() == Qt.Key_Right else -5000)))
 
