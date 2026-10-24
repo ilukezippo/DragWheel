@@ -2972,12 +2972,34 @@ class SignPlacer(QWidget):
         nav.addWidget(self.page_lbl, 1)
         nav.addWidget(self.next_b)
         side.addLayout(nav)
-        self.here = QCheckBox(tr("Signature on this page"))
-        self.here.toggled.connect(self._toggle_here)
-        side.addWidget(self.here)
-        every = QPushButton(tr("Same place on every page"))
-        every.clicked.connect(self._everywhere)
-        side.addWidget(every)
+        from PySide6.QtWidgets import QButtonGroup, QRadioButton, QSpinBox
+        side.addWidget(QLabel("<b>" + tr("Sign") + "</b>"))
+        self.mode_group = QButtonGroup(self)
+        n = self.doc.page_count
+        self.modes = {}
+        for key, label in (("this", tr("Only the page shown")), ("all", tr("All pages")),
+                           ("range", tr("Pages from")), ("pick", tr("Pages I click"))):
+            rb = QRadioButton(label)
+            self.mode_group.addButton(rb)
+            self.modes[key] = rb
+            if key == "range":
+                rr = QHBoxLayout()
+                rr.addWidget(rb)
+                self.r_from, self.r_to = QSpinBox(), QSpinBox()
+                for sp, v in ((self.r_from, 1), (self.r_to, n)):
+                    sp.setRange(1, n)
+                    sp.setValue(v)
+                    sp.setFixedWidth(64)
+                    sp.valueChanged.connect(self._range_changed)
+                rr.addWidget(self.r_from)
+                rr.addWidget(QLabel(tr("to")))
+                rr.addWidget(self.r_to)
+                rr.addStretch(1)
+                side.addLayout(rr)
+            else:
+                side.addWidget(rb)
+            rb.toggled.connect(lambda on, k=key: on and self._set_mode(k))
+        self.mode = None
         self.signed_lbl = QLabel()
         self.signed_lbl.setWordWrap(True)
         self.signed_lbl.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
@@ -3000,19 +3022,28 @@ class SignPlacer(QWidget):
         lay.addLayout(side)
         self._page_img = None
         self.setAcceptDrops(True)
-        self.places[self.page_i] = list(self._last)       # signatures usually go on the last page
+        self.shared = list(self._last)                       # signatures usually go on the last page
         self._go(0)
+        mode = settings().value("sign_mode", "this")
+        self.modes.get(mode, self.modes["this"]).setChecked(True)
         self.del_b.setEnabled(self.sig_img is not None)
         if self.sig_img is None:
             QTimer.singleShot(200, self._draw_new)
 
     @property
     def box(self):
-        return self.places.get(self.page_i)
+        if self.mode == "pick":
+            return self.places.get(self.page_i)
+        if self.mode == "range" and not (self.r_from.value() - 1 <= self.page_i <= self.r_to.value() - 1):
+            return None
+        return self.shared
 
     @box.setter
     def box(self, v):
-        self.places[self.page_i] = v
+        if self.mode == "pick":
+            self.places[self.page_i] = v
+        else:
+            self.shared = v
         self._last = list(v)
 
     # page
@@ -3022,39 +3053,54 @@ class SignPlacer(QWidget):
         self.prev_b.setEnabled(self.page_i > 0)
         self.next_b.setEnabled(self.page_i < self.doc.page_count - 1)
         self._page_img = _render_page(self.doc, self.page_i, 900)
-        if hasattr(self, "here"):
-            self.here.blockSignals(True)
-            self.here.setChecked(self.page_i in self.places)
-            self.here.blockSignals(False)
+        if self.mode is not None:
             self._signed_label()
         self.view.update()
 
-    def _toggle_here(self, on):
-        if on:
+    def _set_mode(self, key):
+        self.mode = key
+        settings().setValue("sign_mode", key)
+        if key == "pick" and not self.places:
             self.places[self.page_i] = list(self._last)
-            self._fit_rect_to_sig()
-        else:
-            self.places.pop(self.page_i, None)
+        self.r_from.setEnabled(key == "range")
+        self.r_to.setEnabled(key == "range")
+        self._fit_rect_to_sig()
         self._signed_label()
         self.view.update()
 
-    def _everywhere(self):
-        box = self.box or self._last
-        for i in range(self.doc.page_count):
-            self.places[i] = list(box)
-        self.here.setChecked(True)
+    def _range_changed(self):
+        if self.r_to.value() < self.r_from.value():
+            self.sender().setValue(self.r_from.value() if self.sender() is self.r_to else self.r_to.value())
+        if self.mode != "range":
+            self.modes["range"].setChecked(True)
         self._signed_label()
         self.view.update()
+
+    def signed_pages(self):
+        n = self.doc.page_count
+        if self.mode == "all":
+            return list(range(n))
+        if self.mode == "range":
+            return list(range(self.r_from.value() - 1, self.r_to.value()))
+        if self.mode == "pick":
+            return sorted(self.places)
+        return [self.page_i]
 
     def _signed_label(self):
-        pages = sorted(self.places)
+        if self.mode == "pick":
+            hint = tr("Click a page to sign it; right-click the signature to take it off that page.")
+        elif self.mode == "this":
+            hint = tr("The signature goes on the page shown when you press Apply.")
+        else:
+            hint = tr("The signature goes in the same place on each of these pages.")
+        pages = self.signed_pages()
         if not pages:
             txt = tr("No page signed yet")
         elif len(pages) == self.doc.page_count and len(pages) > 1:
             txt = tr("Signed on every page")
         else:
             txt = tr("Signed pages: {list}", list=", ".join(str(i + 1) for i in pages[:12]) + ("…" if len(pages) > 12 else ""))
-        self.signed_lbl.setText(txt)
+        self.signed_lbl.setText(txt + "\n" + hint)
 
     def _page_rect(self):
         img = self._page_img
@@ -3100,14 +3146,22 @@ class SignPlacer(QWidget):
     def _press(self, e):
         if self.sig_img is None:
             return
+        if e.button() == Qt.RightButton:
+            if self.mode == "pick" and self.box is not None and self._sig_rect().contains(e.position()):
+                self.places.pop(self.page_i, None)
+                self._signed_label()
+                self.view.update()
+            return
         if self.box is None:                                 # click on an unsigned page: sign it here
+            if self.mode != "pick":
+                return
             pr = self._page_rect()
             pos = e.position()
             w, h = self._last[2] - self._last[0], self._last[3] - self._last[1]
             x = min(max(0.0, (pos.x() - pr.x()) / pr.width() - w / 2), 1 - w)
             y = min(max(0.0, (pos.y() - pr.y()) / pr.height() - h / 2), 1 - h)
             self.box = [x, y, x + w, y + h]
-            self.here.setChecked(True)
+            self._signed_label()
             self.view.update()
             return
         pos = e.position()
@@ -3207,7 +3261,10 @@ class SignPlacer(QWidget):
     def value(self):
         if not self.sig_path:
             return ""
-        places = [{"page": i, "rect": [round(v, 5) for v in r]} for i, r in sorted(self.places.items())]
+        if self.mode == "pick":
+            places = [{"page": i, "rect": [round(v, 5) for v in r]} for i, r in sorted(self.places.items())]
+        else:
+            places = [{"page": i, "rect": [round(v, 5) for v in self.shared]} for i in self.signed_pages()]
         return json.dumps({"sig": str(self.sig_path), "places": places}) if places else ""
 
 

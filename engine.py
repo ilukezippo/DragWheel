@@ -50,14 +50,15 @@ EXT_CATEGORY = {
     **{e: "slides" for e in "pptx ppt odp key".split()},
     **{e: "spreadsheet" for e in "xlsx xlsm xls ods csv tsv".split()},
     **{e: "subtitle" for e in "srt vtt ass ssa".split()},
-    **{e: "ebook" for e in "epub mobi fb2 cbz xps oxps".split()},
+    **{e: "ebook" for e in "epub mobi fb2 xps oxps".split()},
+    **{e: "comic" for e in "cbz cbr cb7 cbt".split()},
     **{e: "archive" for e in "zip tar gz tgz bz2 tbz2 xz txz 7z rar iso cab".split()},
 }
 
 CATEGORY_LABEL = {
     "image": "Image", "video": "Video", "audio": "Audio", "pdf": "PDF",
     "document": "Document", "slides": "Slides", "spreadsheet": "Spreadsheet",
-    "subtitle": "Subtitles", "ebook": "E-book", "archive": "Archive",
+    "subtitle": "Subtitles", "ebook": "E-book", "comic": "Comic book", "archive": "Archive",
     "folder": "Folder", "mixed": "Files", "other": "File",
 }
 
@@ -2480,7 +2481,8 @@ ARCHIVE_LABEL = {"zip": "ZIP", "7z": "7Z", "rar": "RAR", "tar": "TAR", "tar.gz":
                  "tar.bz2": "TAR.BZ2", "tar.xz": "TAR.XZ"}
 # ext_of() value -> canonical archive format
 ARCHIVE_FMT = {"zip": "zip", "7z": "7z", "rar": "rar", "tar": "tar", "tgz": "tar.gz", "tbz2": "tar.bz2",
-               "txz": "tar.xz", "gz": "gz", "bz2": "bz2", "xz": "xz", "iso": "iso", "cab": "cab"}
+               "txz": "tar.xz", "gz": "gz", "bz2": "bz2", "xz": "xz", "iso": "iso", "cab": "cab",
+               "cbz": "zip", "cbr": "rar", "cb7": "7z", "cbt": "tar"}
 
 
 def _program_files():
@@ -2581,6 +2583,102 @@ def _extract_into(src: Path, dest: Path):
         run([exe, "-xf", str(src), "-C", str(dest)])
     else:
         raise ConversionError("Install 7-Zip or WinRAR to open this archive")
+
+
+# ---- comic books (.cbz zip, .cbr rar, .cb7 7z, .cbt tar: a folder of page pictures)
+_COMIC_IMG = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".jxl", ".tif", ".tiff")
+
+
+def _natural(s):
+    return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", str(s))]
+
+
+def comic_pages(src) -> list[Path]:
+    """The page pictures of a comic book, in reading order (extracted to a temp folder)."""
+    src = Path(src)
+    tmp = temp_dir()
+    head = src.read_bytes()[:8]
+    if zipfile.is_zipfile(src):                     # many .cbr files are really ZIPs
+        with zipfile.ZipFile(src) as z:
+            for m in z.infolist():
+                check_cancel()
+                if m.is_dir() or "__MACOSX" in m.filename or not m.filename.lower().endswith(_COMIC_IMG):
+                    continue
+                _safe(tmp, m.filename)
+                z.extract(m, tmp)
+    elif head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        import py7zr
+        with py7zr.SevenZipFile(src, "r") as z:
+            z.extractall(tmp)
+    else:
+        link = tmp / ("book" + (".rar" if head.startswith(b"Rar!") else ".tar" if ext_of(src) == "cbt" else src.suffix))
+        shutil.copyfile(src, link)                  # external tools pick the format from the extension
+        _extract_into(link, tmp)
+        link.unlink(missing_ok=True)
+    pages = sorted((f for f in tmp.rglob("*") if f.is_file() and f.suffix.lower() in _COMIC_IMG
+                    and "__MACOSX" not in f.parts and not f.name.startswith(".")),
+                   key=lambda f: _natural(f.relative_to(tmp)))
+    if not pages:
+        raise ConversionError("No pages found in this comic book")
+    return pages
+
+
+def _pages_to_pdf(pages, out):
+    mu = _mu()
+    doc = mu.open()
+    for f in pages:
+        check_cancel()
+        try:
+            img = mu.open(str(f))
+            doc.insert_pdf(mu.open("pdf", img.convert_to_pdf()))
+        except Exception:                           # formats MuPDF can't read (e.g. AVIF): via Pillow
+            doc.insert_pdf(_image_pdf_page(f))
+    doc.save(str(out), garbage=3, deflate=True)
+    return out
+
+
+def _pages_to_cbz(pages, out):
+    width = max(3, len(str(len(pages))))
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:      # pictures are compressed already
+        for i, f in enumerate(pages, 1):
+            check_cancel()
+            z.write(f, f"{str(i).zfill(width)}{f.suffix.lower()}")
+    return out
+
+
+def comic_to_pdf(src, p):
+    return _pages_to_pdf(comic_pages(src), out_for(src, "pdf"))
+
+
+def comic_to_cbz(src, p):
+    return _pages_to_cbz(comic_pages(src), out_for(src, "cbz"))
+
+
+def comic_extract(src, p):
+    pages = comic_pages(src)
+    folder = out_dir_for(src, "pages")
+    folder.mkdir()
+    width = max(3, len(str(len(pages))))
+    for i, f in enumerate(pages, 1):
+        shutil.copy2(f, folder / f"{str(i).zfill(width)}{f.suffix.lower()}")
+    return folder
+
+
+def images_to_cbz(paths, p):
+    pages = sorted((Path(x) for x in paths), key=lambda f: _natural(f.name))
+    return _pages_to_cbz(pages, out_for(pages[0], "cbz", "comic"))
+
+
+def pdf_to_cbz(src, p):
+    doc = _mu().open(str(src))
+    tmp = temp_dir()
+    pages = []
+    for i, page in enumerate(doc, 1):
+        check_cancel()
+        f = tmp / f"{i:04d}.jpg"
+        page.get_pixmap(dpi=150).save(str(f), jpg_quality=90)
+        pages.append(f)
+    return _pages_to_cbz(pages, out_for(src, "cbz"))
 
 
 def archive_extract(src, p):
@@ -2773,6 +2871,7 @@ def conversions(paths: list[str]) -> list[Op]:
         add("txt", pdf_to_text)
         add("md", pdf_to_markdown, "Markdown")
         add("html", pdf_to_html)
+        add("cbz", pdf_to_cbz, "CBZ")
     elif cat == "document":
         if e in ("md", "txt", "html"):
             add("pdf", text_to_pdf)
@@ -2814,12 +2913,16 @@ def conversions(paths: list[str]) -> list[Op]:
             else:
                 add(f, subs_ffmpeg(f))
         add("txt", subs_to_txt)
+    elif cat == "comic":
+        add("pdf", comic_to_pdf)
+        if e != "cbz":
+            add("cbz", comic_to_cbz, "CBZ")
     elif cat == "ebook":
         add("pdf", epub_to_pdf)
         add("txt", epub_to_text)
         add("md", pdf_to_markdown, "Markdown")
         add("html", pdf_to_html)
-        if e in ("cbz", "xps", "oxps"):
+        if e in ("xps", "oxps"):
             add("png", pdf_to_images("png", dpi=150))
             add("jpg", pdf_to_images("jpg", dpi=150))
     elif cat == "archive":                 # "Extract" lives in Tools
@@ -2871,6 +2974,7 @@ def tools(paths: list[str]) -> list[Op]:
             ops.append(T("stitch_h", "Stitch side by side", images_stitch("h"), multi=True))
             ops.append(T("stitch_v", "Stitch top to bottom", images_stitch("v"), multi=True))
             ops.append(T("gif", "Make GIF…", images_to_gif, multi=True, ask=[("Seconds per image", "0.5")]))
+            ops.append(T("cbz", "Make comic (CBZ)", images_to_cbz, multi=True))
     elif cat == "video":
         ops += [
             T("compress", "Compress…", video_compress, ask=[("Target size", ["Automatic"] + TARGET_SIZES)]),
@@ -2932,6 +3036,8 @@ def tools(paths: list[str]) -> list[Op]:
             ops.append(T("merge", "Merge", pdf_merge, multi=True))
             if not any(o.id == "arrange" for o in ops):
                 ops.append(T("arrange", "Arrange pages…", pdf_arrange, multi=True, ask=[("Layout", "@pages")]))
+    elif cat == "comic":
+        ops.append(T("pages", "Extract pages", comic_extract))
     elif cat in ("document", "slides", "ebook"):
         if all(ext_of(x) in ("txt", "md", "html", "htm", "docx", "odt", "pptx", "epub") for x in paths):
             ops.append(T("count", "Word count", count_words))

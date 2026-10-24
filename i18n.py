@@ -785,3 +785,9 @@ from locales import pdf12c as _p12c  # noqa: E402
 for _code, _vals in _p12c.T.items():
     assert len(_vals) == len(_p12c.KEYS), _code
     T[_code].update(dict(zip(_p12c.KEYS, _vals)))
+
+from locales import comic12 as _c12  # noqa: E402
+
+for _code, _vals in _c12.T.items():
+    assert len(_vals) == len(_c12.KEYS), _code
+    T[_code].update(dict(zip(_c12.KEYS, _vals)))
