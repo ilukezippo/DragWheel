@@ -744,3 +744,15 @@ for _code, _vals in _f12b.T.items():
     T[_code].update(dict(zip(_f12b.KEYS, _vals)))
     if "Compress" in T[_code]:
         T[_code].setdefault("Compress…", T[_code]["Compress"] + "…")
+
+from locales import float12c as _f12c  # noqa: E402
+
+for _code, _vals in _f12c.T.items():
+    assert len(_vals) == len(_f12c.KEYS), _code
+    T[_code].update(dict(zip(_f12c.KEYS, _vals)))
+
+from locales import subs12 as _s12  # noqa: E402
+
+for _code, _vals in _s12.T.items():
+    assert len(_vals) == len(_s12.KEYS), _code
+    T[_code].update(dict(zip(_s12.KEYS, _vals)))

@@ -24,6 +24,14 @@ NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # ----------------------------------------------------------------------------- child
 def child_main(group, op_id, paths, params, output_dir, q, cancel_evt):
+    if sys.platform == "win32":
+        try:   # below normal priority (inherited by ffmpeg & co.) so floats keep playing smoothly
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.GetCurrentProcess.restype = ctypes.c_void_p
+            k32.SetPriorityClass(ctypes.c_void_p(k32.GetCurrentProcess()), 0x00004000)
+        except Exception:
+            pass
     try:
         import engine
         engine.OUTPUT_DIR = output_dir

@@ -424,15 +424,49 @@ def remove_legacy_satsuma() -> list[str]:
 # ----------------------------------------------------------------------------
 # Shell helpers
 # ----------------------------------------------------------------------------
-def reveal(path: str) -> None:
-    p = Path(path)
-    if IS_WIN:
-        if p.is_dir():
-            subprocess.Popen(["explorer", str(p)])
-        else:
-            subprocess.Popen(f'explorer /select,"{p}"')
-    else:
-        subprocess.Popen(["xdg-open", str(p.parent)])
+def reveal(path) -> None:
+    """Open the folder in Explorer with the file(s) selected. `path` may be one path or a list
+    (all in the same folder get selected). A folder on its own just opens."""
+    paths = [Path(x) for x in (path if isinstance(path, (list, tuple)) else [path]) if x]
+    if not paths:
+        return
+    p = paths[0]
+    if not IS_WIN:
+        subprocess.Popen(["xdg-open", str(p if p.is_dir() else p.parent)])
+        return
+    try:
+        _select_in_explorer([str(x.resolve()) for x in paths if x.exists()] or [str(p)])
+    except Exception as e:
+        log(f"reveal fallback: {e}")
+        subprocess.Popen(f'explorer /select,"{os.path.normpath(str(p))}"')
+
+
+def _select_in_explorer(paths: list) -> None:
+    """SHOpenFolderAndSelectItems: reliable selection (explorer /select is ignored when Explorer is busy
+    or the path has unusual characters) and it reuses an already-open window of that folder."""
+    from ctypes import wintypes
+    shell32, ole32 = ctypes.windll.shell32, ctypes.windll.ole32
+    ole32.CoInitialize(None)
+    shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+    shell32.ILCreateFromPathW.argtypes = [wintypes.LPCWSTR]
+    shell32.ILFree.argtypes = [ctypes.c_void_p]
+    shell32.SHOpenFolderAndSelectItems.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p, wintypes.DWORD]
+    folder = os.path.dirname(os.path.normpath(paths[0]))
+    same = [os.path.normpath(x) for x in paths if os.path.dirname(os.path.normpath(x)) == folder]
+    pf = shell32.ILCreateFromPathW(folder)
+    items = [shell32.ILCreateFromPathW(x) for x in same]
+    items = [i for i in items if i]
+    if not pf or not items:
+        raise OSError("could not resolve path")
+    try:
+        arr = (ctypes.c_void_p * len(items))(*items)
+        hr = shell32.SHOpenFolderAndSelectItems(pf, len(items), arr, 0)
+        if hr < 0:                                   # failed HRESULT
+            raise OSError(f"SHOpenFolderAndSelectItems {hr & 0xFFFFFFFF:#x}")
+    finally:
+        for i in items:
+            shell32.ILFree(i)
+        shell32.ILFree(pf)
 
 
 def open_terminal(folder: str) -> None:
@@ -548,15 +582,75 @@ class WheelHook:
                     pass
             return user32.CallNextHookEx(None, n_code, w_param, l_param)
 
+        # ---- Ctrl + Enter on a selected file in Explorer / on the desktop -> Float (keyboard twin of the above)
+        class KBDLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD), ("flags", wintypes.DWORD),
+                        ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+        class GUITHREADINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
+                        ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                        ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
+
+        WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, VK_RETURN = 13, 0x0100, 0x0101, 0x0D
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.c_void_p]
+        user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.c_void_p]
+
+        def focus_in_file_list():
+            """The Explorer window (or desktop) in front, if its file list has the keyboard focus —
+            not the address bar, search box or a file being renamed."""
+            fg = user32.GetForegroundWindow()
+            if not fg or window_class(fg) not in ("CabinetWClass", "ExploreWClass", "Progman", "WorkerW"):
+                return None
+            gti = GUITHREADINFO()
+            gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+            if not user32.GetGUIThreadInfo(user32.GetWindowThreadProcessId(fg, None), ctypes.byref(gti)):
+                return None
+            if not gti.hwndFocus or window_class(gti.hwndFocus) not in ("DirectUIHWND", "SysListView32"):
+                return None
+            return fg
+
+        def kproc(n_code, w_param, l_param):
+            if n_code == 0 and w_param in (WM_KEYDOWN, WM_KEYUP) and self.on_ctrl_double is not None:
+                try:
+                    info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                    if info.vkCode == VK_RETURN:
+                        if w_param == WM_KEYUP:
+                            self._enter_down = False
+                            if self._eat_enter_up:
+                                self._eat_enter_up = False
+                                return 1
+                        if (w_param == WM_KEYDOWN and user32.GetAsyncKeyState(0x11) & 0x8000
+                                and not user32.GetAsyncKeyState(0x10) & 0x8000 and not user32.GetAsyncKeyState(0x12) & 0x8000
+                                and self.ctrl_double_enabled()):
+                            fg = focus_in_file_list()
+                            if fg:
+                                self._eat_enter_up = True
+                                if not self._enter_down:          # key repeat: open once
+                                    self._enter_down = True
+                                    self.on_ctrl_double(fg)
+                                return 1
+                except Exception:
+                    pass
+            return user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+        self._eat_enter_up = False
+        self._enter_down = False
         self._proc = HOOKPROC(proc)            # keep a reference or it gets collected
+        self._kproc = HOOKPROC(kproc)
         self._tid = kernel32.GetCurrentThreadId()
         hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self._proc, kernel32.GetModuleHandleW(None), 0)
         if not hook:
             log("mouse hook could not be installed")
             return
-        log("mouse hook installed")
+        khook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._kproc, kernel32.GetModuleHandleW(None), 0)
+        log("mouse hook installed" + ("" if khook else " (keyboard hook failed)"))
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
         user32.UnhookWindowsHookEx(hook)
+        if khook:
+            user32.UnhookWindowsHookEx(khook)

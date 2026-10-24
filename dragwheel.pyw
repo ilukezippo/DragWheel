@@ -15,6 +15,7 @@ import json
 import math
 import os
 import sys
+import threading
 import traceback
 from pathlib import Path
 
@@ -834,7 +835,7 @@ class Toast(QWidget):
 
     def show_result(self, title, outs):
         outs = [Path(o) for o in outs if o]
-        self.target = str(outs[0]) if outs else None
+        self.target = [str(o) for o in outs] if outs else None     # all of them get selected
         body = outs[0].name if len(outs) == 1 else tr("{n} items saved", n=len(outs))
         self._show(title, body, "ok", show_btn=bool(self.target), ms=5000)
 
@@ -970,6 +971,19 @@ def _parse_subtitles(path) -> list[tuple[int, int, str]]:
     return cues
 
 
+def _float_pins() -> list:
+    """Floats that reopen when Windows starts: [{"id", "src", "link", "x", "y", "w", "on_top"}]."""
+    try:
+        v = json.loads(settings().value("float_pins", "[]") or "[]")
+        return v if isinstance(v, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def _save_float_pins(pins):
+    settings().setValue("float_pins", json.dumps(pins))
+
+
 class FloatWindow(QWidget):
     closed = Signal()
     RADIUS = 14
@@ -977,8 +991,10 @@ class FloatWindow(QWidget):
     CLOSE_R = 11
     MIN_W = 160
 
-    def __init__(self, path, link=None):
+    def __init__(self, path, link=None, play=False, pin=None):
         on_top = settings().value("float_on_top", "true") == "true"
+        if pin is not None:
+            on_top = bool(pin.get("on_top", on_top))
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | (Qt.WindowStaysOnTopHint if on_top else Qt.Widget))
         self.on_top = on_top
         self._vol_open = False
@@ -998,8 +1014,21 @@ class FloatWindow(QWidget):
         self._press = None               # (kind, global pos, local pos, geometry, edges)
         self._seeking = False
         self._drop_hover = False
+        self.pin_id = None               # set when this float reopens with Windows
+        self._pin_timer = QTimer(self, singleShot=True, interval=500, timeout=self._save_pin)
+        self._play_now = play
         self._load(path, link)
         self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
+        if pin is not None:
+            self.pin_id = pin.get("id")
+            try:
+                w = max(self.MIN_W, int(pin.get("w", self.width())))
+                self._apply_size(w, self._height_for(w))
+                at = QPoint(int(pin["x"]), int(pin["y"]))
+                if QGuiApplication.screenAt(at + QPoint(20, 20)) is not None:
+                    self.move(at)
+            except (KeyError, TypeError, ValueError):
+                pass
         # show the controls briefly so people know they exist, then let them fade
         QTimer.singleShot(1600, self._maybe_hide_controls)
 
@@ -1056,6 +1085,7 @@ class FloatWindow(QWidget):
         self._apply_size(w, self._height_for(w))
         if tl is not None:
             self.move(tl)                                # stay exactly where it is
+        self._pin_changed()
         self.setToolTip(f"{link['page'] if link else path}\n" + tr("Drag to move · drag ⠿ to drop the file · double-click to open · scroll to resize"))
         self.update()
 
@@ -1434,6 +1464,51 @@ class FloatWindow(QWidget):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, self.on_top)
         self.setGeometry(geo)
         self.show()
+        self._pin_changed()
+
+    # ---------------------------------------------------------------- reopen when Windows starts
+    def set_pinned(self, on):
+        pins = [x for x in _float_pins() if x.get("id") != self.pin_id]
+        if on:
+            import uuid
+            self.pin_id = self.pin_id or uuid.uuid4().hex[:12]
+            _save_float_pins(pins)
+            self._save_pin()
+            if not winsys.startup_enabled():          # DragWheel itself has to start with Windows
+                try:
+                    winsys.set_startup(True)
+                except Exception as e:
+                    winsys.log(f"startup: {e}")
+        else:
+            self.pin_id = None
+            _save_float_pins(pins)
+
+    def _pin_changed(self):
+        if getattr(self, "pin_id", None):
+            self._pin_timer.start()
+
+    def _save_pin(self):
+        if not self.pin_id:
+            return
+        g = self.geometry()
+        entry = {"id": self.pin_id, "src": self.link["page"] if self.link else str(self.path), "link": bool(self.link),
+                 "x": g.x(), "y": g.y(), "w": g.width(), "on_top": self.on_top}
+        pins = [x for x in _float_pins() if x.get("id") != self.pin_id] + [entry]
+        _save_float_pins(pins)
+
+    def moveEvent(self, e):
+        super().moveEvent(e)
+        self._pin_changed()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._pin_changed()
+
+    def close_by_user(self):
+        """Closed with ✕, Esc or the menu: it no longer reopens with Windows."""
+        if self.pin_id:
+            self.set_pinned(False)
+        self.close()
 
     def _set_ctrl(self, v):
         self.ctrl = float(v)
@@ -1651,7 +1726,7 @@ class FloatWindow(QWidget):
         hit = self._hit(e.position())
         gp = e.globalPosition().toPoint()
         if hit == "close":
-            self.close()
+            self.close_by_user()
             return
         if hit == "mute":
             self.audio.setMuted(not self.audio.isMuted())
@@ -1774,7 +1849,7 @@ class FloatWindow(QWidget):
                 _APP.play_link(target=self)
             return
         if e.key() == Qt.Key_Escape:
-            self.close()
+            self.close_by_user()
         elif e.key() == Qt.Key_Space and self.player:
             self._toggle_play()
         elif e.key() in (Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_MediaPrevious, Qt.Key_MediaNext) and self.player:
@@ -1809,7 +1884,12 @@ class FloatWindow(QWidget):
         top.setCheckable(True)
         top.setChecked(self.on_top)
         top.toggled.connect(self.set_on_top)
-        m.addAction(tr("Close"), self.close)
+        boot = m.addAction(tr("Open when Windows starts"))
+        boot.setCheckable(True)
+        boot.setChecked(bool(self.pin_id))
+        boot.setToolTip(tr("This float comes back at the same place, playing the same file or link"))
+        boot.toggled.connect(self.set_pinned)
+        m.addAction(tr("Close"), self.close_by_user)
         m.exec(at)
 
     def closeEvent(self, e):
@@ -1847,6 +1927,401 @@ QFrame#card QLabel{background:transparent}
 """
 
 
+# ============================================================================
+# Waveform trimmer (Ringtone…): pick the part on the sound wave and listen before saving
+# ============================================================================
+class _WaveSignals(QObject):
+    ready = Signal(list, float)
+
+
+def _fmt_secs(s):
+    s = max(0.0, s)
+    return f"{int(s // 60)}:{s % 60:04.1f}"
+
+
+class WaveView(QWidget):
+    """Draws the waveform with the chosen part highlighted. Drag the handles to adjust, drag the middle to
+    move it, click/drag elsewhere to choose a new part; the mouse wheel zooms, Shift+wheel scrolls."""
+    changed = Signal()
+    seek = Signal(float)
+    HANDLE = 7
+
+    def __init__(self, max_len):
+        super().__init__()
+        self.setMinimumSize(560, 120)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.IBeamCursor)
+        self.peaks, self.dur = [], 0.0
+        self.a, self.b = 0.0, 0.0
+        self.v0, self.v1 = 0.0, 1.0          # visible time range (zoom)
+        self.head = None                     # playback position (s)
+        self.max_len = max_len
+        self._drag = None                    # ("a" | "b" | "move" | "new", anchor seconds, a, b)
+
+    def set_data(self, peaks, dur):
+        self.peaks, self.dur = peaks, max(dur, 0.1)
+        self.v0, self.v1 = 0.0, self.dur
+        self.a, self.b = 0.0, min(30.0, self.dur, self.max_len)
+        self.changed.emit()
+        self.update()
+
+    # time <-> x
+    def _x(self, t):
+        return (t - self.v0) / max(1e-6, self.v1 - self.v0) * self.width()
+
+    def _t(self, x):
+        return max(0.0, min(self.dur, self.v0 + x / max(1, self.width()) * (self.v1 - self.v0)))
+
+    def set_range(self, a, b, keep="b"):
+        a, b = max(0.0, min(a, self.dur)), max(0.0, min(b, self.dur))
+        if b - a > self.max_len:
+            if keep == "a":
+                b = a + self.max_len
+            else:
+                a = b - self.max_len
+        if b - a < 1.0:
+            if keep == "a":
+                b = min(self.dur, a + 1.0)
+                a = b - 1.0 if b - a < 1.0 else a
+            else:
+                a = max(0.0, b - 1.0)
+                b = a + 1.0 if b - a < 1.0 else b
+        self.a, self.b = a, b
+        self.changed.emit()
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        p.fillRect(self.rect(), theme.color("surface"))
+        mid = h / 2
+        if not self.peaks:
+            p.setPen(theme.color("dim"))
+            p.drawText(self.rect(), Qt.AlignCenter, tr("Loading…"))
+            return
+        n = len(self.peaks)
+        xa, xb = self._x(self.a), self._x(self.b)
+        sel = QColor(theme.hexc("accent"))
+        sel.setAlpha(46)
+        p.fillRect(QRectF(xa, 0, xb - xa, h), sel)
+        on, off = QColor(theme.hexc("accent")), QColor(theme.hexc("faint"))
+        for x in range(w):
+            t0, t1 = self._t(x), self._t(x + 1)
+            i0 = int(t0 / self.dur * n)
+            i1 = max(i0 + 1, int(t1 / self.dur * n))
+            v = max(self.peaks[i0:i1] or [0.0])
+            p.setPen(on if xa <= x <= xb else off)
+            hh = max(1.0, v * (h / 2 - 6))
+            p.drawLine(QPointF(x + 0.5, mid - hh), QPointF(x + 0.5, mid + hh))
+        p.setPen(QPen(on, 2))
+        for xx in (xa, xb):
+            p.drawLine(QPointF(xx, 0), QPointF(xx, h))
+            p.setBrush(on)
+            p.drawRoundedRect(QRectF(xx - 4, mid - 14, 8, 28), 3, 3)
+        if self.head is not None:
+            p.setPen(QPen(QColor(theme.hexc("text")), 1.5))
+            hx = self._x(self.head)
+            p.drawLine(QPointF(hx, 0), QPointF(hx, h))
+
+    def _hit(self, x):
+        if abs(x - self._x(self.a)) <= self.HANDLE:
+            return "a"
+        if abs(x - self._x(self.b)) <= self.HANDLE:
+            return "b"
+        if self._x(self.a) < x < self._x(self.b):
+            return "move"
+        return "new"
+
+    def mouseMoveEvent(self, e):
+        x = e.position().x()
+        if self._drag is None:
+            k = self._hit(x) if self.peaks else None
+            self.setCursor(Qt.SizeHorCursor if k in ("a", "b") else Qt.OpenHandCursor if k == "move" else Qt.IBeamCursor)
+            return
+        kind, t0, a, b = self._drag
+        t = self._t(x)
+        if kind == "a":
+            self.set_range(min(t, self.b - 1.0), self.b, keep="a")
+        elif kind == "b":
+            self.set_range(self.a, max(t, self.a + 1.0), keep="b")
+        elif kind == "move":
+            d = max(-a, min(self.dur - b, t - t0))
+            self.set_range(a + d, b + d, keep="a")
+        else:
+            if abs(t - t0) * self.width() / max(1e-6, self.v1 - self.v0) > 4:
+                self._drag = ("new-moved", t0, a, b)
+                self.set_range(min(t0, t), max(t0, t), keep="a" if t > t0 else "b")
+
+    def mousePressEvent(self, e):
+        if e.button() != Qt.LeftButton or not self.peaks:
+            return
+        x = e.position().x()
+        self._drag = (self._hit(x), self._t(x), self.a, self.b)
+        if self._drag[0] == "move":
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseReleaseEvent(self, e):
+        if self._drag and self._drag[0] == "new":       # a plain click: the part starts here
+            t = self._drag[1]
+            ln = self.b - self.a
+            self.set_range(t, t + ln, keep="a")
+            self.seek.emit(self.a)
+        self._drag = None
+        self.setCursor(Qt.IBeamCursor)
+
+    def wheelEvent(self, e):
+        if not self.peaks:
+            return
+        d = e.angleDelta().y() or e.angleDelta().x()
+        span = self.v1 - self.v0
+        if e.modifiers() & Qt.ShiftModifier or e.angleDelta().x():
+            shift = -d / 120 * span * 0.15
+            shift = max(-self.v0, min(self.dur - self.v1, shift))
+            self.v0, self.v1 = self.v0 + shift, self.v1 + shift
+        else:
+            at = self._t(e.position().x())
+            f = 0.8 if d > 0 else 1.25
+            new = max(2.0, min(self.dur, span * f))
+            r = (at - self.v0) / max(1e-6, span)
+            self.v0 = max(0.0, min(self.dur - new, at - r * new))
+            self.v1 = self.v0 + new
+        self.update()
+
+
+class TrimWidget(QWidget):
+    """Waveform + play button + start/end boxes. value() -> 'start-end' in seconds."""
+
+    def __init__(self, path, max_len=40.0):
+        super().__init__()
+        self.path = path
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.view = WaveView(max_len)
+        lay.addWidget(self.view)
+        row = QHBoxLayout()
+        self.play = QPushButton("▶  " + tr("Play"))
+        self.play.setEnabled(False)
+        self.play.clicked.connect(self.toggle)
+        row.addWidget(self.play)
+        self.start_ed, self.end_ed = QLineEdit(), QLineEdit()
+        for lbl, ed in ((tr("Start"), self.start_ed), (tr("End"), self.end_ed)):
+            ed.setFixedWidth(84)
+            ed.setLayoutDirection(Qt.LeftToRight)
+            ed.editingFinished.connect(self._typed)
+            row.addSpacing(10)
+            row.addWidget(QLabel(lbl))
+            row.addWidget(ed)
+        self.len_lbl = QLabel()
+        row.addSpacing(10)
+        row.addWidget(self.len_lbl)
+        row.addStretch(1)
+        lay.addLayout(row)
+        hint = QLabel(tr("Drag the orange edges or the part itself · scroll to zoom · up to {n} seconds", n=int(max_len)))
+        hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        lay.addWidget(hint)
+        self.view.changed.connect(self._sync)
+        self.view.seek.connect(lambda t: self._play_from(t) if self._playing() else None)
+        self.player = None
+        try:
+            from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+            self.player = QMediaPlayer(self)
+            self.audio = QAudioOutput(self)
+            self.player.setAudioOutput(self.audio)
+            self.player.setSource(QUrl.fromLocalFile(path))
+            self.player.positionChanged.connect(self._pos)
+            self.player.playbackStateChanged.connect(lambda *_: self._label())
+        except Exception as e:
+            winsys.log(f"trim: no player ({e})")
+        self.sig = _WaveSignals()
+        self.sig.ready.connect(self._ready, Qt.QueuedConnection)
+        threading.Thread(target=self._load, daemon=True).start()
+
+    def _load(self):
+        try:
+            peaks, dur = engine.waveform(self.path)
+        except Exception as e:
+            winsys.log(f"waveform failed: {e}")
+            peaks, dur = [], 0.0
+        try:
+            self.sig.ready.emit(peaks or [0.0] * 10, float(dur or engine.media_duration(self.path) or 30.0))
+        except RuntimeError:
+            pass                                    # dialog already closed
+
+    def _ready(self, peaks, dur):
+        self.view.set_data(peaks, dur)
+        self.play.setEnabled(self.player is not None)
+
+    def _sync(self):
+        self.start_ed.setText(_fmt_secs(self.view.a))
+        self.end_ed.setText(_fmt_secs(self.view.b))
+        self.len_lbl.setText(tr("{s} seconds", s=f"{self.view.b - self.view.a:.1f}"))
+
+    def _typed(self):
+        try:
+            a = engine._secs(engine.parse_time(self.start_ed.text()))
+            b = engine._secs(engine.parse_time(self.end_ed.text()))
+            self.view.set_range(a, max(b, a + 1.0), keep="a" if self.sender() is self.start_ed else "b")
+        except Exception:
+            self._sync()
+
+    def _playing(self):
+        from PySide6.QtMultimedia import QMediaPlayer
+        return self.player is not None and self.player.playbackState() == QMediaPlayer.PlayingState
+
+    def _label(self):
+        self.play.setText(("■  " + tr("Stop")) if self._playing() else ("▶  " + tr("Play")))
+
+    def _play_from(self, t):
+        self.player.setPosition(int(t * 1000))
+        self.player.play()
+
+    def toggle(self):
+        if not self.player:
+            return
+        if self._playing():
+            self.player.pause()
+            self.view.head = None
+            self.view.update()
+        else:
+            self._play_from(self.view.a)
+
+    def _pos(self, ms):
+        if not self._playing():
+            return
+        t = ms / 1000
+        if t >= self.view.b or t < self.view.a - 0.5:
+            self.player.pause()
+            self.view.head = None
+        else:
+            self.view.head = t
+        self.view.update()
+
+    def stop(self):
+        if self.player:
+            self.player.stop()
+            self.player.setSource(QUrl())
+
+    def value(self):
+        return f"{self.view.a:.3f}-{self.view.b:.3f}"
+
+
+class _CropSignals(QObject):
+    ready = Signal(object, object)
+
+
+class CropPreview(QWidget):
+    """A frame of the video with the crop box on it. The box starts on the faces it finds;
+    drag it sideways (or up and down) to choose what stays in the picture. value() -> centre (0..1)."""
+
+    def __init__(self, path):
+        super().__init__()
+        self.setMinimumSize(560, 250)
+        self.setCursor(Qt.OpenHandCursor)
+        self.img = None
+        self.ratio = 9 / 16
+        self.cx = 0.5
+        self.moved = False
+        self._drag = None
+        self.sig = _CropSignals()
+        self.sig.ready.connect(self._ready, Qt.QueuedConnection)
+        threading.Thread(target=self._load, args=(path,), daemon=True).start()
+
+    def _load(self, path):
+        img, cx = None, None
+        try:
+            import tempfile
+            png = Path(tempfile.mkdtemp(prefix="dw-crop-")) / "frame.png"
+            if engine.preview_frame(path, png):
+                img = QImage(str(png))
+                self.sig.ready.emit(img, None)          # show the frame now, the faces follow
+            cx = engine._face_center_x(path)
+        except Exception as e:
+            winsys.log(f"crop preview: {e}")
+        try:
+            self.sig.ready.emit(img, cx)
+        except RuntimeError:
+            pass
+
+    def _ready(self, img, cx):
+        self.img = img if img is not None and not img.isNull() else None
+        if cx is not None and not self.moved:
+            self.cx = cx
+        self.update()
+
+    def set_shape(self, label):
+        a, b = (int(x) for x in str(label).split()[0].split(":"))
+        self.ratio = a / b
+        self.update()
+
+    def _rects(self):
+        """(picture rect on screen, crop rect on screen)"""
+        iw, ih = (self.img.width(), self.img.height()) if self.img else (16, 9)
+        s = min(self.width() / iw, self.height() / ih)
+        pw, ph = iw * s, ih * s
+        pic = QRectF((self.width() - pw) / 2, (self.height() - ph) / 2, pw, ph)
+        if pw / ph > self.ratio:
+            cw, ch = ph * self.ratio, ph
+            x = max(0.0, min(pw - cw, pw * self.cx - cw / 2))
+            crop = QRectF(pic.x() + x, pic.y(), cw, ch)
+        else:
+            cw, ch = pw, pw / self.ratio
+            crop = QRectF(pic.x(), pic.y() + (ph - ch) / 2, cw, ch)
+        return pic, crop
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.fillRect(self.rect(), theme.color("surface"))
+        if self.img is None:
+            p.setPen(theme.color("dim"))
+            p.drawText(self.rect(), Qt.AlignCenter, tr("Loading…"))
+            return
+        pic, crop = self._rects()
+        p.drawImage(pic, self.img)
+        path = QPainterPath()
+        path.addRect(pic)
+        inner = QPainterPath()
+        inner.addRect(crop)
+        p.fillPath(path.subtracted(inner), QColor(0, 0, 0, 150))
+        p.setPen(QPen(QColor(theme.hexc("accent")), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(crop.adjusted(1, 1, -1, -1))
+        # rule-of-thirds guides
+        p.setPen(QPen(QColor(255, 255, 255, 70), 1))
+        for i in (1, 2):
+            x = crop.x() + crop.width() * i / 3
+            y = crop.y() + crop.height() * i / 3
+            p.drawLine(QPointF(x, crop.top()), QPointF(x, crop.bottom()))
+            p.drawLine(QPointF(crop.left(), y), QPointF(crop.right(), y))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and self.img is not None:
+            self._drag = (e.position().x(), self.cx)
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, e):
+        if self._drag is None:
+            return
+        pic, crop = self._rects()
+        x0, cx0 = self._drag
+        half = crop.width() / 2 / max(1.0, pic.width())
+        self.cx = max(half, min(1 - half, cx0 + (e.position().x() - x0) / max(1.0, pic.width())))
+        self.moved = True
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        self._drag = None
+        self.setCursor(Qt.OpenHandCursor)
+
+    def value(self):
+        if self.img is None:
+            return ""                     # not loaded yet: let the tool find the faces itself
+        pic, crop = self._rects()
+        return f"{(crop.center().x() - pic.x()) / max(1.0, pic.width()):.4f}"
+
+
 def ask_params(op, paths) -> dict | None:
     dlg = QDialog(None, Qt.WindowStaysOnTopHint)
     title = tr(op.label).rstrip("…")
@@ -1858,7 +2333,14 @@ def ask_params(op, paths) -> dict | None:
     lay.addWidget(QLabel(f"<b>{title}</b> &nbsp;<span style='color:{theme.hexc("dim")}'>{who}</span>"))
     form = QFormLayout()
     edits = {}
+    trims = []
     for name, default in op.ask:
+        if default == "@trim":                          # waveform: pick the part and listen to it
+            tw = TrimWidget(paths[0], engine.RINGTONE_MAX)
+            form.addRow(tw)
+            edits[name] = tw
+            trims.append(tw)
+            continue
         if isinstance(default, (list, tuple)):          # a fixed set of choices
             cb = QComboBox()
             for opt in default:
@@ -1874,6 +2356,17 @@ def ask_params(op, paths) -> dict | None:
             ed.setLayoutDirection(Qt.LeftToRight)
         form.addRow(tr(name), ed)
         edits[name] = ed
+    if op.id == "social" and "Shape" in edits:          # see the crop on a frame of the video
+        pv = CropPreview(paths[0])
+        shape = edits["Shape"]
+        pv.set_shape(shape.currentData())
+        shape.currentIndexChanged.connect(lambda _=0: pv.set_shape(shape.currentData()))
+        form.addRow(pv)
+        hint = QLabel(tr("Drag the box to choose what stays in the picture"))
+        hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        form.addRow(hint)
+        edits["Center"] = pv
+        trims.append(None)
     lay.addLayout(form)
     bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
     bb.button(QDialogButtonBox.Ok).setText(tr("Apply"))
@@ -1882,12 +2375,17 @@ def ask_params(op, paths) -> dict | None:
     bb.accepted.connect(dlg.accept)
     bb.rejected.connect(dlg.reject)
     lay.addWidget(bb)
-    dlg.setMinimumWidth(340)
-    dlg.move(QCursor.pos() - QPoint(170, 60))
+    dlg.setMinimumWidth(620 if trims else 340)
+    dlg.move(QCursor.pos() - QPoint(310 if trims else 170, 60))
     dlg.activateWindow()
-    if dlg.exec() != QDialog.Accepted:
+    ok = dlg.exec() == QDialog.Accepted
+    for tw in trims:
+        if tw is not None:
+            tw.stop()
+    if not ok:
         return None
-    return {k: (e.currentData() if isinstance(e, QComboBox) else e.text()) for k, e in edits.items()}
+    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview)) else e.text())
+            for k, e in edits.items()}
 
 
 def message(title, html):
@@ -2079,7 +2577,7 @@ class SettingsDialog(QDialog):
         self.on_top = QCheckBox(tr("Keep floats on top of other windows"))
         self.on_top.setChecked(st["on_top"])
         vf.addWidget(self.on_top)
-        self.ctrl_open = QCheckBox(tr("Hold Ctrl and double-click a file to open it in Float"))
+        self.ctrl_open = QCheckBox(tr("Hold Ctrl and double-click a file, or press Ctrl+Enter, to open it in Float"))
         self.ctrl_open.setChecked(st["ctrl_open"])
         vf.addWidget(self.ctrl_open)
         lay.addWidget(gf)
@@ -2379,6 +2877,25 @@ class DragWheelApp(QObject):
         self.tray.show()
         self._update_jobs = set()
         QTimer.singleShot(8000, self._auto_update_check)
+        QTimer.singleShot(1200, self.restore_pinned_floats)
+
+    def restore_pinned_floats(self):
+        """Reopen the floats set to 'Open when Windows starts', where they were, playing."""
+        for pin in _float_pins():
+            src = pin.get("src")
+            if not src:
+                continue
+            if pin.get("link"):
+                if engine.model_ready("yt-dlp"):
+                    self._resolve_and_play(src, None, pin=pin)
+                continue
+            if not os.path.exists(src):
+                winsys.log(f"pinned float missing: {src}")
+                continue
+            w = FloatWindow(src, play=True, pin=pin)
+            self.floats.append(w)
+            w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
+            w.show()
 
     def _build_tray_menu(self):
         self.tray.setToolTip(tr("{app} — drag a file, tap {key}", app=APP, key=tr(mode_keys()["convert"])))
@@ -2660,16 +3177,20 @@ class DragWheelApp(QObject):
         else:
             self._ensure_model("yt-dlp", tr("Play copied link"), lambda: self._resolve_and_play(url, target))
 
-    def _resolve_and_play(self, url, target):
+    def _resolve_and_play(self, url, target, pin=None):
         job = LinkResolve(url)
         job.setAutoDelete(False)
         self._update_jobs.add(job)
-        card = self.toast.show_busy(tr("Opening link…"), url[:70])
+        card = None if pin else self.toast.show_busy(tr("Opening link…"), url[:70])
 
         def done(info, err, job=job):
             self._update_jobs.discard(job)
-            if card in self.toast.cards:
+            if card is not None and card in self.toast.cards:
                 card.close_card()
+            if err and pin is not None and pin.get("_tries", 0) < 4:     # at sign-in the network may not be up yet
+                pin["_tries"] = pin.get("_tries", 0) + 1
+                QTimer.singleShot(15000, lambda: self._resolve_and_play(url, None, pin=pin))
+                return
             if err:
                 winsys.log(f"link failed: {url}: {err}")
                 self.toast.show_msg(tr("Couldn't open this link"), tr(err), "err", 8000)
@@ -2679,7 +3200,7 @@ class DragWheelApp(QObject):
                 target._fade_to(1.0)
                 QTimer.singleShot(1600, target._maybe_hide_controls)
                 return
-            w = FloatWindow(info["url"], info)
+            w = FloatWindow(info["url"], info, play=pin is not None, pin=pin)
             self.floats.append(w)
             w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
             w.show()

@@ -32,6 +32,8 @@ logging.getLogger().setLevel(logging.WARNING)   # pdf2docx is chatty
 IS_WIN = sys.platform == "win32"
 OUTPUT_DIR: str | None = None   # None = save next to the original
 NO_WINDOW = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW
+# Heavy tools (ffmpeg, whisper…) run below normal priority so a video playing in a float stays smooth.
+LOW_PRIORITY = 0x00004000 if IS_WIN else 0  # BELOW_NORMAL_PRIORITY_CLASS
 
 # ----------------------------------------------------------------------------
 # Categories
@@ -206,7 +208,7 @@ def run(cmd: list[str], cwd: str | None = None, ok_codes=(0,), progress_total: f
     t = _token()
     with tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE if progress_total else subprocess.DEVNULL,
-                                stderr=err, stdin=subprocess.DEVNULL, cwd=cwd, creationflags=NO_WINDOW)
+                                stderr=err, stdin=subprocess.DEVNULL, cwd=cwd, creationflags=NO_WINDOW | LOW_PRIORITY)
         if progress_total:
             def reader(stream=proc.stdout):
                 last = -1.0
@@ -414,7 +416,8 @@ def video_to_size(src, p):
               span=(0.5, 1.0))
 
 
-SOCIAL_SHAPES = ["9:16", "1:1", "4:5", "16:9"]
+SOCIAL_SHAPES = ["9:16 — Reel · Story · TikTok · Shorts", "1:1 — Square post", "4:5 — Instagram & Facebook post",
+                 "2:3 — Pinterest pin", "16:9 — YouTube · widescreen"]
 
 
 def _face_center_x(src, samples=6) -> float | None:
@@ -450,10 +453,13 @@ def _face_center_x(src, samples=6) -> float | None:
 
 def video_social_crop(src, p):
     """Crop to 9:16 / 1:1 / 4:5 / 16:9 for Reels, TikTok and Stories, centred on the people in it."""
-    shape = p.get("Shape", "9:16")
+    shape = p.get("Shape", SOCIAL_SHAPES[0]).split()[0]          # "9:16 — Reel …" -> "9:16"
     a, b = (int(x) for x in shape.split(":"))
-    cx = _face_center_x(src)
-    cx = 0.5 if cx is None else cx
+    try:
+        cx = float(p["Center"])                 # where you placed the box in the preview
+    except (KeyError, TypeError, ValueError):
+        cx = _face_center_x(src)
+    cx = 0.5 if cx is None else max(0.0, min(1.0, cx))
     ratio = f"{a}/{b}"
     # crop width/height from the source, x offset centred on the faces (clamped inside the frame)
     vf = (f"crop='if(gt(iw/ih,{ratio}),ih*{ratio},iw)':'if(gt(iw/ih,{ratio}),ih,iw/({ratio}))':"
@@ -463,21 +469,60 @@ def video_social_crop(src, p):
               "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart")
 
 
+def preview_frame(src, out_png) -> bool:
+    """One frame from the middle of a video, 640 px wide, for the crop preview."""
+    dur = media_duration(src) or 0.0
+    r = subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{dur * 0.4:.2f}", "-i", str(src),
+                        "-frames:v", "1", "-vf", "scale=640:-2", str(out_png)], capture_output=True,
+                       stdin=subprocess.DEVNULL, creationflags=NO_WINDOW, timeout=60)
+    return r.returncode == 0 and Path(out_png).exists()
+
+
 RINGTONE_FORMATS = ["iPhone (M4R)", "Android (MP3)"]
 
 
+RINGTONE_MAX = 40.0          # iPhone won't take a ringtone longer than 40 s
+
+
 def ringtone(src, p):
-    """30-second ringtone with a short fade in and out."""
-    start = _secs(parse_time(p.get("Start", "0:00")))
-    length = min(30.0, max(1.0, media_duration(src) - start)) if media_duration(src) else 30.0
-    af = f"afade=t=in:d=0.5,afade=t=out:st={max(0.0, length - 1.5):.2f}:d=1.5"
+    """Ringtone from the part you picked on the waveform (or 30 s from Start), with a short fade in and out."""
+    dur = media_duration(src) or 0.0
+    clip = str(p.get("Clip", "")).split("-")
+    if len(clip) == 2:
+        start, end = float(clip[0]), float(clip[1])
+    else:
+        start = _secs(parse_time(p.get("Start", "0:00")))
+        end = start + 30.0
+    if dur:
+        end = min(end, dur)
+    start = max(0.0, min(start, end - 1.0))
+    length = max(1.0, min(RINGTONE_MAX, end - start))
+    fade = min(1.5, length / 4)
+    af = f"afade=t=in:d={min(0.5, fade):.2f},afade=t=out:st={max(0.0, length - fade):.2f}:d={fade:.2f}"
     if p.get("Format", RINGTONE_FORMATS[0]).startswith("iPhone"):
         out = out_for(src, "m4r", "ringtone")
-        return ff(src, out, "-t", f"{length:.2f}", "-vn", "-af", af, "-c:a", "aac", "-b:a", "192k", "-f", "ipod",
-                  pre=("-ss", f"{start:.2f}"))
+        return ff(src, out, "-t", f"{length:.3f}", "-vn", "-af", af, "-c:a", "aac", "-b:a", "192k", "-f", "ipod",
+                  pre=("-ss", f"{start:.3f}"))
     out = out_for(src, "mp3", "ringtone")
-    return ff(src, out, "-t", f"{length:.2f}", "-vn", "-af", af, "-c:a", "libmp3lame", "-q:a", "2",
-              pre=("-ss", f"{start:.2f}"))
+    return ff(src, out, "-t", f"{length:.3f}", "-vn", "-af", af, "-c:a", "libmp3lame", "-q:a", "2",
+              pre=("-ss", f"{start:.3f}"))
+
+
+def waveform(src, bins=1200) -> tuple[list[float], float]:
+    """Loudness peaks (0..1) across the whole file, for drawing a waveform, and its length in seconds."""
+    import numpy as np
+    rate = 4000
+    r = subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-i", str(src), "-vn", "-ac", "1",
+                        "-ar", str(rate), "-f", "s16le", "-"], capture_output=True, stdin=subprocess.DEVNULL,
+                       creationflags=NO_WINDOW, timeout=180)
+    a = np.frombuffer(r.stdout, dtype=np.int16).astype(np.float32)
+    if not a.size:
+        return [], media_duration(src) or 0.0
+    dur = a.size / rate
+    edges = np.linspace(0, a.size, bins + 1).astype(int)
+    peaks = [float(np.abs(a[edges[i]:max(edges[i] + 1, edges[i + 1])]).max()) for i in range(bins)]
+    top = max(peaks) or 1.0
+    return [x / top for x in peaks], dur
 
 
 def _side_subtitles(video) -> list[str]:
@@ -518,6 +563,131 @@ def burn_subtitles(paths, p):
     out = out_for(video, "mp4", "subtitled")
     return ff(video, out, "-vf", vf, "-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p",
               "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
+
+
+_SUB_LANGS = {"ar": "ara", "ara": "ara", "arabic": "ara", "en": "eng", "eng": "eng", "english": "eng",
+              "fr": "fre", "fre": "fre", "fra": "fre", "french": "fre", "es": "spa", "spa": "spa", "spanish": "spa",
+              "de": "ger", "ger": "ger", "deu": "ger", "german": "ger", "tr": "tur", "tur": "tur", "turkish": "tur",
+              "ru": "rus", "rus": "rus", "zh": "chi", "chi": "chi", "zho": "chi", "ja": "jpn", "jpn": "jpn",
+              "pt": "por", "por": "por", "it": "ita", "ita": "ita", "hi": "hin", "hin": "hin", "fa": "per",
+              "per": "per", "fas": "per", "ur": "urd", "urd": "urd", "ko": "kor", "kor": "kor", "id": "ind", "ind": "ind"}
+
+
+_LANG_NAMES = {"ara": "Arabic", "eng": "English", "fre": "French", "spa": "Spanish", "ger": "German", "tur": "Turkish",
+               "rus": "Russian", "chi": "Chinese", "jpn": "Japanese", "por": "Portuguese", "ita": "Italian",
+               "hin": "Hindi", "per": "Persian", "urd": "Urdu", "kor": "Korean", "ind": "Indonesian"}
+
+
+def _sub_language(path, text) -> str | None:
+    """Language of a subtitle file: from its name (movie.ar.srt, movie.English.srt) or, failing that, its letters."""
+    for part in reversed(Path(path).stem.lower().replace("_", ".").replace("-", ".").replace(" ", ".").split(".")[1:]):
+        if part in _SUB_LANGS:
+            return _SUB_LANGS[part]
+    letters = [c for c in text[:4000] if c.isalpha()]
+    if letters:
+        arabic = sum(1 for c in letters if "\u0600" <= c <= "\u06ff")
+        if arabic / len(letters) > 0.5:
+            return "ara"
+    return None
+
+
+def mux_subtitles(paths, p):
+    """Add subtitle files to the video as tracks you can switch on and off (MKV, nothing re-encoded):
+    the subtitle files dragged with it, or every matching one next to it (movie.ar.srt, movie.en.srt…)."""
+    video = next(x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "video")
+    subs = [x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "subtitle"] or _side_subtitles(video)
+    if not subs:
+        raise ConversionError("No subtitle file found")
+    tmp = temp_dir()
+    # subtitle tracks already in the video, so the new ones get the right numbers
+    r = subprocess.run([ffmpeg(), "-hide_banner", "-i", str(video)], capture_output=True, stdin=subprocess.DEVNULL,
+                       creationflags=NO_WINDOW, timeout=60)
+    existing = r.stderr.decode("utf-8", "ignore").count(": Subtitle:")
+    inputs, maps, meta = [], ["-map", "0"], []
+    for i, sp in enumerate(subs):
+        sub = Path(sp)
+        raw = sub.read_bytes()
+        for enc in ("utf-8-sig", "cp1256", "latin-1"):          # MKV text subtitles are UTF-8
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        ext = sub.suffix.lower()
+        local = tmp / f"sub{i}{ext}"
+        local.write_text(text, encoding="utf-8")
+        inputs += ["-sub_charenc", "UTF-8", "-i", str(local)]
+        maps += ["-map", f"{i + 1}:s:0"]
+        k = existing + i
+        codec = "ass" if ext in (".ass", ".ssa") else "srt"
+        lang = _sub_language(sub, text)
+        meta += [f"-c:s:{k}", codec, f"-metadata:s:s:{k}", f"title={_LANG_NAMES.get(lang, sub.stem)}"]
+        if lang:
+            meta += [f"-metadata:s:s:{k}", f"language={lang}"]
+        meta += [f"-disposition:s:{k}", "default" if i == 0 else "0"]
+    if existing:
+        meta = sum(([f"-disposition:s:{j}", "0"] for j in range(existing)), []) + meta   # new one shows first
+    out = out_for(video, "mkv", "subtitles")
+    run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(video), *inputs, *maps,
+         "-c:v", "copy", "-c:a", "copy", "-c:s", "copy", *meta, str(out)])
+    return out
+
+
+_TEXT_SUB_CODECS = ("subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text")
+_subs_cache: dict = {}
+
+
+def subtitle_streams(video) -> list[dict]:
+    """Subtitle tracks inside a video: [{"index", "codec", "lang", "title", "text"}] (text=False for picture subtitles)."""
+    try:
+        key = (str(video), os.path.getmtime(video))
+    except OSError:
+        return []
+    if key in _subs_cache:
+        return _subs_cache[key]
+    found = []
+    try:
+        r = subprocess.run([ffmpeg(), "-hide_banner", "-i", str(video)], capture_output=True, stdin=subprocess.DEVNULL,
+                           creationflags=NO_WINDOW, timeout=30)
+        n, title_for = 0, None
+        for line in r.stderr.decode("utf-8", "ignore").splitlines():
+            m = re.match(r"\s*Stream #0:\d+(?:\[\w+\])?(?:\((\w+)\))?: Subtitle: (\w+)", line)
+            if m:
+                found.append({"index": n, "lang": m.group(1) or "", "codec": m.group(2).lower(), "title": "",
+                              "text": m.group(2).lower() in _TEXT_SUB_CODECS})
+                n += 1
+                title_for = found[-1]
+                continue
+            if line.strip().startswith("Stream #"):
+                title_for = None
+            elif title_for is not None and line.strip().lower().startswith("title"):
+                title_for["title"] = line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    _subs_cache[key] = found
+    return found
+
+
+def extract_subtitles(src, p):
+    """Save every text subtitle track inside the video as an .srt next to it: movie.ara.srt, movie.eng.srt…"""
+    tracks = subtitle_streams(src)
+    text = [t for t in tracks if t["text"]]
+    if not text:
+        raise ConversionError("This video's subtitles are pictures, not text, so they can't be saved as SRT"
+                              if tracks else "No subtitles inside this video")
+    outs, used = [], set()
+    v = Path(src)
+    for t in text:
+        tag = t["lang"] if t["lang"] and t["lang"] != "und" else t["title"]
+        tag = re.sub(r'[<>:"/\\|?*]', "", tag)[:40] or str(t["index"] + 1)
+        while tag in used:
+            tag += f" {t['index'] + 1}"
+        used.add(tag)
+        out = unique_path(_target_dir(v) / f"{v.stem}.{tag}.srt")      # same name as the video -> players load it
+        run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(src), "-map", f"0:s:{t['index']}",
+             "-c:s", "srt", str(out)])
+        outs.append(out)
+    return outs
 
 
 # ---- links (Play copied link in Float)
@@ -579,7 +749,7 @@ def transcribe(src, p):
     out_srt = out_for(src, "srt")                         # same name as the video -> auto-loaded
     base = tmp / "out"
     cmd = [str(exe), "-m", str(model_path("whisper-small")), "-f", str(wav), "-l", lang, "-osrt", "-otxt",
-           "-of", str(base), "-pp", "-t", str(max(1, min(8, (os.cpu_count() or 4) - 1)))]
+           "-of", str(base), "-pp", "-t", str(max(1, min(8, (os.cpu_count() or 4) - 2)))]
     if mode == "Translate to English":
         cmd.append("-tr")
     t = _token()
@@ -587,7 +757,7 @@ def transcribe(src, p):
     import tempfile
     with tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                                cwd=str(exe.parent), creationflags=NO_WINDOW)
+                                cwd=str(exe.parent), creationflags=NO_WINDOW | LOW_PRIORITY)
         if t is not None:
             with t._lock:
                 t.procs.append(proc)
@@ -2363,11 +2533,16 @@ def tools(paths: list[str]) -> list[Op]:
             T("speed", "Speed 2×", video_speed2x),
             T("gif", "Make GIF…", video_gif_clip, ask=[("Start", "0:00"), ("End", "0:05")]),
             T("social", "Crop for social…", video_social_crop, ask=[("Shape", SOCIAL_SHAPES)]),
-            T("ringtone", "Ringtone…", ringtone, ask=[("Start", "0:00"), ("Format", RINGTONE_FORMATS)]),
+            T("ringtone", "Ringtone…", ringtone, ask=[("Clip", "@trim"), ("Format", RINGTONE_FORMATS)]),
             T("transcribe", "Transcribe…", transcribe, ask=[("Language", TRANSCRIBE_MODES)], model="whisper-small"),
         ]
         if n == 1 and _side_subtitles(paths[0]):
+            side = ", ".join(Path(x).name for x in _side_subtitles(paths[0]))
             ops.append(T("burn", "Burn subtitles", burn_subtitles, multi=True, hint=Path(_side_subtitles(paths[0])[0]).name))
+            ops.append(T("muxsubs", "Add subtitles to MKV", mux_subtitles, multi=True, hint=side))
+        if n == 1 and any(t["text"] for t in subtitle_streams(paths[0])):
+            langs = ", ".join(t["lang"] or "?" for t in subtitle_streams(paths[0]) if t["text"])
+            ops.append(T("extractsubs", "Extract subtitles (SRT)", extract_subtitles, hint=langs))
         if n > 1:
             ops.append(T("merge", "Merge", media_merge, multi=True))
     elif cat == "audio":
@@ -2377,7 +2552,7 @@ def tools(paths: list[str]) -> list[Op]:
             T("normalize", "Normalize", audio_normalize),
             T("mono", "Mono", audio_mono),
             T("fade", "Fade in/out", audio_fade),
-            T("ringtone", "Ringtone…", ringtone, ask=[("Start", "0:00"), ("Format", RINGTONE_FORMATS)]),
+            T("ringtone", "Ringtone…", ringtone, ask=[("Clip", "@trim"), ("Format", RINGTONE_FORMATS)]),
             T("transcribe", "Transcribe…", transcribe, ask=[("Language", TRANSCRIBE_MODES)], model="whisper-small"),
         ]
         if n > 1:
@@ -2396,8 +2571,10 @@ def tools(paths: list[str]) -> list[Op]:
             ops.append(T("merge", "Merge", pdf_merge, multi=True))
     elif cat == "archive":
         ops.append(T("extract", "Extract", archive_extract))
-    elif cat == "mixed" and sorted(EXT_CATEGORY.get(ext_of(x)) for x in paths) == ["subtitle", "video"]:
+    elif cat == "mixed" and [EXT_CATEGORY.get(ext_of(x)) for x in paths].count("video") == 1 and \
+            set(EXT_CATEGORY.get(ext_of(x)) for x in paths) == {"subtitle", "video"}:
         ops.append(T("burn", "Burn subtitles", burn_subtitles, multi=True))
+        ops.append(T("muxsubs", "Add subtitles to MKV", mux_subtitles, multi=True))
     # Folders, archives and "other" files already get ZIP/7Z/... in the Convert wheel
     if cat not in ("archive", "folder", "mixed", "other"):
         ops.append(T("zip", "Zip", to_zip, multi=True))
@@ -2417,7 +2594,10 @@ def run_op(op: Op, paths: list[str], params: dict | None = None,
                 check_cancel()
                 outs.append(op.fn(p, params))
         check_cancel()            # cancelled while a non-interruptible step was finishing
-        return outs
+        flat = []                 # a tool may save several files (e.g. one .srt per language)
+        for o in outs:
+            flat.extend(o if isinstance(o, (list, tuple)) else [o])
+        return flat
     except BaseException:
         if token is not None and token.cancelled:
             _cleanup(token)
