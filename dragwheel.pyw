@@ -433,12 +433,14 @@ class PhoneShare(QDialog):
         self._port, self._token = self.server.server_address[1], token
         self.ips = _lan_ips()
         lay = QVBoxLayout(self)
+        from PySide6.QtWidgets import QLayout
+        lay.setSizeConstraint(QLayout.SetFixedSize)          # the window always fits the code and the text
         title = QLabel("<b>" + tr("Scan with your phone's camera") + "</b>")
         title.setAlignment(Qt.AlignCenter)
         lay.addWidget(title)
         self.qr = QLabel()
         self.qr.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.qr)
+        lay.addWidget(self.qr, 0, Qt.AlignHCenter)
         self.link = QLabel()
         self.link.setAlignment(Qt.AlignCenter)
         self.link.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -487,7 +489,10 @@ class PhoneShare(QDialog):
             import segno
             buf = _io.BytesIO()
             segno.make(self.url, error="m").save(buf, kind="png", scale=7, border=3, dark="#000", light="#fff")
-            self.qr.setPixmap(QPixmap.fromImage(QImage.fromData(buf.getvalue())))
+            pm = QPixmap.fromImage(QImage.fromData(buf.getvalue()))
+            self.qr.setPixmap(pm)
+            self.qr.setFixedSize(pm.size())               # never squeezed: a stretched code can't be scanned
+            self.adjustSize()
         except Exception as e:
             winsys.log(f"qr: {e}")
 
@@ -1822,7 +1827,9 @@ class LiveRelay:
         relay = self
         self.procs = []
         hdr = dict(headers or {})
-        args = ["-hide_banner", "-loglevel", "error", "-fflags", "+genpts"]
+        args = ["-hide_banner", "-loglevel", "warning", "-fflags", "+genpts"]
+        self.last_data = time.monotonic()
+        self.total = 0
         ua = next((v for k, v in hdr.items() if k.lower() == "user-agent"), None)
         if ua:
             args += ["-user_agent", ua]
@@ -1843,6 +1850,17 @@ class LiveRelay:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                                         creationflags=engine.NO_WINDOW)
                 relay.procs.append(proc)
+                relay.last_data = time.monotonic()
+                t0 = time.monotonic()
+
+                def errors(stream=proc.stderr):            # ffmpeg's own warnings, so a stall can be explained
+                    n = 0
+                    for raw in iter(stream.readline, b""):
+                        line = raw.decode("utf-8", "replace").strip()
+                        if line and n < 40:
+                            n += 1
+                            winsys.log(f"live relay ffmpeg [{time.monotonic() - t0:.0f}s]: {line[:220]}")
+                threading.Thread(target=errors, daemon=True).start()
                 sent = 0
                 try:
                     while True:
@@ -1851,15 +1869,16 @@ class LiveRelay:
                             break
                         h.wfile.write(chunk)
                         sent += len(chunk)
+                        relay.last_data = time.monotonic()
+                        relay.total += len(chunk)
                 except OSError:
                     pass                                       # the float closed or reconnected
                 finally:
                     try:
                         proc.kill()
-                        err = proc.stderr.read().decode("utf-8", "replace").strip()
                     except Exception:
-                        err = ""
-                    winsys.log(f"live relay: ffmpeg stopped after {sent // 1024} KB" + (f": {err[-300:]}" if err else ""))
+                        pass
+                    winsys.log(f"live relay: ffmpeg stopped after {sent // 1024} KB, {time.monotonic() - t0:.0f}s")
                     if proc in relay.procs:
                         relay.procs.remove(proc)
 
@@ -2122,6 +2141,7 @@ class FloatWindow(QWidget):
             self._start_relay()
             self.player.mediaStatusChanged.connect(lambda st: winsys.log(f"float: live status {st.name}"))
             self.player.setSource(QUrl(self._relay.url))
+            QTimer.singleShot(20000, self._prefetch_live)
         else:
             self.player.setSource(QUrl(self.path) if self.link else QUrl.fromLocalFile(self.path))
         if cat == "video" or self.autoplay:
@@ -2217,6 +2237,12 @@ class FloatWindow(QWidget):
             busy = True                                                     # nothing to show yet
         if busy and not self._busy:
             self._busy_since = now
+        relay = getattr(self, "_relay", None)
+        if busy and self._live() and relay is not None and now - relay.last_data > 6 \
+                and now - getattr(self, "_last_refresh", 0) > 20 and now - getattr(self, "_live_fixing", 0) > 6:
+            winsys.log("float: live relay got nothing for 6 s")
+            self._last_refresh = now
+            self._live_continue(error=True) if getattr(self, "_spare", None) else self.refresh_link(auto=True)
         if busy and self.link and now - getattr(self, "_busy_since", now) > 15 \
                 and now - getattr(self, "_last_refresh", 0) > 45 and now - getattr(self, "_live_fixing", 0) > 25:
             self.refresh_link(auto=True)                      # stuck: fetch a fresh link by itself
@@ -2419,6 +2445,7 @@ class FloatWindow(QWidget):
             self._start_relay()
             if self._relay is not None:
                 self.player.setSource(QUrl(self._relay.url))
+            QTimer.singleShot(20000, self._prefetch_live)
         else:
             self._stop_relay()
             self._resume_ms = pos
@@ -2440,11 +2467,33 @@ class FloatWindow(QWidget):
         self._live_fixing = time.monotonic()
         _APP._resolve_and_play(self.link["page"], self, quiet=True, quality=quality)
 
+    def _prefetch_live(self):
+        """Fetch a fresh stream link in the background while this one still plays, so a failure is fixed in
+        seconds instead of waiting for YouTube."""
+        if not self._live() or _APP is None or self.player is None:
+            return
+        job = LinkResolve(self.link["page"])
+        job.setAutoDelete(False)
+        _APP._update_jobs.add(job)
+
+        def got(info, err, job=job):
+            _APP._update_jobs.discard(job)
+            if info and info.get("live"):
+                self._spare = (time.monotonic(), info)
+        job.sig.done.connect(got, Qt.QueuedConnection)
+        _APP.pool.start(job)
+
     def _live_continue(self, error=False):
         import time
         now = time.monotonic()
         recent = [t for t in getattr(self, "_live_reloads", []) if now - t < 60] + [now]
         self._live_reloads = recent
+        spare = getattr(self, "_spare", None)
+        if spare and now - spare[0] < 90:                 # a fresh link is ready: switch to it right away
+            self._spare = None
+            winsys.log("float: live stream switched to the fresh link")
+            self.restart_live(spare[1])
+            return
         # a hiccup: just restart the local relay (2-3 s). Several in a minute: the link has expired, ask YouTube again
         if len(recent) > 3:
             self._live_reloads = []
