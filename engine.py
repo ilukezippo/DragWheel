@@ -779,6 +779,8 @@ def resolve_link(url, _updated=False) -> dict:
             if extra is not attempts[0]:
                 _link_log(f"link opened on attempt {attempts.index(extra) + 1}{' (separate audio)' if audio else ''}")
             out = {"url": media, "title": info.get("title") or url, "page": info.get("webpage_url") or url}
+            if info.get("is_live") or info.get("live_status") == "is_live":
+                out["live"] = True
             if audio:
                 out["audio"] = audio
             return out
@@ -1727,6 +1729,244 @@ def pdf_protect(src, p):
     return out
 
 
+# ---- 1.2: more PDF tools -------------------------------------------------------------------------
+def _vis_rect(page, x0, y0, x1, y1):
+    """A rectangle in what you see (rotation applied) -> the page's own coordinates."""
+    mu = _mu()
+    return mu.Rect(x0, y0, x1, y1) * page.derotation_matrix
+
+
+def _html_text(text, size, color="#000000", bold=False, align="center"):
+    import html as _h
+    rtl = any("֐" <= c <= "ࣿ" for c in text)
+    return (f'<p style="font-family:sans-serif;font-size:{size}px;color:{color};text-align:{align};'
+            f'{"font-weight:bold;" if bold else ""}margin:0" dir="{"rtl" if rtl else "ltr"}">{_h.escape(text)}</p>')
+
+
+PAGE_NUMBER_POSITIONS = ["Bottom center", "Bottom right", "Bottom left", "Top center", "Top right", "Top left"]
+PAGE_NUMBER_STYLES = ["1", "1 / 12", "Page 1 of 12", "١", "صفحة ١ من ١٢"]
+_AR_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
+
+
+def pdf_page_numbers(src, p):
+    """Number every page; Arabic numerals and Arabic wording work (the text is laid out like in a browser)."""
+    mu = _mu()
+    doc = mu.open(str(src))
+    pos = p.get("Position", PAGE_NUMBER_POSITIONS[0])
+    style = p.get("Style", PAGE_NUMBER_STYLES[0])
+    n = doc.page_count
+    for i, page in enumerate(doc, 1):
+        check_cancel()
+        text = {"1": f"{i}", "1 / 12": f"{i} / {n}", "Page 1 of 12": f"Page {i} of {n}",
+                "١": f"{i}".translate(_AR_DIGITS),
+                "صفحة ١ من ١٢": f"صفحة {i} من {n}".translate(_AR_DIGITS)}.get(style, f"{i}")
+        r = page.rect                                   # visible size
+        size = max(8.0, min(r.width, r.height) / 55)
+        margin = max(18.0, size * 2)
+        h = size * 2
+        y0 = r.height - margin - h / 2 if pos.startswith("Bottom") else margin - h / 2
+        x0, x1 = margin, r.width - margin
+        align = "right" if pos.endswith("right") else "left" if pos.endswith("left") else "center"
+        page.insert_htmlbox(_vis_rect(page, x0, y0, x1, y0 + h), _html_text(text, size, "#333333", align=align),
+                            rotate=page.rotation)
+    out = out_for(src, "pdf", "numbered")
+    doc.save(str(out), garbage=3, deflate=True)
+    return out
+
+
+def _stamp_pdf(text, color, opacity):
+    """A one-page PDF holding the watermark text (Arabic shaped correctly), to lay over pages at any angle."""
+    mu = _mu()
+    w, h = max(200, 46 * len(text)), 120
+    d = mu.open()
+    pg = d.new_page(width=w, height=h)
+    pg.insert_htmlbox(mu.Rect(0, 0, w, h), _html_text(text, 72, color, bold=True), opacity=opacity)
+    return d
+
+
+def _logo_png(path, opacity):
+    Image, _ = _pil()
+    img = open_image(path).convert("RGBA")
+    img.thumbnail((1600, 1600))
+    a = img.split()[-1].point(lambda v: int(v * opacity))
+    img.putalpha(a)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue(), img.width / max(1, img.height)
+
+
+def pdf_watermark(paths, p):
+    """Faint diagonal text across every page, or a logo dragged with the PDF in the middle of every page."""
+    mu = _mu()
+    paths = paths if isinstance(paths, (list, tuple)) else [paths]
+    pdf = next(x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "pdf")
+    logo = next((x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "image"), None)
+    doc = mu.open(str(pdf))
+    if logo:
+        data, aspect = _logo_png(logo, 0.22)
+        for page in doc:
+            check_cancel()
+            r = page.rect
+            w = r.width * 0.5
+            h = w / aspect
+            if h > r.height * 0.5:
+                h = r.height * 0.5
+                w = h * aspect
+            vis = (r.width / 2 - w / 2, r.height / 2 - h / 2, r.width / 2 + w / 2, r.height / 2 + h / 2)
+            page.insert_image(_vis_rect(page, *vis), stream=data, rotate=page.rotation, overlay=True)
+    else:
+        text = (p.get("Text") or "").strip() or "CONFIDENTIAL"
+        stamp = _stamp_pdf(text, "#808080", 0.22)
+        for page in doc:
+            check_cancel()
+            r = page.rect
+            box = _vis_rect(page, r.width * 0.08, r.height * 0.25, r.width * 0.92, r.height * 0.75)
+            page.show_pdf_page(box, stamp, 0, rotate=-45 if page.rotation in (0, 180) else 45, overlay=True)
+    out = out_for(pdf, "pdf", "watermarked")
+    doc.save(str(out), garbage=3, deflate=True)
+    return out
+
+
+def pdf_grayscale(src, p):
+    """Black-and-white copy for printing: text, drawings and pictures all turned gray; also made smaller."""
+    mu = _mu()
+    doc = mu.open(str(src))
+    try:
+        doc.recolor(1)
+    except Exception:
+        for page in doc:
+            page.recolor(1)
+    try:
+        doc.rewrite_images(dpi_threshold=200, dpi_target=200, quality=75, lossy=True, lossless=True)
+    except Exception:
+        pass
+    out = out_for(src, "pdf", "grayscale")
+    doc.save(str(out), garbage=4, deflate=True, deflate_images=True, clean=True)
+    return out
+
+
+_enc_cache: dict = {}
+
+
+def pdf_is_encrypted(path) -> bool:
+    try:
+        key = (str(path), os.path.getmtime(path))
+        if key not in _enc_cache:
+            doc = _mu().open(str(path))
+            _enc_cache[key] = bool(doc.needs_pass or doc.is_encrypted)
+            doc.close()
+        return _enc_cache[key]
+    except Exception:
+        return False
+
+
+def pdf_unlock(src, p):
+    """An unlocked copy (no password, no restrictions) — you need to know the password."""
+    mu = _mu()
+    doc = mu.open(str(src))
+    if doc.needs_pass:
+        if not doc.authenticate(p.get("Password", "")):
+            raise ConversionError("Wrong password")
+    out = out_for(src, "pdf", "unlocked")
+    doc.save(str(out), encryption=mu.PDF_ENCRYPT_NONE, garbage=3, deflate=True)
+    return out
+
+
+def pdf_arrange(src, p):
+    """Apply the page grid: new order, pages left out are deleted, each page's turn. Layout = "3:90,1:0,2:0"."""
+    mu = _mu()
+    doc = mu.open(str(src))
+    plan = []
+    for part in str(p.get("Layout", "")).split(","):
+        if ":" in part:
+            i, rot = part.split(":")
+            plan.append((int(i), int(rot)))
+    if not plan:
+        raise ConversionError("No pages left")
+    base = {i: doc[i].rotation for i, _ in plan if 0 <= i < doc.page_count}
+    doc.select([i for i, _ in plan])
+    for page, (i, rot) in zip(doc, plan):
+        page.set_rotation((base.get(i, 0) + rot) % 360)
+    out = out_for(src, "pdf", "arranged")
+    doc.save(str(out), garbage=3, deflate=True)
+    return out
+
+
+def pdf_sign(paths, p):
+    """Put the signature picture where it was placed on the page. Sign = {"sig", "page", "rect": [x0,y0,x1,y1] 0..1}."""
+    mu = _mu()
+    paths = paths if isinstance(paths, (list, tuple)) else [paths]
+    pdf = next(x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "pdf")
+    try:
+        spec = json.loads(p.get("Sign") or "{}")
+    except ValueError:
+        spec = {}
+    sig = spec.get("sig")
+    if not sig or not os.path.exists(sig):
+        raise ConversionError("No signature was placed")
+    doc = mu.open(str(pdf))
+    page = doc[max(0, min(doc.page_count - 1, int(spec.get("page", 0))))]
+    r = page.rect
+    x0, y0, x1, y1 = spec.get("rect", [0.6, 0.8, 0.9, 0.9])
+    vis = (x0 * r.width, y0 * r.height, x1 * r.width, y1 * r.height)
+    page.insert_image(_vis_rect(page, *vis), filename=str(sig), rotate=page.rotation, keep_proportion=True, overlay=True)
+    out = out_for(pdf, "pdf", "signed")
+    doc.save(str(out), garbage=3, deflate=True)
+    return out
+
+
+def _words(text) -> int:
+    return len(re.findall(r"\w+(?:['’-]\w+)*", text))
+
+
+def count_words(src, p):
+    """Words, characters and pages, shown on the notification (nothing is saved)."""
+    src = Path(src)
+    e = ext_of(src)
+    pages = None
+    if e == "pdf" or EXT_CATEGORY.get(e) in ("pdf", "ebook"):
+        doc = _mu().open(str(src))
+        pages = doc.page_count
+        text = "\n".join(pg.get_text() for pg in doc)
+    elif e in ("docx", "pptx", "odt", "xlsx"):
+        import zipfile
+        with zipfile.ZipFile(src) as z:
+            names = z.namelist()
+            if e == "docx":
+                parts = ["word/document.xml"]
+            elif e == "pptx":
+                parts = sorted(n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n))
+                pages = len(parts)
+            elif e == "odt":
+                parts = ["content.xml"]
+            else:
+                parts = [n for n in names if n.startswith("xl/sharedStrings")]
+            xml = " ".join(z.read(n).decode("utf-8", "ignore") for n in parts if n in names)
+            xml = re.sub(r"</w:p>|</a:p>|</text:p>|<w:tab/>|<w:br/>", "\n", xml)
+            text = re.sub(r"<[^>]+>", "", xml)
+            import html as _h
+            text = _h.unescape(text)
+            if e == "docx" and "docProps/app.xml" in names:
+                m = re.search(r"<Pages>(\d+)</Pages>", z.read("docProps/app.xml").decode("utf-8", "ignore"))
+                pages = int(m.group(1)) if m else None
+    else:
+        raw = src.read_bytes()
+        for enc in ("utf-8-sig", "cp1256", "latin-1"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if e in ("html", "htm"):
+            import html as _h
+            text = _h.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"(?is)<(script|style).*?</\1>", " ", text)))
+    info = {"name": src.name, "words": _words(text), "chars": len(re.sub(r"\s", "", text)),
+            "chars_spaces": len(text.strip()), "lines": text.count("\n") + 1 if text.strip() else 0}
+    if pages is not None:
+        info["pages"] = pages
+    return "info:" + json.dumps(info, ensure_ascii=False)
+
+
 def epub_to_pdf(src, p):
     mu = _mu()
     doc = mu.open(str(src))
@@ -2627,9 +2867,24 @@ def tools(paths: list[str]) -> list[Op]:
                 T("rotate", "Rotate 90°", pdf_rotate),
                 T("images", "Extract images", pdf_extract_images),
                 T("protect", "Password…", pdf_protect, ask=[("Password", "")]),
+                T("arrange", "Arrange pages…", pdf_arrange, ask=[("Layout", "@pages")]),
+                T("numbers", "Page numbers…", pdf_page_numbers,
+                  ask=[("Position", PAGE_NUMBER_POSITIONS), ("Style", PAGE_NUMBER_STYLES)]),
+                T("watermark", "Watermark…", pdf_watermark, ask=[("Text", "CONFIDENTIAL")]),
+                T("sign", "Sign…", pdf_sign, ask=[("Sign", "@sign")]),
+                T("gray", "Grayscale", pdf_grayscale),
+                T("count", "Word count", count_words),
             ]
+            if n == 1 and pdf_is_encrypted(paths[0]):
+                ops.insert(0, T("unlock", "Unlock…", pdf_unlock, ask=[("Password", "")]))
+        elif n == 2 and sorted(EXT_CATEGORY.get(ext_of(x)) for x in paths) == ["image", "pdf"]:
+            ops += [T("sign", "Sign…", pdf_sign, multi=True, ask=[("Sign", "@sign")]),
+                    T("logo", "Watermark with logo", pdf_watermark, multi=True)]
         if n > 1:
             ops.append(T("merge", "Merge", pdf_merge, multi=True))
+    elif cat in ("document", "slides", "ebook"):
+        if all(ext_of(x) in ("txt", "md", "html", "htm", "docx", "odt", "pptx", "epub") for x in paths):
+            ops.append(T("count", "Word count", count_words))
     elif cat == "archive":
         ops.append(T("extract", "Extract", archive_extract))
     elif cat == "mixed" and [EXT_CATEGORY.get(ext_of(x)) for x in paths].count("video") == 1 and \

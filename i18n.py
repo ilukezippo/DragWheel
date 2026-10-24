@@ -762,3 +762,14 @@ from locales import update12 as _u12  # noqa: E402
 for _code, _vals in _u12.T.items():
     assert len(_vals) == len(_u12.KEYS), _code
     T[_code].update(dict(zip(_u12.KEYS, _vals)))
+
+for _code, _live in {"ar": "مباشر", "fr": "EN DIRECT", "es": "EN DIRECTO", "tr": "CANLI", "de": "LIVE", "ru": "ПРЯМОЙ ЭФИР",
+                     "zh": "直播", "ja": "ライブ", "pt": "AO VIVO", "it": "IN DIRETTA", "hi": "लाइव", "fa": "زنده",
+                     "ur": "براہ راست"}.items():
+    T[_code]["LIVE"] = _live
+
+from locales import pdf12 as _p12  # noqa: E402
+
+for _code, _vals in _p12.T.items():
+    assert len(_vals) == len(_p12.KEYS), _code
+    T[_code].update(dict(zip(_p12.KEYS, _vals)))

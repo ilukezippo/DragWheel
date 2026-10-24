@@ -1264,6 +1264,9 @@ class FloatWindow(QWidget):
         if status == QMediaPlayer.LoadedMedia and self._resume_ms and self.autoplay:
             self.player.setPosition(self._resume_ms)
             self._resume_ms = 0
+        if status == QMediaPlayer.EndOfMedia and self._live():
+            QTimer.singleShot(50, self._live_continue)
+            return
         if status == QMediaPlayer.EndOfMedia and settings().value("float_autoplay", "true") == "true":
             if self._neighbour(1):
                 QTimer.singleShot(300, lambda: self._step(1))
@@ -1376,7 +1379,29 @@ class FloatWindow(QWidget):
         if f:
             self._load_subs(f)
 
+    # ---- live streams: the player only gets the newest ~30 s at a time, so keep loading the next part
+    def _live(self):
+        return bool(self.link and self.link.get("live"))
+
+    def _live_continue(self, error=False):
+        import time
+        now = time.monotonic()
+        recent = [t for t in getattr(self, "_live_reloads", []) if now - t < 20] + [now]
+        self._live_reloads = recent
+        if len(recent) > 4 or error:                    # the link expired or keeps failing: ask YouTube again
+            self._live_reloads = []
+            if _APP is not None:
+                winsys.log(f"float: live stream re-opened ({'error' if error else 'stalled'})")
+                _APP._resolve_and_play(self.link["page"], self, quiet=True)
+            return
+        self.player.setSource(QUrl(self.path))
+        self.player.play()
+
     def _on_media_error(self, *_a):
+        if self._live() and self.player is not None:
+            winsys.log(f"float: live stream error, reconnecting: {self.player.errorString()}")
+            QTimer.singleShot(500, lambda: self._live_continue(error=True))
+            return
         winsys.log(f"float: cannot play {self.path}: {self.player.errorString()}")
         self.player.stop()
         self.player = None
@@ -1486,7 +1511,7 @@ class FloatWindow(QWidget):
         if any(self._edges(pos)):
             return "edge"
         if self.player and controls:
-            if self._seek_rect().adjusted(0, -8, 0, 8).contains(pos):
+            if self._seek_rect().adjusted(0, -8, 0, 8).contains(pos) and not self._live():
                 return "seek"
             if self._mute_rect().contains(pos):
                 return "mute"
@@ -1537,7 +1562,7 @@ class FloatWindow(QWidget):
         g = self.geometry()
         st = {"id": self.pin_id, "src": self.link["page"] if self.link else str(self.path), "link": bool(self.link),
               "x": g.x(), "y": g.y(), "w": g.width(), "on_top": self.on_top}
-        if self.player is not None:
+        if self.player is not None and not self._live():
             st["pos"] = int(self.player.position())
             st["playing"] = bool(self._playing())
         return st
@@ -1652,7 +1677,7 @@ class FloatWindow(QWidget):
                     p.drawRoundedRect(QRectF(vr.left(), vr.top(), vr.width() * vol, vr.height()), 3, 3)
                     p.drawEllipse(QPointF(vr.left() + vr.width() * vol, vr.center().y()), 6, 6)
                     left = 130
-                t = f"{_fmt_time(self.player.position())} / {_fmt_time(self.player.duration())}"
+                t = ("● " + tr("LIVE")) if self._live() else f"{_fmt_time(self.player.position())} / {_fmt_time(self.player.duration())}"
                 p.setPen(fg)
                 tw = QFontMetrics(f).horizontalAdvance(t) + 12
                 p.drawText(QRectF(left, self.height() - 38, tw, 28), Qt.AlignVCenter | Qt.AlignLeft, t)
@@ -1738,7 +1763,7 @@ class FloatWindow(QWidget):
         p.setBrush(QColor(255, 255, 255, 70) if (self.kind == "video" or self.art) else C("busy_track"))
         p.drawRoundedRect(sr, 2, 2)
         dur = self.player.duration()
-        if dur > 0:
+        if dur > 0 and not self._live():
             frac = min(1.0, self.player.position() / dur)
             p.setBrush(ACCENT)
             p.drawRoundedRect(QRectF(sr.left(), sr.top(), sr.width() * frac, sr.height()), 2, 2)
@@ -2378,6 +2403,407 @@ class CropPreview(QWidget):
         return f"{(crop.center().x() - pic.x()) / max(1.0, pic.width()):.4f}"
 
 
+# ============================================================================
+# PDF: page grid (Arrange pages…) and signing (Sign…)
+# ============================================================================
+def _render_page(doc, i, width, extra_rot=0):
+    """QImage of page i, `width` px wide (visible orientation plus extra_rot degrees)."""
+    import pymupdf
+    page = doc[i]
+    z = width / max(1.0, page.rect.width)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(z, z).prerotate(extra_rot), alpha=False)
+    return QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
+
+
+class PageGrid(QWidget):
+    """Thumbnails of every page: drag to reorder, select and press Delete to remove, turn with the buttons.
+    value() -> "orig:extra_rotation,..." in the new order."""
+    THUMB = 132
+
+    def __init__(self, path):
+        super().__init__()
+        from PySide6.QtWidgets import QListWidget, QListView, QAbstractItemView
+        import pymupdf
+        self.path = path
+        self.doc = pymupdf.open(path)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.grid = QListWidget()
+        self.grid.setViewMode(QListView.IconMode)
+        self.grid.setIconSize(QSize(self.THUMB, self.THUMB))
+        self.grid.setGridSize(QSize(self.THUMB + 24, self.THUMB + 34))
+        self.grid.setResizeMode(QListView.Adjust)
+        self.grid.setMovement(QListView.Snap)
+        self.grid.setDragDropMode(QAbstractItemView.InternalMove)
+        self.grid.setDefaultDropAction(Qt.MoveAction)
+        self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.grid.setMinimumSize(640, 380)
+        self.grid.setStyleSheet(f"QListWidget{{background:{theme.hexc('canvas')};border:none;border-radius:8px}}"
+                                f"QListWidget::item{{color:{theme.hexc('text')}}}"
+                                f"QListWidget::item:selected{{background:{theme.hexc('accent')};color:{theme.hexc('on_accent')};border-radius:6px}}")
+        lay.addWidget(self.grid)
+        from PySide6.QtWidgets import QListWidgetItem
+        self.images = {}
+        for i in range(self.doc.page_count):
+            it = QListWidgetItem(str(i + 1))
+            it.setData(Qt.UserRole, i)
+            it.setData(Qt.UserRole + 1, 0)
+            it.setTextAlignment(Qt.AlignHCenter)
+            self.grid.addItem(it)
+        row = QHBoxLayout()
+        for label, fn in (("⟲  " + tr("Turn left"), lambda: self._turn(-90)), ("⟳  " + tr("Turn right"), lambda: self._turn(90)),
+                          ("✕  " + tr("Delete"), self._delete)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        self.count = QLabel()
+        row.addWidget(self.count)
+        lay.addLayout(row)
+        hint = QLabel(tr("Drag pages to change the order · select several with Ctrl or Shift · Delete removes them"))
+        hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        lay.addWidget(hint)
+        self.grid.model().rowsMoved.connect(lambda *a: self._renumber())
+        self._renumber()
+        self._stop = False
+        self._next = 0
+        self._timer = QTimer(self, interval=0, timeout=self._load_some)   # a few pages per tick: stays responsive
+        self._timer.start()
+
+    def _load_some(self):
+        import time
+        t0 = time.monotonic()
+        while self._next < self.doc.page_count and time.monotonic() - t0 < 0.04 and not self._stop:
+            try:
+                self._got(self._next, _render_page(self.doc, self._next, self.THUMB))
+            except Exception as e:
+                winsys.log(f"page grid: page {self._next + 1}: {e}")
+            self._next += 1
+        if self._next >= self.doc.page_count or self._stop:
+            self._timer.stop()
+
+    def _got(self, i, img):
+        self.images[i] = img
+        for r in range(self.grid.count()):
+            it = self.grid.item(r)
+            if it.data(Qt.UserRole) == i:
+                self._set_icon(it)
+
+    def _set_icon(self, it):
+        img = self.images.get(it.data(Qt.UserRole))
+        if img is None:
+            return
+        from PySide6.QtGui import QTransform
+        rot = it.data(Qt.UserRole + 1)
+        pm = QPixmap.fromImage(img.transformed(QTransform().rotate(rot)) if rot else img)
+        it.setIcon(QIcon(pm.scaled(self.THUMB, self.THUMB, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+
+    def _turn(self, deg):
+        for it in self.grid.selectedItems() or []:
+            it.setData(Qt.UserRole + 1, (it.data(Qt.UserRole + 1) + deg) % 360)
+            self._set_icon(it)
+
+    def _delete(self):
+        sel = self.grid.selectedItems()
+        if len(sel) >= self.grid.count():
+            return                                         # keep at least one page
+        for it in sel:
+            self.grid.takeItem(self.grid.row(it))
+        self._renumber()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self._delete()
+        else:
+            super().keyPressEvent(e)
+
+    def _renumber(self):
+        n = self.grid.count()
+        self.count.setText(tr("{n} pages", n=n) + (f"  ·  {tr('{n} removed', n=self.doc.page_count - n)}"
+                                                   if n < self.doc.page_count else ""))
+
+    def stop(self):
+        self._stop = True
+
+    def value(self):
+        return ",".join(f"{self.grid.item(r).data(Qt.UserRole)}:{self.grid.item(r).data(Qt.UserRole + 1)}"
+                        for r in range(self.grid.count()))
+
+
+def _signature_file() -> Path:
+    return Path(engine.models_dir()).parent / "signature.png"
+
+
+def _clean_signature(src, dst):
+    """A photo or scan of a signature -> the ink only, on transparent background."""
+    from PIL import Image
+    img = engine.open_image(src).convert("RGBA")
+    img.thumbnail((1400, 1400))
+    gray = img.convert("L")
+    alpha = gray.point(lambda v: 0 if v > 200 else 255 if v < 120 else int((200 - v) * 255 / 80))
+    if img.split()[-1].getextrema()[0] < 250:          # already has transparency: keep it
+        alpha = Image.composite(img.split()[-1], alpha, img.split()[-1].point(lambda v: 255 if v < 250 else 0))
+    img.putalpha(alpha)
+    box = img.getbbox()
+    if box:
+        img = img.crop(box)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    img.save(dst)
+    return dst
+
+
+class DrawPad(QDialog):
+    """Sign with the mouse or a pen."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowStaysOnTopHint)
+        self.setWindowTitle(f"{APP} — " + tr("Draw your signature"))
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        lay = QVBoxLayout(self)
+        self.canvas = QWidget()
+        self.canvas.setMinimumSize(520, 200)
+        self.canvas.setCursor(Qt.CrossCursor)
+        self.canvas.setAttribute(Qt.WA_StaticContents)
+        self.strokes, self._cur = [], None
+        self.canvas.paintEvent = self._paint
+        self.canvas.mousePressEvent = lambda e: self._start(e.position())
+        self.canvas.mouseMoveEvent = lambda e: self._move(e.position())
+        self.canvas.mouseReleaseEvent = lambda e: self._end()
+        lay.addWidget(self.canvas)
+        row = QHBoxLayout()
+        clear = QPushButton(tr("Clear"))
+        clear.clicked.connect(lambda: (self.strokes.clear(), self.canvas.update()))
+        row.addWidget(clear)
+        row.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(tr("Use this signature"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        row.addWidget(bb)
+        lay.addLayout(row)
+
+    def _start(self, pt):
+        self._cur = [QPointF(pt)]
+        self.strokes.append(self._cur)
+
+    def _move(self, pt):
+        if self._cur is not None:
+            self._cur.append(QPointF(pt))
+            self.canvas.update()
+
+    def _end(self):
+        self._cur = None
+
+    def _draw(self, p, scale=1.0):
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(20, 30, 90), 3.2 * scale, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        for s in self.strokes:
+            if len(s) == 1:
+                p.drawPoint(s[0] * scale)
+            path = QPainterPath(s[0] * scale)
+            for q in s[1:]:
+                path.lineTo(q * scale)
+            p.drawPath(path)
+
+    def _paint(self, _):
+        p = QPainter(self.canvas)
+        p.fillRect(self.canvas.rect(), QColor("white"))
+        p.setPen(QPen(QColor(200, 200, 205), 1, Qt.DashLine))
+        y = self.canvas.height() * 0.72
+        p.drawLine(QPointF(20, y), QPointF(self.canvas.width() - 20, y))
+        self._draw(p)
+
+    def save(self, dst):
+        if not any(len(s) > 1 for s in self.strokes):
+            return None
+        img = QImage(self.canvas.size() * 3, QImage.Format_ARGB32)
+        img.fill(Qt.transparent)
+        p = QPainter(img)
+        self._draw(p, 3.0)
+        p.end()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name("signature-drawn.png")
+        img.save(str(tmp))
+        return _clean_signature(tmp, dst)
+
+
+class SignPlacer(QWidget):
+    """Shows a page with your signature on it: drag it into place, drag its corner to size it,
+    ◀ ▶ to choose the page. value() -> JSON for engine.pdf_sign."""
+    VIEW_W = 470
+
+    def __init__(self, paths):
+        super().__init__()
+        import pymupdf
+        self.pdf = next(x for x in paths if engine.EXT_CATEGORY.get(engine.ext_of(x)) == "pdf")
+        self.doc = pymupdf.open(self.pdf)
+        self.page_i = self.doc.page_count - 1               # signatures usually go on the last page
+        dropped = next((x for x in paths if engine.EXT_CATEGORY.get(engine.ext_of(x)) == "image"), None)
+        self.sig_path = None
+        if dropped:
+            try:
+                self.sig_path = _clean_signature(dropped, _signature_file().with_name("signature-dropped.png"))
+            except Exception as e:
+                winsys.log(f"signature image: {e}")
+        elif _signature_file().exists():
+            self.sig_path = _signature_file()
+        self.sig_img = QImage(str(self.sig_path)) if self.sig_path else None
+        self.rect = [0.58, 0.78, 0.90, 0.88]                 # 0..1 of the page
+        self._drag = None
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.view = QWidget()
+        self.view.setMinimumSize(self.VIEW_W, 360)
+        self.view.setMouseTracking(True)
+        self.view.paintEvent = self._paint
+        self.view.mousePressEvent = self._press
+        self.view.mouseMoveEvent = self._move
+        self.view.mouseReleaseEvent = lambda e: setattr(self, "_drag", None)
+        lay.addWidget(self.view, 1)
+        side = QVBoxLayout()
+        nav = QHBoxLayout()
+        self.prev_b, self.next_b = QPushButton("◀"), QPushButton("▶")
+        self.prev_b.clicked.connect(lambda: self._go(-1))
+        self.next_b.clicked.connect(lambda: self._go(1))
+        self.page_lbl = QLabel()
+        self.page_lbl.setAlignment(Qt.AlignCenter)
+        nav.addWidget(self.prev_b)
+        nav.addWidget(self.page_lbl, 1)
+        nav.addWidget(self.next_b)
+        side.addLayout(nav)
+        draw = QPushButton(tr("Draw signature…"))
+        draw.clicked.connect(self._draw_new)
+        side.addWidget(draw)
+        pick = QPushButton(tr("Use a picture…"))
+        pick.clicked.connect(self._pick)
+        side.addWidget(pick)
+        tip = QLabel(tr("Drag the signature into place and drag its corner to make it bigger or smaller. "
+                        "It's remembered for next time."))
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        side.addWidget(tip)
+        side.addStretch(1)
+        lay.addLayout(side)
+        self._page_img = None
+        self._go(0)
+        if self.sig_img is None:
+            QTimer.singleShot(200, self._draw_new)
+
+    # page
+    def _go(self, step):
+        self.page_i = max(0, min(self.doc.page_count - 1, self.page_i + step))
+        self.page_lbl.setText(tr("Page {i} of {n}", i=self.page_i + 1, n=self.doc.page_count))
+        self.prev_b.setEnabled(self.page_i > 0)
+        self.next_b.setEnabled(self.page_i < self.doc.page_count - 1)
+        self._page_img = _render_page(self.doc, self.page_i, 900)
+        self.view.update()
+
+    def _page_rect(self):
+        img = self._page_img
+        s = min((self.view.width() - 8) / img.width(), (self.view.height() - 8) / img.height())
+        w, h = img.width() * s, img.height() * s
+        return QRectF((self.view.width() - w) / 2, (self.view.height() - h) / 2, w, h)
+
+    def _sig_rect(self):
+        pr = self._page_rect()
+        x0, y0, x1, y1 = self.rect
+        return QRectF(pr.x() + x0 * pr.width(), pr.y() + y0 * pr.height(), (x1 - x0) * pr.width(), (y1 - y0) * pr.height())
+
+    def _fit_rect_to_sig(self):
+        """Keep the box the signature's shape (same width, matching height)."""
+        if self.sig_img is None or self.sig_img.isNull():
+            return
+        pr = self._page_rect()
+        x0, y0, x1, _ = self.rect
+        w_px = (x1 - x0) * pr.width()
+        h_px = w_px * self.sig_img.height() / max(1, self.sig_img.width())
+        y1 = y0 + h_px / max(1.0, pr.height())
+        if y1 > 1.0:
+            y0, y1 = max(0.0, 1.0 - (y1 - y0)), 1.0
+        self.rect = [x0, y0, x1, y1]
+
+    def _paint(self, _):
+        p = QPainter(self.view)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.view.rect(), theme.color("canvas"))
+        pr = self._page_rect()
+        p.drawImage(pr, self._page_img)
+        if self.sig_img is not None and not self.sig_img.isNull():
+            sr = self._sig_rect()
+            p.drawImage(sr, self.sig_img)
+            p.setPen(QPen(QColor(theme.hexc("accent")), 1.5, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(sr)
+            p.setBrush(QColor(theme.hexc("accent")))
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(sr.bottomRight(), 6, 6)
+
+    def _press(self, e):
+        if self.sig_img is None:
+            return
+        pos = e.position()
+        sr = self._sig_rect()
+        if (pos - sr.bottomRight()).manhattanLength() < 16:
+            self._drag = ("size", pos, list(self.rect))
+        elif sr.contains(pos):
+            self._drag = ("move", pos, list(self.rect))
+
+    def _move(self, e):
+        pos = e.position()
+        if self._drag is None:
+            sr = self._sig_rect() if self.sig_img is not None else QRectF()
+            near = (pos - sr.bottomRight()).manhattanLength() < 16
+            self.view.setCursor(Qt.SizeFDiagCursor if near else Qt.OpenHandCursor if sr.contains(pos) else Qt.ArrowCursor)
+            return
+        kind, start, r0 = self._drag
+        pr = self._page_rect()
+        dx, dy = (pos.x() - start.x()) / pr.width(), (pos.y() - start.y()) / pr.height()
+        x0, y0, x1, y1 = r0
+        if kind == "move":
+            w, h = x1 - x0, y1 - y0
+            nx = max(0.0, min(1.0 - w, x0 + dx))
+            ny = max(0.0, min(1.0 - h, y0 + dy))
+            self.rect = [nx, ny, nx + w, ny + h]
+        else:
+            nx1 = max(x0 + 0.05, min(1.0, x1 + dx))
+            self.rect = [x0, y0, nx1, y1]
+            self._fit_rect_to_sig()
+        self.view.update()
+
+    # signature source
+    def _set_sig(self, path):
+        self.sig_path = path
+        self.sig_img = QImage(str(path))
+        self._fit_rect_to_sig()
+        self.view.update()
+
+    def _draw_new(self):
+        pad = DrawPad(self)
+        if pad.exec() == QDialog.Accepted:
+            out = pad.save(_signature_file())
+            if out:
+                self._set_sig(out)
+
+    def _pick(self):
+        f, _ = QFileDialog.getOpenFileName(self, tr("Use a picture…"), str(Path.home()),
+                                           "Images (*.png *.jpg *.jpeg *.webp *.bmp *.heic)")
+        if f:
+            try:
+                self._set_sig(_clean_signature(f, _signature_file()))
+            except Exception as e:
+                winsys.log(f"signature picture: {e}")
+
+    def stop(self):
+        pass
+
+    def value(self):
+        if not self.sig_path:
+            return ""
+        return json.dumps({"sig": str(self.sig_path), "page": self.page_i, "rect": [round(v, 5) for v in self.rect]})
+
+
 def ask_params(op, paths) -> dict | None:
     dlg = QDialog(None, Qt.WindowStaysOnTopHint)
     title = tr(op.label).rstrip("…")
@@ -2396,6 +2822,16 @@ def ask_params(op, paths) -> dict | None:
             form.addRow(tw)
             edits[name] = tw
             trims.append(tw)
+            continue
+        if default in ("@pages", "@sign"):              # PDF page grid / signature placement
+            try:
+                w = PageGrid(paths[0]) if default == "@pages" else SignPlacer(paths)
+            except Exception as e:
+                message(APP, tr("Couldn't open this PDF") + f"<br><small>{e}</small>")
+                return None
+            form.addRow(w)
+            edits[name] = w
+            trims.append(w)
             continue
         if isinstance(default, (list, tuple)):          # a fixed set of choices
             cb = QComboBox()
@@ -2431,8 +2867,13 @@ def ask_params(op, paths) -> dict | None:
     bb.accepted.connect(dlg.accept)
     bb.rejected.connect(dlg.reject)
     lay.addWidget(bb)
-    dlg.setMinimumWidth(620 if trims else 340)
-    dlg.move(QCursor.pos() - QPoint(310 if trims else 170, 60))
+    dlg.setMinimumWidth(680 if any(isinstance(t, (PageGrid, SignPlacer)) for t in trims) else 620 if trims else 340)
+    if any(isinstance(t, (PageGrid, SignPlacer)) for t in trims):
+        dlg.resize(760, 560)
+        scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        dlg.move(scr.availableGeometry().center() - QPoint(380, 280))
+    else:
+        dlg.move(QCursor.pos() - QPoint(310 if trims else 170, 60))
     dlg.activateWindow()
     ok = dlg.exec() == QDialog.Accepted
     for tw in trims:
@@ -2440,7 +2881,7 @@ def ask_params(op, paths) -> dict | None:
             tw.stop()
     if not ok:
         return None
-    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview)) else e.text())
+    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview, PageGrid, SignPlacer)) else e.text())
             for k, e in edits.items()}
 
 
@@ -3239,11 +3680,11 @@ class DragWheelApp(QObject):
         else:
             self._ensure_model("yt-dlp", tr("Play copied link"), lambda: self._resolve_and_play(url, target))
 
-    def _resolve_and_play(self, url, target, pin=None):
+    def _resolve_and_play(self, url, target, pin=None, quiet=False):
         job = LinkResolve(url)
         job.setAutoDelete(False)
         self._update_jobs.add(job)
-        card = None if pin else self.toast.show_busy(tr("Opening link…"), url[:70])
+        card = None if (pin or quiet) else self.toast.show_busy(tr("Opening link…"), url[:70])
 
         def done(info, err, job=job):
             self._update_jobs.discard(job)
@@ -3258,6 +3699,12 @@ class DragWheelApp(QObject):
                 self.toast.show_msg(tr("Couldn't open this link"), tr(err), "err", 8000)
                 return
             if target is not None and target in self.floats:
+                if quiet:                                  # live stream reconnect: keep size and controls as they are
+                    target.link = info
+                    target.path = info["url"]
+                    target.player.setSource(QUrl(info["url"]))
+                    target.player.play()
+                    return
                 target._load(info["url"], info)
                 target._fade_to(1.0)
                 QTimer.singleShot(1600, target._maybe_hide_controls)
@@ -3404,6 +3851,18 @@ class DragWheelApp(QObject):
         elif err:
             winsys.log(f"job failed: {op.group}/{op.id} on {worker.paths[:3]}: {err}")
             target.show_msg(tr("{what} failed", what=tr(op.label).rstrip("…")), tr(err), "err", 8000)
+        elif op.id == "count" and outs:
+            infos = [json.loads(str(o)[5:]) for o in outs if str(o).startswith("info:")]
+            tot = {k: sum(i.get(k, 0) for i in infos) for k in ("words", "chars", "chars_spaces", "pages")}
+            title = infos[0]["name"] if len(infos) == 1 else tr("{n} files", n=len(infos))
+            lines = [tr("Words: {n}", n=f"{tot['words']:,}"),
+                     tr("Characters: {n} ({m} with spaces)", n=f"{tot['chars']:,}", m=f"{tot['chars_spaces']:,}")]
+            if any("pages" in i for i in infos):
+                lines.append(tr("Pages: {n}", n=f"{tot['pages']:,}"))
+            minutes = max(1, round(tot["words"] / 200))
+            lines.append(tr("About {n} min to read", n=minutes))
+            QGuiApplication.clipboard().setText("\n".join([title] + lines))
+            target.show_msg(title, "<br>".join(lines), "ok", 12000)
         elif op.id == "ocr" and outs:
             try:
                 QGuiApplication.clipboard().setText(Path(outs[0]).read_text(encoding="utf-8").strip())
