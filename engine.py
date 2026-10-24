@@ -700,9 +700,48 @@ def is_link(text) -> bool:
     return t.lower().startswith(("http://", "https://")) and " " not in t and "\n" not in t
 
 
+_LINK_FORMAT = "b[protocol^=m3u8][height<=1080]/b[height<=1080]/b[acodec!=none]/b"
+# YouTube hands different streams to different "players"; when one gives nothing playable, another usually does
+_YT_CLIENTS = "youtube:player_client=default,web_safari,android_vr,tv,mweb"
+
+
+def _link_log(msg):
+    try:
+        import winsys
+        winsys.log(msg)
+    except Exception:
+        pass
+
+
+def _pick_formats(info) -> tuple[str | None, str | None]:
+    """(media url, separate audio url or None) from yt-dlp's format list: a stream with sound and picture
+    if there is one (HLS first, up to 1080p), otherwise the best video plus the best audio."""
+    fmts = [f for f in info.get("formats") or [] if f.get("url") and f.get("protocol") not in ("mhtml",)]
+
+    def h(f):
+        return f.get("height") or 0
+
+    both = [f for f in fmts if f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")]
+    ok = [f for f in both if h(f) <= 1080] or both
+    if ok:
+        ok.sort(key=lambda f: (str(f.get("protocol", "")).startswith("m3u8"), h(f), f.get("tbr") or 0))
+        return ok[-1]["url"], None
+    vids = [f for f in fmts if f.get("vcodec") not in (None, "none") and h(f) <= 1080]
+    auds = [f for f in fmts if f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")]
+    if vids and auds:
+        vids.sort(key=lambda f: (str(f.get("vcodec", "")).startswith(("avc", "h264")), h(f), f.get("tbr") or 0))
+        auds.sort(key=lambda f: (f.get("ext") == "m4a", f.get("abr") or f.get("tbr") or 0))
+        return vids[-1]["url"], auds[-1]["url"]
+    if auds:                                                  # music-only pages
+        auds.sort(key=lambda f: f.get("abr") or f.get("tbr") or 0)
+        return auds[-1]["url"], None
+    return None, None
+
+
 def resolve_link(url, _updated=False) -> dict:
-    """Turn a page link into something the float can play: {"url", "title", "page"}.
-    Direct media links play as they are; other sites go through yt-dlp (QuickJS for YouTube)."""
+    """Turn a page link into something the float can play: {"url", "title", "page"} (+ "audio" when the site
+    only has picture and sound as separate streams). Direct media links play as they are; other sites go
+    through yt-dlp (QuickJS solves YouTube's player challenge)."""
     from urllib.parse import urlparse, unquote
     path = unquote(urlparse(url).path).lower()
     if path.endswith(MEDIA_LINK_EXT):
@@ -711,23 +750,45 @@ def resolve_link(url, _updated=False) -> dict:
         raise ConversionError("The yt-dlp tool isn't downloaded yet")
     exe = str(model_path("yt-dlp"))
     qjs = _asset("js", "qjs.exe")
-    cmd = [exe, "-J", "--no-playlist", "--no-warnings",
-           "-f", "b[protocol^=m3u8][height<=1080]/b[height<=1080]/b[acodec!=none]/b"]
+    base = [exe, "-J", "--no-playlist"]
     if qjs.exists():
-        cmd += ["--js-runtimes", f"quickjs:{qjs}"]
-    r = subprocess.run(cmd + [url], capture_output=True, timeout=90, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
-    if r.returncode != 0:
-        if not _updated:                                   # sites change: update yt-dlp once and retry
-            subprocess.run([exe, "-U"], capture_output=True, timeout=120, stdin=subprocess.DEVNULL,
+        base += ["--js-runtimes", f"quickjs:{qjs}"]
+    attempts = [["-f", _LINK_FORMAT],
+                ["-f", _LINK_FORMAT, "--extractor-args", _YT_CLIENTS],
+                ["--ignore-no-formats-error", "--extractor-args", _YT_CLIENTS]]     # pick from the list ourselves
+    last = "Couldn't open this link"
+    for extra in attempts:
+        r = subprocess.run(base + extra + [url], capture_output=True, timeout=90, stdin=subprocess.DEVNULL,
                            creationflags=NO_WINDOW)
-            return resolve_link(url, _updated=True)
-        msg = r.stderr.decode("utf-8", "replace").strip().splitlines()
-        raise ConversionError((msg[-1] if msg else "Couldn't open this link").replace("ERROR: ", ""))
-    info = json.loads(r.stdout.decode("utf-8", "replace") or "{}")
-    media = info.get("url") or next((f.get("url") for f in reversed(info.get("requested_formats") or []) if f.get("url")), None)
-    if not media:
-        raise ConversionError("Couldn't open this link")
-    return {"url": media, "title": info.get("title") or url, "page": info.get("webpage_url") or url}
+        err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+        if r.returncode != 0:
+            errs = [x for x in err if x.startswith("ERROR")] or err
+            last = (errs[-1] if errs else last).replace("ERROR: ", "")
+            _link_log(f"yt-dlp {' '.join(extra[:2])}: {last} | " + " | ".join(x for x in err if "WARNING" in x)[:600])
+            continue
+        try:
+            info = json.loads(r.stdout.decode("utf-8", "replace") or "{}")
+        except ValueError:
+            continue
+        audio = None
+        media = info.get("url") or next((f.get("url") for f in reversed(info.get("requested_formats") or [])
+                                         if f.get("url")), None) if "-f" in extra else None
+        if not media:
+            media, audio = _pick_formats(info)
+        if media:
+            if extra is not attempts[0]:
+                _link_log(f"link opened on attempt {attempts.index(extra) + 1}{' (separate audio)' if audio else ''}")
+            out = {"url": media, "title": info.get("title") or url, "page": info.get("webpage_url") or url}
+            if audio:
+                out["audio"] = audio
+            return out
+        last = "Requested format is not available"
+        _link_log("yt-dlp: no playable stream; " + " | ".join(x for x in err if "WARNING" in x)[:600])
+    if not _updated:                                   # sites change: update yt-dlp once and retry
+        u = subprocess.run([exe, "-U"], capture_output=True, timeout=120, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+        _link_log("yt-dlp -U: " + u.stdout.decode("utf-8", "replace").strip().replace("\n", " | ")[-300:])
+        return resolve_link(url, _updated=True)
+    raise ConversionError(last)
 
 
 TRANSCRIBE_MODES = ["Detect language", "Arabic", "English", "Translate to English"]

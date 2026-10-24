@@ -1016,6 +1016,7 @@ class FloatWindow(QWidget):
         self._drop_hover = False
         self.pin_id = None               # set when this float reopens with Windows
         self._pin_timer = QTimer(self, singleShot=True, interval=500, timeout=self._save_pin)
+        self.companion = None
         self._play_now = play
         self._load(path, link)
         self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
@@ -1036,6 +1037,7 @@ class FloatWindow(QWidget):
     def _load(self, path, link=None):
         """Show `path` in this float (also used when another file is dropped on it).
         `link` = {"url", "title", "page"} when playing a web link (path is then the media URL)."""
+        self._drop_companion()
         if self.player:
             self.player.stop()
             self.player.setSource(QUrl())
@@ -1180,6 +1182,8 @@ class FloatWindow(QWidget):
         if cat == "audio":
             self.player.metaDataChanged.connect(self._on_metadata)
         self.player.mediaStatusChanged.connect(self._on_status)
+        if self.link and self.link.get("audio"):
+            self._add_companion(self.link["audio"])
         self.player.setSource(QUrl(self.path) if self.link else QUrl.fromLocalFile(self.path))
         if cat == "video" or self.autoplay:
             self.player.play()
@@ -1188,6 +1192,42 @@ class FloatWindow(QWidget):
             if side:
                 self._load_subs(side[0])
         return True
+
+    # ---- separate sound stream (some YouTube videos only come as picture + sound apart)
+    def _add_companion(self, audio_url):
+        from PySide6.QtMultimedia import QMediaPlayer
+        self.player.setAudioOutput(None)                    # the picture stream is silent anyway
+        self.companion = QMediaPlayer(self)
+        self.companion.setAudioOutput(self.audio)           # volume slider and mute keep working
+        self.companion.setSource(QUrl(audio_url))
+        self.player.playbackStateChanged.connect(self._sync_companion_state)
+        self.player.positionChanged.connect(self._sync_companion_pos)
+
+    def _drop_companion(self):
+        c = getattr(self, "companion", None)
+        if c is not None:
+            c.stop()
+            c.setSource(QUrl())
+            c.deleteLater()
+            self.companion = None
+
+    def _sync_companion_state(self, state):
+        from PySide6.QtMultimedia import QMediaPlayer
+        c = getattr(self, "companion", None)
+        if c is None:
+            return
+        if state == QMediaPlayer.PlayingState:
+            c.setPosition(self.player.position())
+            c.play()
+        elif state == QMediaPlayer.PausedState:
+            c.pause()
+        else:
+            c.stop()
+
+    def _sync_companion_pos(self, ms):
+        c = getattr(self, "companion", None)
+        if c is not None and abs(c.position() - ms) > 350:     # seeked, or drifted
+            c.setPosition(ms)
 
     # ---- previous / next file in the same folder
     def _siblings(self):
@@ -1908,6 +1948,7 @@ class FloatWindow(QWidget):
         m.exec(at)
 
     def closeEvent(self, e):
+        self._drop_companion()
         if self.player:
             self.player.stop()
             self.player.setSource(QUrl())
