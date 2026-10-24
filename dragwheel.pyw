@@ -20,10 +20,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from PySide6.QtCore import (QEasingCurve, QObject, QPointF, QPropertyAnimation, QRectF, QRunnable,
+from PySide6.QtCore import (QEasingCurve, QObject, QPointF, QPropertyAnimation, QRectF, QRunnable, QSizeF, QVariantAnimation,
                             QSettings, QSize, Qt, QThreadPool, QTimer, QUrl, Signal, QMimeData, QPoint)
 from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QDesktopServices, QDrag, QFont, QFontMetrics,
-                           QGuiApplication, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient)
+                           QGuiApplication, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+                           QPolygonF, QRadialGradient)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QTabWidget,
                                QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
@@ -38,7 +39,7 @@ from i18n import tr
 
 APP = "DragWheel"
 DONATE_URL = "https://buymeacoffee.com/ilukezippo"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 ACCENT = QColor("#ff8a00")
 ACCENT_2 = QColor("#ffb347")
@@ -866,13 +867,22 @@ class ToastManager(QObject):
 
 
 # ============================================================================
-# Float window — pinned, always on top. Drag it anywhere; drag the grip to drop the file elsewhere.
+# Float window — pinned, always on top, like a mini player.
+# The picture fills the card; the close button, name, grip (and video controls) fade in only while
+# the cursor is over it. Drag to move, drag an edge or corner to resize, drag the grip to drop the
+# file into another app. Videos and audio play in place; other files show their icon, click to open.
 # ============================================================================
+def _fmt_time(ms):
+    s = max(0, int(ms // 1000))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
 class FloatWindow(QWidget):
     closed = Signal()
-    PAD = 12
-    BAR = 34          # bottom bar with name + drag-out grip
+    RADIUS = 14
+    EDGE = 7              # resize border
     CLOSE_R = 11
+    MIN_W = 160
 
     def __init__(self, path):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -880,91 +890,346 @@ class FloatWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setMouseTracking(True)
-        self.src = None
-        try:
-            if engine.EXT_CATEGORY.get(engine.ext_of(path)) == "image":
+        self.setFocusPolicy(Qt.StrongFocus)
+        cat = engine.EXT_CATEGORY.get(engine.ext_of(path))
+        self.kind = "other"          # image | video | audio | other
+        self.src = None              # QPixmap for images and icons
+        self.frame = None            # current video frame (QImage)
+        self.aspect = None           # width / height of the picture, kept while resizing
+        self.player = None
+        if cat == "image":
+            try:
                 img = engine.open_image(path)
-                img.thumbnail((1200, 1200))
+                img.thumbnail((1600, 1600))
                 q = QImage(img.convert("RGBA").tobytes("raw", "RGBA"), img.width, img.height,
                            img.width * 4, QImage.Format_RGBA8888)
                 self.src = QPixmap.fromImage(q.copy())
-        except Exception:
-            self.src = None
-        self.is_icon = self.src is None
-        if self.is_icon:
+                self.kind = "image"
+                self.aspect = img.width / max(1, img.height)
+            except Exception:
+                self.src = None
+        elif cat in ("video", "audio") and self._start_player(cat):
+            self.kind = cat
+            if cat == "video":
+                self.aspect = 16 / 9
+        if self.src is None:
             from PySide6.QtCore import QFileInfo
             from PySide6.QtWidgets import QFileIconProvider
-            self.src = QFileIconProvider().icon(QFileInfo(path)).pixmap(128, 128)
-        self.side = 120 if self.is_icon else 300       # longest side of the preview, Ctrl+scroll changes it
+            self.src = QFileIconProvider().icon(QFileInfo(path)).pixmap(256, 256)
+        self._scaled = None
         self.hover = None
-        self._move_from = None
-        self._grip_press = None
-        self._relayout()
+        self.ctrl = 1.0              # opacity of the controls; fades with the cursor
+        self._fade = QVariantAnimation(self)
+        self._fade.setDuration(180)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade.valueChanged.connect(self._set_ctrl)
+        self._press = None           # (kind, global pos, local pos, geometry)
+        self._seeking = False
+        if self.kind == "image":
+            w = 300 if self.aspect >= 1 else int(300 * self.aspect)
+        elif self.kind == "video":
+            w = 420
+        else:
+            w = 200
+        self._apply_size(w, self._height_for(w))
         self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
         self.setToolTip(f"{path}\n" + tr("Drag to move · drag ⠿ to drop the file · double-click to open · scroll to resize"))
+        # show the controls briefly so people know they exist, then let them fade
+        QTimer.singleShot(1600, self._maybe_hide_controls)
 
-    # geometry
-    def _relayout(self):
-        pm = self.src.scaled(self.side, self.side, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.pix = pm
-        w = max(pm.width() + 2 * self.PAD, 200)
-        h = pm.height() + 2 * self.PAD + self.BAR
-        self.setFixedSize(w, h)
+    # ---------------------------------------------------------------- media
+    def _start_player(self, cat):
+        try:
+            from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
+        except Exception as e:                      # build without Qt Multimedia
+            winsys.log(f"float: no multimedia ({e})")
+            return False
+        self.player = QMediaPlayer(self)
+        self.audio = QAudioOutput(self)
+        self.player.setAudioOutput(self.audio)
+        if cat == "video":
+            self.sink = QVideoSink(self)
+            self.player.setVideoSink(self.sink)
+            self.sink.videoFrameChanged.connect(self._on_frame)
+            # play until the first frame arrives (silently), then pause on it
+            self._first_frame = True
+            self.audio.setMuted(True)
+        self.player.positionChanged.connect(lambda _p: self.update())
+        self.player.durationChanged.connect(lambda _d: self.update())
+        self.player.playbackStateChanged.connect(lambda _s: self.update())
+        self.player.errorOccurred.connect(self._on_media_error)
+        self.player.setSource(QUrl.fromLocalFile(self.path))
+        if cat == "video":
+            self.player.play()
+        return True
+
+    def _on_frame(self, frame):
+        img = frame.toImage()
+        if img.isNull():
+            return
+        self.frame = img
+        if getattr(self, "_first_frame", False):
+            self._first_frame = False
+            self.player.pause()
+            self.player.setPosition(0)
+            self.audio.setMuted(False)
+            a = img.width() / max(1, img.height())
+            if abs(a - (self.aspect or 0)) > 0.01:
+                self.aspect = a
+                c = self.frameGeometry().center()
+                self._apply_size(self.width(), self._height_for(self.width()))
+                self.move(c - QPoint(self.width() // 2, self.height() // 2))
+        self.update()
+
+    def _on_media_error(self, *_a):
+        winsys.log(f"float: cannot play {self.path}: {self.player.errorString()}")
+        self.player.stop()
+        self.player = None
+        self.kind = "other"
+        self.aspect = None
+        self.frame = None
+        self._apply_size(200, 200)
+
+    def _playing(self):
+        from PySide6.QtMultimedia import QMediaPlayer
+        return self.player is not None and self.player.playbackState() == QMediaPlayer.PlayingState
+
+    def _toggle_play(self):
+        if not self.player:
+            return
+        if self._playing():
+            self.player.pause()
+        else:
+            if self.player.duration() and self.player.position() >= self.player.duration() - 200:
+                self.player.setPosition(0)
+            self.player.play()
+
+    # ---------------------------------------------------------------- geometry
+    def _height_for(self, w):
+        if self.aspect:
+            return int(round(w / self.aspect))
+        return w if self.kind == "other" else 150      # audio: a short card
+
+    def _apply_size(self, w, h):
+        scr = (self.screen() or QGuiApplication.primaryScreen()).availableGeometry()
+        w = max(self.MIN_W, min(int(w), scr.width()))
+        h = max(110, min(int(h), scr.height()))
+        if self.aspect:                                   # keep the shape when a limit kicked in
+            if w / h > self.aspect + 0.01:
+                w = max(self.MIN_W, int(h * self.aspect))
+            else:
+                h = max(110, int(w / self.aspect))
+        self.resize(w, h)
+        self._scaled = None
         self.update()
 
     def _close_center(self):
-        return QPointF(self.width() - 18, 18)
+        return QPointF(self.width() - 20, 20)
+
+    def _band_h(self):
+        return 62 if self.player else 40
 
     def _grip_rect(self):
-        return QRectF(self.width() - self.PAD - 30, self.height() - self.BAR + 2, 30, self.BAR - 8)
+        return QRectF(self.width() - 42, self.height() - 36, 30, 26)
+
+    def _seek_rect(self):
+        return QRectF(14, self.height() - 52, self.width() - 28, 4)
+
+    def _mute_rect(self):
+        return QRectF(10, self.height() - 38, 28, 28)
+
+    def _play_center(self):
+        if self.kind == "audio":
+            return QPointF(self.width() / 2, (self.height() - self._band_h()) / 2 + 8)
+        return QPointF(self.width() / 2, self.height() / 2 - 8)
+
+    def _icon_rect(self):
+        side = min(self.width(), self.height() - self._band_h()) * 0.55
+        side = max(48, min(side, 256))
+        cx, cy = self.width() / 2, (self.height() - self._band_h()) / 2 + 6
+        return QRectF(cx - side / 2, cy - side / 2, side, side)
+
+    def _edges(self, pos):
+        e = self.EDGE
+        x, y, w, h = pos.x(), pos.y(), self.width(), self.height()
+        return (x < e, y < e, x > w - e, y > h - e)        # left, top, right, bottom
 
     def _hit(self, pos):
         c = self._close_center()
-        if (pos.x() - c.x()) ** 2 + (pos.y() - c.y()) ** 2 <= (self.CLOSE_R + 4) ** 2:
+        controls = self.ctrl > 0.4
+        if controls and (pos.x() - c.x()) ** 2 + (pos.y() - c.y()) ** 2 <= (self.CLOSE_R + 4) ** 2:
             return "close"
-        if self._grip_rect().contains(pos):
+        if controls and self._grip_rect().contains(pos):
             return "grip"
+        if any(self._edges(pos)):
+            return "edge"
+        if self.player and controls:
+            if self._seek_rect().adjusted(0, -8, 0, 8).contains(pos):
+                return "seek"
+            if self._mute_rect().contains(pos):
+                return "mute"
+            pc = self._play_center()
+            if (pos.x() - pc.x()) ** 2 + (pos.y() - pc.y()) ** 2 <= 30 ** 2:
+                return "play"
+        if self.kind == "other" and self._icon_rect().contains(pos):
+            return "icon"
         return "body"
 
-    # paint
+    # ---------------------------------------------------------------- fading controls
+    def _set_ctrl(self, v):
+        self.ctrl = float(v)
+        self.update()
+
+    def _fade_to(self, target):
+        if abs(self.ctrl - target) < 0.01 and self._fade.state() != QVariantAnimation.Running:
+            return
+        self._fade.stop()
+        self._fade.setStartValue(self.ctrl)
+        self._fade.setEndValue(float(target))
+        self._fade.start()
+
+    def _maybe_hide_controls(self):
+        if not self.underMouse() and self._press is None:
+            self._fade_to(0.0)
+
+    def enterEvent(self, e):
+        self._fade_to(1.0)
+
+    def leaveEvent(self, e):
+        self.hover = None
+        if self._press is None:
+            self._fade_to(0.0)
+        self.update()
+
+    # ---------------------------------------------------------------- paint
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        p.setPen(QPen(ACCENT if self.hover else C("line"), 1.2))
-        p.setBrush(C("panel"))
-        p.drawRoundedRect(r, 14, 14)
-        p.drawPixmap((self.width() - self.pix.width()) // 2, self.PAD, self.pix)
-        # name
-        p.setPen(C("text"))
-        f = QFont(i18n.ui_font(), 9)
-        p.setFont(f)
-        name_r = QRectF(self.PAD, self.height() - self.BAR, self.width() - 2 * self.PAD - 36, self.BAR - 6)
-        p.drawText(name_r, Qt.AlignVCenter | Qt.AlignLeft,
-                   QFontMetrics(f).elidedText(Path(self.path).name, Qt.ElideMiddle, int(name_r.width())))
-        # grip (drag the file out from here)
-        g = self._grip_rect()
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        clip = QPainterPath()
+        clip.addRoundedRect(r, self.RADIUS, self.RADIUS)
+        p.setClipPath(clip)
+        p.fillRect(r, QColor(0, 0, 0) if self.kind == "video" else C("panel"))
+        media = self.kind in ("image", "video")
+        if self.kind == "image":
+            if self._scaled is None or self._scaled.size() != self.size():
+                self._scaled = self.src.scaled(self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            p.drawPixmap(0, 0, self._scaled)
+        elif self.kind == "video":
+            if self.frame is not None:
+                fr = QSizeF(self.frame.size()).scaled(QSizeF(self.size()), Qt.KeepAspectRatio)
+                p.drawImage(QRectF((self.width() - fr.width()) / 2, (self.height() - fr.height()) / 2,
+                                   fr.width(), fr.height()), self.frame)
+        else:                                               # icon, centred; highlights on hover
+            ir = self._icon_rect()
+            if self.hover == "icon":
+                hl = QColor(ACCENT)
+                hl.setAlpha(46)
+                p.setPen(QPen(ACCENT, 1.5))
+                p.setBrush(hl)
+                p.drawRoundedRect(ir.adjusted(-12, -12, 12, 12), 16, 16)
+            p.drawPixmap(ir.toRect(), self.src.scaled(int(ir.width()), int(ir.height()),
+                                                       Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        # ---- overlay controls (fade with the cursor)
+        if self.ctrl > 0.01:
+            p.setOpacity(self.ctrl)
+            band = self._band_h()
+            if media:
+                g = QLinearGradient(0, self.height() - band - 30, 0, self.height())
+                g.setColorAt(0, QColor(0, 0, 0, 0))
+                g.setColorAt(1, QColor(0, 0, 0, 175))
+                p.fillRect(QRectF(0, self.height() - band - 30, self.width(), band + 30), g)
+            fg = QColor("#ffffff") if media else C("text")
+            f = QFont(i18n.ui_font(), 9)
+            p.setFont(f)
+            left = 14
+            if self.player:
+                self._paint_player(p, fg)
+                left = 44
+                t = f"{_fmt_time(self.player.position())} / {_fmt_time(self.player.duration())}"
+                p.setPen(fg)
+                tw = QFontMetrics(f).horizontalAdvance(t) + 12
+                p.drawText(QRectF(left, self.height() - 38, tw, 28), Qt.AlignVCenter | Qt.AlignLeft, t)
+                left += tw
+            name_r = QRectF(left, self.height() - 38, self._grip_rect().left() - left - 6, 28)
+            p.setPen(fg)
+            p.drawText(name_r, Qt.AlignVCenter | Qt.AlignLeft,
+                       QFontMetrics(f).elidedText(Path(self.path).name, Qt.ElideMiddle, int(max(0, name_r.width()))))
+            gr = self._grip_rect()
+            p.setPen(Qt.NoPen)
+            p.setBrush(ACCENT if self.hover == "grip" else (QColor(255, 255, 255, 46) if media else C("grip")))
+            p.drawRoundedRect(gr, 7, 7)
+            p.setBrush(ON_ACCENT if self.hover == "grip" else fg)
+            for i in range(3):
+                for j in range(2):
+                    p.drawEllipse(QPointF(gr.center().x() - 3 + j * 6, gr.center().y() - 5 + i * 5), 1.6, 1.6)
+            c = self._close_center()
+            p.setBrush(C("danger") if self.hover == "close" else QColor(20, 20, 22, 190))
+            p.setPen(QPen(QColor(255, 255, 255, 70), 1))
+            p.drawEllipse(c, self.CLOSE_R, self.CLOSE_R)
+            pen = QPen(QColor("#ffffff"), 2)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            d = 4.2
+            p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
+            p.drawLine(QPointF(c.x() + d, c.y() - d), QPointF(c.x() - d, c.y() + d))
+            p.setOpacity(1.0)
+        # border
+        p.setClipping(False)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(ACCENT if (self.hover and self.hover != "icon") else C("line"), 1.2))
+        p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
+
+    def _paint_player(self, p, fg):
+        # big play / pause in the middle
+        pc = self._play_center()
         p.setPen(Qt.NoPen)
-        p.setBrush(ACCENT if self.hover == "grip" else C("grip"))
-        p.drawRoundedRect(g, 7, 7)
-        p.setBrush(ON_ACCENT if self.hover == "grip" else C("text"))
-        for i in range(3):
-            for j in range(2):
-                p.drawEllipse(QPointF(g.center().x() - 3 + j * 6, g.center().y() - 5 + i * 5), 1.6, 1.6)
-        # close button — always visible
-        c = self._close_center()
-        p.setBrush(C("danger") if self.hover == "close" else C("close"))
-        p.setPen(QPen(QColor(255, 255, 255, 60), 1))
-        p.drawEllipse(c, self.CLOSE_R, self.CLOSE_R)
-        pen = QPen(QColor("#ffffff"), 2)
+        p.setBrush(ACCENT if self.hover == "play" else QColor(20, 20, 22, 170))
+        p.drawEllipse(pc, 26, 26)
+        p.setBrush(ON_ACCENT if self.hover == "play" else QColor("#ffffff"))
+        if self._playing():
+            p.drawRoundedRect(QRectF(pc.x() - 8, pc.y() - 10, 6, 20), 2, 2)
+            p.drawRoundedRect(QRectF(pc.x() + 2, pc.y() - 10, 6, 20), 2, 2)
+        else:
+            tri = QPolygonF([QPointF(pc.x() - 7, pc.y() - 11), QPointF(pc.x() - 7, pc.y() + 11), QPointF(pc.x() + 11, pc.y())])
+            p.drawPolygon(tri)
+        # seek bar
+        sr = self._seek_rect()
+        p.setBrush(QColor(255, 255, 255, 70) if self.kind == "video" else C("busy_track"))
+        p.drawRoundedRect(sr, 2, 2)
+        dur = self.player.duration()
+        if dur > 0:
+            frac = min(1.0, self.player.position() / dur)
+            p.setBrush(ACCENT)
+            p.drawRoundedRect(QRectF(sr.left(), sr.top(), sr.width() * frac, sr.height()), 2, 2)
+            p.drawEllipse(QPointF(sr.left() + sr.width() * frac, sr.center().y()), 6 if self.hover == "seek" else 4.5,
+                          6 if self.hover == "seek" else 4.5)
+        # speaker (click to mute)
+        mr = self._mute_rect()
+        cx, cy = mr.center().x(), mr.center().y()
+        p.setBrush(ACCENT if self.hover == "mute" else fg)
+        p.drawPolygon(QPolygonF([QPointF(cx - 8, cy - 3), QPointF(cx - 4, cy - 3), QPointF(cx + 1, cy - 8),
+                                 QPointF(cx + 1, cy + 8), QPointF(cx - 4, cy + 3), QPointF(cx - 8, cy + 3)]))
+        pen = QPen(ACCENT if self.hover == "mute" else fg, 1.6)
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
-        d = 4.2
-        p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
-        p.drawLine(QPointF(c.x() + d, c.y() - d), QPointF(c.x() - d, c.y() + d))
+        p.setBrush(Qt.NoBrush)
+        if self.audio.isMuted():
+            p.drawLine(QPointF(cx + 4, cy - 4), QPointF(cx + 10, cy + 4))
+            p.drawLine(QPointF(cx + 10, cy - 4), QPointF(cx + 4, cy + 4))
+        else:
+            p.drawArc(QRectF(cx - 3, cy - 6, 10, 12), -50 * 16, 100 * 16)
+            p.drawArc(QRectF(cx - 3, cy - 10, 16, 20), -50 * 16, 100 * 16)
+        p.setPen(Qt.NoPen)
 
-    # mouse
+    # ---------------------------------------------------------------- mouse
+    def _seek_to(self, x):
+        sr = self._seek_rect()
+        if self.player and self.player.duration() > 0:
+            frac = min(1.0, max(0.0, (x - sr.left()) / max(1.0, sr.width())))
+            self.player.setPosition(int(self.player.duration() * frac))
+
     def mousePressEvent(self, e):
         if e.button() == Qt.RightButton:
             self._menu(e.globalPosition().toPoint())
@@ -972,58 +1237,115 @@ class FloatWindow(QWidget):
         if e.button() != Qt.LeftButton:
             return
         hit = self._hit(e.position())
+        gp = e.globalPosition().toPoint()
         if hit == "close":
             self.close()
-        elif hit == "grip":
-            self._grip_press = e.position()
+            return
+        if hit == "mute":
+            self.audio.setMuted(not self.audio.isMuted())
+            self.update()
+            return
+        if hit == "seek":
+            self._seeking = True
+            self._seek_to(e.position().x())
+        if hit == "edge":
+            self._press = ("edge", gp, e.position(), self.geometry(), self._edges(e.position()))
         else:
-            self._move_from = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._press = (hit, gp, e.position(), self.geometry(), None)
 
     def mouseMoveEvent(self, e):
-        if self._move_from is not None:
-            self.move(e.globalPosition().toPoint() - self._move_from)
+        pos = e.position()
+        if self._press is not None:
+            kind, gp0, lp0, geo0, edges = self._press
+            gp = e.globalPosition().toPoint()
+            moved = (gp - gp0).manhattanLength()
+            if self._seeking:
+                self._seek_to(pos.x())
+            elif kind == "grip":
+                if moved > 6:
+                    self._press = None
+                    self._drag_out()
+            elif kind == "edge":
+                self._resize_drag(gp - gp0, geo0, edges)
+            elif moved > 3 or kind == "moving":
+                if kind != "moving":
+                    self._press = ("moving", gp0, lp0, geo0, None)
+                self.move(geo0.topLeft() + (gp - gp0))
             return
-        if self._grip_press is not None:
-            if (e.position() - self._grip_press).manhattanLength() > 6:
-                self._grip_press = None
-                self._drag_out()
-            return
-        h = self._hit(e.position())
+        h = self._hit(pos)
         if h != self.hover:
             self.hover = h
-            self.setCursor({"close": Qt.PointingHandCursor, "grip": Qt.OpenHandCursor}.get(h, Qt.SizeAllCursor))
+            if h == "edge":
+                l, t, r, b = self._edges(pos)
+                cur = (Qt.SizeFDiagCursor if (l and t) or (r and b) else Qt.SizeBDiagCursor if (r and t) or (l and b)
+                       else Qt.SizeHorCursor if (l or r) else Qt.SizeVerCursor)
+            else:
+                cur = {"close": Qt.PointingHandCursor, "grip": Qt.OpenHandCursor, "icon": Qt.PointingHandCursor,
+                       "play": Qt.PointingHandCursor, "seek": Qt.PointingHandCursor, "mute": Qt.PointingHandCursor
+                       }.get(h, Qt.SizeAllCursor)
+            self.setCursor(cur)
             self.update()
 
-    def mouseReleaseEvent(self, e):
-        self._move_from = None
-        self._grip_press = None
+    def _resize_drag(self, delta, geo0, edges):
+        l, t, r, b = edges
+        x, y, w, h = geo0.x(), geo0.y(), geo0.width(), geo0.height()
+        dw = (delta.x() if r else -delta.x() if l else 0)
+        dh = (delta.y() if b else -delta.y() if t else 0)
+        nw, nh = w + dw, h + dh
+        if self.aspect:                       # keep the picture's shape: follow the larger change
+            if (l or r) and (not (t or b) or abs(dw) >= abs(dh) * self.aspect):
+                nh = nw / self.aspect
+            else:
+                nw = nh * self.aspect
+        self._apply_size(nw, nh)
+        nw, nh = self.width(), self.height()
+        nx = x + (w - nw) if l else x
+        ny = y + (h - nh) if t else y
+        if self.aspect and (t or b) and not (l or r):          # grow sideways around the centre
+            nx = x + (w - nw) // 2
+        if self.aspect and (l or r) and not (t or b):
+            ny = y + (h - nh) // 2
+        self.move(int(nx), int(ny))
 
-    def leaveEvent(self, e):
-        self.hover = None
-        self.update()
+    def mouseReleaseEvent(self, e):
+        press, self._press = self._press, None
+        was_seeking, self._seeking = self._seeking, False
+        if press is None or was_seeking or e.button() != Qt.LeftButton:
+            return
+        kind = press[0]
+        if kind == "icon":
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.path))
+        elif kind == "play" or (kind == "body" and self.kind == "video"):
+            self._toggle_play()
+        if not self.underMouse():
+            self._fade_to(0.0)
 
     def mouseDoubleClickEvent(self, e):
-        if self._hit(e.position()) == "body":
+        if self._hit(e.position()) == "body" and self.kind == "image":
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.path))
 
     def wheelEvent(self, e):
-        if True:   # scroll wheel resizes the float
-            step = 30 if e.angleDelta().y() > 0 else -30
-            center = self.frameGeometry().center()
-            self.side = max(80, min(900, self.side + step))
-            self._relayout()
-            self.move(center - QPoint(self.width() // 2, self.height() // 2))
+        step = 1.1 if e.angleDelta().y() > 0 else 1 / 1.1
+        center = self.frameGeometry().center()
+        self._apply_size(self.width() * step, (self._height_for(self.width() * step) if self.aspect
+                                                else self.height() * step))
+        self.move(center - QPoint(self.width() // 2, self.height() // 2))
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
             self.close()
+        elif e.key() == Qt.Key_Space and self.player:
+            self._toggle_play()
+        elif e.key() in (Qt.Key_Left, Qt.Key_Right) and self.player:
+            self.player.setPosition(max(0, self.player.position() + (5000 if e.key() == Qt.Key_Right else -5000)))
 
     def _drag_out(self):
         md = QMimeData()
         md.setUrls([QUrl.fromLocalFile(self.path)])
         drag = QDrag(self)
         drag.setMimeData(md)
-        drag.setPixmap(self.pix.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        thumb = QPixmap.fromImage(self.frame) if (self.kind == "video" and self.frame is not None) else self.src
+        drag.setPixmap(thumb.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         drag.exec(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction, Qt.CopyAction)
 
     def _menu(self, at):
@@ -1036,6 +1358,9 @@ class FloatWindow(QWidget):
         m.exec(at)
 
     def closeEvent(self, e):
+        if self.player:
+            self.player.stop()
+            self.player.setSource(QUrl())
         self.closed.emit()
         super().closeEvent(e)
 

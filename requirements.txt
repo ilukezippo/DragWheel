@@ -1,4 +1,5 @@
 PySide6-Essentials==6.9.3
+PySide6-Addons==6.9.3
 Pillow>=10.0
 pillow-heif>=0.16
 PyMuPDF==1.28.2
