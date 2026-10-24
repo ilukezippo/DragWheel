@@ -225,6 +225,27 @@ class UpdateDownload(QRunnable):
             self.sig.downloaded.emit(None, str(e))
 
 
+class ModelDownload(QRunnable):
+    """Downloads an AI model once into %LOCALAPPDATA%\\DragWheel\\models (checksum-verified)."""
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+        self.stop = False
+        self.sig = UpdateSignals()
+
+    def run(self):
+        m = engine.MODELS[self.name]
+        try:
+            path = updater.download(m["url"], m["file"], progress=lambda d, t: self.sig.progress.emit(d, t),
+                                    should_stop=lambda: self.stop, size=m["size"], sha256=m["sha256"],
+                                    folder=engine.models_dir())
+            self.sig.downloaded.emit(path, None)
+        except InterruptedError:
+            self.sig.downloaded.emit(None, CANCELLED)
+        except Exception as e:
+            self.sig.downloaded.emit(None, str(e))
+
+
 # ============================================================================
 # The wheel
 # ============================================================================
@@ -258,9 +279,9 @@ class Wheel(QWidget):
     # ------------------------------------------------------------- geometry
     def _rings(self):
         """Always one ring. With many slices the ring grows (up to R_OUT) so each label keeps
-        roughly 56 px of arc; past that the labels shrink to fit."""
+        roughly 74 px of arc; past that the labels shrink to fit."""
         n = len(self.ops)
-        mid = max(self.R_MID + 14, 2 * (56 * n / (2 * math.pi)) - self.R_IN)
+        mid = max(self.R_MID + 14, 2 * (74 * n / (2 * math.pi)) - self.R_IN)
         return [(self.R_IN, min(self.R_OUT, int(mid)), self.ops)]
 
     def _outer(self):
@@ -538,7 +559,7 @@ class Wheel(QWidget):
                 p.drawPath(path)
                 # label
                 rad = math.radians(a_mid)
-                rm = (r0 + r1) / 2
+                rm = r0 + (r1 - r0) * (0.6 if n > 10 else 0.5)   # wider part of the slice when crowded
                 pt = QPointF(c.x() + rm * math.sin(rad), c.y() - rm * math.cos(rad))
                 self._label(p, pt, op, hovered, (r1 - r0), step * math.pi / 180 * rm)
             offset += n
@@ -1717,6 +1738,13 @@ def ask_params(op, paths) -> dict | None:
     form = QFormLayout()
     edits = {}
     for name, default in op.ask:
+        if isinstance(default, (list, tuple)):          # a fixed set of choices
+            cb = QComboBox()
+            for opt in default:
+                cb.addItem(tr(opt), opt)
+            form.addRow(tr(name), cb)
+            edits[name] = cb
+            continue
         ed = QLineEdit(default)
         if name == "Password":
             ed.setEchoMode(QLineEdit.Password)
@@ -1738,7 +1766,7 @@ def ask_params(op, paths) -> dict | None:
     dlg.activateWindow()
     if dlg.exec() != QDialog.Accepted:
         return None
-    return {k: e.text() for k, e in edits.items()}
+    return {k: (e.currentData() if isinstance(e, QComboBox) else e.text()) for k, e in edits.items()}
 
 
 def message(title, html):
@@ -2212,6 +2240,7 @@ class DragWheelApp(QObject):
         self.tray.setToolTip(tr("{app} — drag a file, tap {key}", app=APP, key=tr(mode_keys()["convert"])))
         menu = QMenu()
         self._first_action = menu.addAction(tr("Convert files…"), self.pick_files)
+        menu.addAction(tr("Save image from clipboard"), self.save_clipboard_image)
         menu.addSeparator()
         menu.addAction(tr("How it works"), self.show_help)
         menu.addAction(tr("Settings…"), self.show_settings)
@@ -2396,6 +2425,9 @@ class DragWheelApp(QObject):
             params = ask_params(op, paths)
             if params is None:
                 return
+        if op.model and not engine.model_ready(op.model):
+            self._get_model(op, paths, params)
+            return
         if op.group == "action":
             try:
                 op.fn(paths, params)
@@ -2403,6 +2435,71 @@ class DragWheelApp(QObject):
                 self.toast.show_msg(tr("Couldn't do that"), str(e), "err", 6000)
             return
         self._start(op, paths, params)
+
+    def _get_model(self, op, paths, params):
+        """Ask once, then download the AI model `op` needs and run the op when it's ready."""
+        m = engine.MODELS[op.model]
+        box = QMessageBox()
+        box.setWindowTitle(APP)
+        box.setWindowIcon(app_icon())
+        box.setStyleSheet(i18n.css(DIALOG_CSS))
+        box.setIconPixmap(app_icon().pixmap(48, 48))
+        box.setText(tr("{what} needs a one-time download of its AI model ({mb} MB). It is saved on this PC, "
+                       "and everything runs offline after that.", what=tr(op.label), mb=m["size"] // 1048576))
+        ok = box.addButton(tr("Download"), QMessageBox.AcceptRole)
+        box.addButton(tr("Cancel"), QMessageBox.RejectRole)
+        box.setDefaultButton(ok)
+        box.exec()
+        if box.clickedButton() is not ok:
+            return
+        job = ModelDownload(op.model)
+        job.setAutoDelete(False)
+        self._update_jobs.add(job)
+
+        def cancel():
+            job.stop = True
+        job.card = self.toast.show_busy(tr("Downloading AI model…"), tr(op.label), cancel)
+
+        def progress(done, total, card=job.card):
+            if total and card in self.toast.cards:
+                card.body.setText(f"{tr(op.label)} — {done * 100 // total}%  ({done / 1048576:.0f} / {total / 1048576:.0f} MB)")
+
+        def finished(path, err, job=job):
+            self._update_jobs.discard(job)
+            if job.card in self.toast.cards:
+                job.card.close_card()
+            if err == CANCELLED:
+                return
+            if err:
+                self.toast.show_msg(tr("Couldn't download the AI model"), err, "err", 8000)
+                return
+            winsys.log(f"model {op.model} ready: {path}")
+            self._start(op, paths, params)
+        job.sig.progress.connect(progress, Qt.QueuedConnection)
+        job.sig.downloaded.connect(finished, Qt.QueuedConnection)
+        self.pool.start(job)
+
+    def save_clipboard_image(self):
+        """Tray: save an image from the clipboard as a PNG (Pictures\\DragWheel) and open the wheel on it.
+        Files copied in Explorer open the wheel directly."""
+        import datetime
+        cb = QGuiApplication.clipboard()
+        md = cb.mimeData()
+        files = [u.toLocalFile() for u in (md.urls() if md and md.hasUrls() else []) if u.isLocalFile()]
+        if files:
+            self.open_paths(files)
+            return
+        img = cb.image()
+        if img.isNull():
+            self.toast.show_msg(tr("No image on the clipboard"), tr("Copy a picture or take a screenshot first."), "info", 4000)
+            return
+        folder = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Pictures" / APP
+        folder.mkdir(parents=True, exist_ok=True)
+        path = engine.unique_path(folder / f"Clipboard {datetime.datetime.now():%Y-%m-%d %H-%M-%S}.png")
+        if not img.save(str(path), "PNG"):
+            self.toast.show_msg(tr("Couldn't do that"), str(path), "err", 6000)
+            return
+        self.open_paths([str(path)])
 
     def _start(self, op, paths, params):
         name = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
@@ -2432,7 +2529,13 @@ class DragWheelApp(QObject):
         if err == CANCELLED:
             target.show_msg(tr("Cancelled"), tr("Nothing was saved."), "info", 3000)
         elif err:
-            target.show_msg(tr("{what} failed", what=tr(op.label).rstrip("…")), err, "err", 8000)
+            target.show_msg(tr("{what} failed", what=tr(op.label).rstrip("…")), tr(err), "err", 8000)
+        elif op.id == "ocr" and outs:
+            try:
+                QGuiApplication.clipboard().setText(Path(outs[0]).read_text(encoding="utf-8").strip())
+                target.show_result(tr("Copied to clipboard"), outs)
+            except Exception as e:
+                target.show_msg(tr("Couldn't do that"), str(e), "err", 6000)
         else:
             target.show_result(tr("Done") if op.group == "tool" else tr("Converted to {fmt}", fmt=tr(op.label)), outs)
 

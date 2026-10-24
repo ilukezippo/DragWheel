@@ -581,6 +581,351 @@ def image_compress(src, p):
     return save_image(img, out_for(src, "jpg", "compressed"), "jpg", quality=72, progressive=True)
 
 
+# ----------------------------------------------------------------------------
+# Image extras (1.2): resize presets, upscale, sharpen, watermark, stitch, GIF,
+# remove background (AI), blur faces, copy text (OCR)
+# ----------------------------------------------------------------------------
+def _asset(*parts) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base.joinpath("assets", *parts)
+
+
+RESIZE_PRESETS = ["50%", "25%", "1920 px (1080p)", "3840 px (4K)", "1080 × 1080", "1080 × 1350",
+                  "< 1 MB", "< 500 KB"]
+
+
+def _same_fmt(src):
+    e = ext_of(src)
+    fmt = "jpg" if e == "jpeg" else "tiff" if e == "tif" else "heic" if e == "heif" else e
+    return "png" if fmt not in SAVE_KW or fmt in ("pdf", "ico", "icns") else fmt
+
+
+def _center_crop(img, ratio):
+    w, h = img.size
+    if w / h > ratio:
+        nw = int(h * ratio)
+        return img.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
+    nh = int(w / ratio)
+    return img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
+
+
+def _under_size(img, src, limit):
+    """Smallest change that gets the file under `limit` bytes: lower quality first, then smaller size."""
+    Image, _ = _pil()
+    alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+    fmt = "webp" if alpha else "jpg"
+    work = img.convert("RGBA") if alpha else _flatten(img)
+    for _ in range(12):
+        for q in (90, 82, 74, 66, 58, 50, 42):
+            check_cancel()
+            buf = io.BytesIO()
+            if fmt == "jpg":
+                work.save(buf, format="JPEG", quality=q, optimize=True, progressive=True)
+            else:
+                work.save(buf, format="WEBP", quality=q, method=4)
+            if buf.tell() <= limit:
+                out = out_for(src, fmt, "resized")
+                out.write_bytes(buf.getvalue())
+                return out
+        work = work.resize((max(1, int(work.width * 0.8)), max(1, int(work.height * 0.8))), Image.LANCZOS)
+    raise ConversionError("Couldn't make the file small enough")
+
+
+def image_resize_preset(src, p):
+    Image, _ = _pil()
+    img = open_image(src)
+    choice = p.get("Output size", "50%")
+    if choice.startswith("<"):
+        kb = 1024 if "MB" in choice else 500
+        return _under_size(img, src, kb * 1024)
+    if choice.endswith("%"):
+        f = float(choice.rstrip("%")) / 100
+        img = img.resize((max(1, round(img.width * f)), max(1, round(img.height * f))), Image.LANCZOS)
+    elif "×" in choice:
+        w, h = (int(x) for x in choice.replace(" ", "").split("×"))
+        img = _center_crop(img, w / h).resize((w, h), Image.LANCZOS)
+    else:                                                    # "1920 px": longest side, never enlarged
+        side = int(choice.split()[0])
+        if max(img.size) > side:
+            img.thumbnail((side, side), Image.LANCZOS)
+    fmt = _same_fmt(src)
+    return save_image(img, out_for(src, fmt, "resized"), fmt)
+
+
+def image_upscale(src, p):
+    from PIL import ImageFilter
+    Image, _ = _pil()
+    img = open_image(src)
+    if img.mode not in ("RGB", "RGBA", "L", "LA"):
+        img = img.convert("RGBA")
+    if img.width * img.height > 40_000_000:
+        raise ConversionError("This image is already very large")
+    img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=60, threshold=2))
+    fmt = _same_fmt(src)
+    return save_image(img, out_for(src, fmt, "2x"), fmt)
+
+
+def image_sharpen(src, p):
+    from PIL import ImageFilter
+    img = open_image(src)
+    if img.mode not in ("RGB", "RGBA", "L", "LA"):
+        img = img.convert("RGBA")
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=120, threshold=3))
+    fmt = _same_fmt(src)
+    return save_image(img, out_for(src, fmt, "sharpened"), fmt)
+
+
+def _font(size):
+    from PIL import ImageFont
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    for name in ("segoeuib.ttf", "segoeui.ttf", "arialbd.ttf", "arial.ttf", "DejaVuSans-Bold.ttf"):
+        for folder in (Path(windir) / "Fonts", Path("/usr/share/fonts/truetype/dejavu")):
+            f = folder / name
+            if f.exists():
+                return ImageFont.truetype(str(f), size)
+    return ImageFont.load_default()
+
+
+WATERMARK_POSITIONS = ["Bottom right", "Bottom left", "Center", "Tiled"]
+
+
+def image_watermark(src, p):
+    from PIL import ImageDraw
+    Image, _ = _pil()
+    text = (p.get("Text") or "").strip()
+    if not text:
+        raise ConversionError("Type the watermark text")
+    pos = p.get("Position", "Bottom right")
+    img = open_image(src).convert("RGBA")
+    W, H = img.size
+    size = max(12, int(min(W, H) * (0.05 if pos != "Tiled" else 0.045)))
+    font = _font(size)
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    l, t, r, b = d.textbbox((0, 0), text, font=font)
+    tw, th = r - l, b - t
+    if pos == "Tiled":
+        tile = Image.new("RGBA", (tw + size * 3, th + size * 3), (0, 0, 0, 0))
+        ImageDraw.Draw(tile).text((size, size), text, font=font, fill=(255, 255, 255, 95),
+                                  stroke_width=max(1, size // 18), stroke_fill=(0, 0, 0, 50))
+        tile = tile.rotate(30, expand=True)
+        for y in range(-tile.height // 2, H, tile.height):
+            for x in range(-tile.width // 2, W, tile.width):
+                layer.paste(tile, (x, y), tile)
+    else:
+        m = int(min(W, H) * 0.03)
+        if pos == "Center":
+            xy = ((W - tw) // 2 - l, (H - th) // 2 - t)
+        elif pos == "Bottom left":
+            xy = (m - l, H - th - m - t)
+        else:
+            xy = (W - tw - m - l, H - th - m - t)
+        d.text(xy, text, font=font, fill=(255, 255, 255, 170), stroke_width=max(1, size // 16), stroke_fill=(0, 0, 0, 110))
+    img.alpha_composite(layer)
+    fmt = _same_fmt(src)
+    return save_image(img, out_for(src, fmt, "watermarked"), fmt)
+
+
+def images_stitch(direction):
+    def f(paths, p):
+        Image, _ = _pil()
+        imgs = [open_image(x).convert("RGBA") for x in paths]
+        if direction == "h":
+            h = min(i.height for i in imgs)
+            imgs = [i.resize((max(1, round(i.width * h / i.height)), h), Image.LANCZOS) for i in imgs]
+            canvas = Image.new("RGBA", (sum(i.width for i in imgs), h), (0, 0, 0, 0))
+            x = 0
+            for i in imgs:
+                canvas.paste(i, (x, 0)); x += i.width
+        else:
+            w = min(i.width for i in imgs)
+            imgs = [i.resize((w, max(1, round(i.height * w / i.width))), Image.LANCZOS) for i in imgs]
+            canvas = Image.new("RGBA", (w, sum(i.height for i in imgs)), (0, 0, 0, 0))
+            y = 0
+            for i in imgs:
+                canvas.paste(i, (0, y)); y += i.height
+        alpha = any(i.getextrema()[3][0] < 255 for i in imgs)
+        fmt = "png" if alpha else "jpg"
+        return save_image(canvas, out_for(paths[0], fmt, "stitched"), fmt)
+    return f
+
+
+def images_to_gif(paths, p):
+    Image, _ = _pil()
+    try:
+        secs = float(str(p.get("Seconds per image", "0.5")).replace(",", "."))
+    except ValueError:
+        raise ConversionError("Seconds per image must be a number")
+    secs = min(30.0, max(0.02, secs))
+    first = open_image(paths[0])
+    box = first.size
+    if max(box) > 1200:
+        f = 1200 / max(box)
+        box = (round(box[0] * f), round(box[1] * f))
+    frames = []
+    for x in paths:
+        check_cancel()
+        im = _flatten(open_image(x))
+        im.thumbnail(box, Image.LANCZOS)
+        frame = Image.new("RGB", box, (255, 255, 255))
+        frame.paste(im, ((box[0] - im.width) // 2, (box[1] - im.height) // 2))
+        frames.append(frame)
+    out = out_for(paths[0], "gif", "animated")
+    frames[0].save(str(out), save_all=True, append_images=frames[1:], duration=int(secs * 1000), loop=0, optimize=True)
+    return out
+
+
+# ---- AI models (downloaded once, then offline)
+MODELS = {
+    "isnet": {"file": "isnet-general-use.onnx", "size": 178648008,
+              "sha256": "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a",
+              "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx"},
+}
+
+
+def models_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".local" / "share")
+    d = Path(base) / "DragWheel" / "models"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def model_path(name) -> Path:
+    return models_dir() / MODELS[name]["file"]
+
+
+def model_ready(name) -> bool:
+    f = model_path(name)
+    return f.is_file() and f.stat().st_size == MODELS[name]["size"]
+
+
+_SESSIONS = {}
+
+
+def _onnx(name):
+    if name not in _SESSIONS:
+        if not model_ready(name):
+            raise ConversionError("The AI model isn't downloaded yet")
+        import onnxruntime as ort
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        _SESSIONS[name] = ort.InferenceSession(str(model_path(name)), opts, providers=["CPUExecutionProvider"])
+    return _SESSIONS[name]
+
+
+def image_remove_bg(src, p):
+    import numpy as np
+    Image, _ = _pil()
+    img = open_image(src)
+    rgb = _flatten(img)
+    sess = _onnx("isnet")
+    check_cancel()
+    x = np.asarray(rgb.resize((1024, 1024), Image.LANCZOS), dtype=np.float32)
+    x = x / max(float(x.max()), 1e-6) - 0.5
+    x = x.transpose(2, 0, 1)[None]
+    pred = sess.run(None, {sess.get_inputs()[0].name: x})[0][0, 0]
+    lo, hi = float(pred.min()), float(pred.max())
+    pred = (pred - lo) / max(hi - lo, 1e-6)
+    mask = Image.fromarray((pred * 255).astype("uint8")).resize(rgb.size, Image.LANCZOS)
+    out_img = img.convert("RGBA")
+    if img.mode in ("RGBA", "LA"):                      # keep existing transparency too
+        from PIL import ImageChops
+        mask = ImageChops.multiply(mask, out_img.split()[-1])
+    out_img.putalpha(mask)
+    bbox = mask.point(lambda v: 255 if v > 8 else 0).getbbox()
+    if not bbox:
+        raise ConversionError("No subject found in this image")
+    return save_image(out_img, out_for(src, "png", "no background"), "png")
+
+
+def image_blur_faces(src, p):
+    import cv2
+    import numpy as np
+    from PIL import ImageDraw, ImageFilter
+    Image, _ = _pil()
+    img = open_image(src)
+    rgb = _flatten(img)
+    scale = min(1.0, 1600 / max(rgb.size))
+    small = rgb.resize((max(1, int(rgb.width * scale)), max(1, int(rgb.height * scale))), Image.LANCZOS) if scale < 1 else rgb
+    bgr = cv2.cvtColor(np.asarray(small), cv2.COLOR_RGB2BGR)
+    det = cv2.FaceDetectorYN.create(str(_asset("models", "face_detection_yunet_2023mar.onnx")), "",
+                                    (bgr.shape[1], bgr.shape[0]), 0.6, 0.3, 5000)
+    _, faces = det.detect(bgr)
+    if faces is None or len(faces) == 0:
+        raise ConversionError("No faces found in this image")
+    out = img.convert("RGBA") if img.mode in ("RGBA", "LA") else rgb.copy()
+    for f in faces:
+        x, y, w, h = (float(v) / scale for v in f[:4])
+        pad = 0.18
+        box = (int(max(0, x - w * pad)), int(max(0, y - h * pad)),
+               int(min(out.width, x + w * (1 + pad))), int(min(out.height, y + h * (1 + pad))))
+        region = out.crop(box)
+        radius = max(6, int(max(region.size) / 6))
+        blurred = region.filter(ImageFilter.GaussianBlur(radius))
+        mask = Image.new("L", region.size, 0)
+        ImageDraw.Draw(mask).ellipse([0, 0, region.width - 1, region.height - 1], fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(max(2, radius // 3)))
+        out.paste(blurred, box[:2], mask)
+    fmt = _same_fmt(src)
+    return save_image(out, out_for(src, fmt, "blurred"), fmt)
+
+
+OCR_PS = r"""
+param([string]$Path)
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime]
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Path)) ([Windows.Storage.StorageFile])
+$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$dec = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bmp = Await ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$best = ''; $bestScore = -1
+foreach ($lang in [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages) {
+    $eng = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang)
+    if ($eng -eq $null) { continue }
+    $res = Await ($eng.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult])
+    $txt = ($res.Lines | ForEach-Object { $_.Text }) -join "`n"
+    $score = ([regex]::Matches($txt, '\p{L}{2,}')).Count
+    if ($score -gt $bestScore) { $best = $txt; $bestScore = $score }
+}
+Write-Output $best
+"""
+
+
+def image_ocr(src, p):
+    """Copy text (OCR) with the text recognizer built into Windows 10/11, for every language installed."""
+    import tempfile
+    if not IS_WIN:
+        raise ConversionError("Copying text from images needs Windows 10 or 11")
+    Image, _ = _pil()
+    img = _flatten(open_image(src))
+    if max(img.size) > 9000:
+        img.thumbnail((9000, 9000), Image.LANCZOS)
+    tmp = Path(temp_dir())
+    png = tmp / "ocr.png"
+    img.save(str(png), format="PNG")
+    script = tmp / "ocr.ps1"
+    script.write_text(OCR_PS, encoding="utf-8-sig")
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                        "-File", str(script), "-Path", str(png)],
+                       capture_output=True, timeout=120, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    text = r.stdout.decode("utf-8", "replace").strip()
+    if r.returncode != 0 and not text:
+        raise ConversionError("Windows text recognition isn't available on this PC")
+    if not text:
+        raise ConversionError("No text found in this image")
+    out = out_for(src, "txt", "text")
+    out.write_text(text + "\n", encoding="utf-8")
+    return out
+
+
 def images_to_pdf(paths, p):
     imgs = [_flatten(open_image(x)) for x in paths]
     out = out_for(paths[0], "pdf", "combined" if len(paths) > 1 else "")
@@ -1506,6 +1851,7 @@ class Op:
     multi: bool = False              # fn receives the whole list of paths
     hint: str = ""
     ui: str = ""                     # "crop" -> the app opens the crop & resize editor first
+    model: str = ""                  # AI model the op needs (downloaded once, with consent)
 
 
 IMAGE_OUT = ["png", "jpg", "webp", "heic", "avif", "tiff", "bmp", "gif", "ico", "tga", "jp2", "icns", "pdf"]
@@ -1612,6 +1958,14 @@ def conversions(paths: list[str]) -> list[Op]:
 TRIM = [("Start", "0:00"), ("End", "0:30")]
 
 
+def _user_name() -> str:
+    try:
+        import getpass
+        return getpass.getuser()
+    except Exception:
+        return ""
+
+
 def tools(paths: list[str]) -> list[Op]:
     cat = category_of(paths)
     n = len(paths)
@@ -1625,9 +1979,19 @@ def tools(paths: list[str]) -> list[Op]:
             T("flip", "Flip", image_tool("flipped", lambda i, p: i.transpose(0))),
             T("gray", "Grayscale", image_tool("gray", lambda i, p: i.convert("LA") if i.mode in ("RGBA", "LA") else i.convert("L"))),
             T("strip", "Strip metadata", image_tool("clean", _strip)),
+            T("resize", "Resize…", image_resize_preset, ask=[("Output size", RESIZE_PRESETS)]),
+            T("removebg", "Remove background", image_remove_bg, model="isnet"),
+            T("ocr", "Copy text", image_ocr),
+            T("upscale", "Upscale 2×", image_upscale),
+            T("sharpen", "Sharpen", image_sharpen),
+            T("watermark", "Watermark…", image_watermark, ask=[("Text", "© " + _user_name()), ("Position", WATERMARK_POSITIONS)]),
+            T("blurfaces", "Blur faces", image_blur_faces),
         ]
         if n > 1:
             ops.append(T("combine_pdf", "Combine PDF", images_to_pdf, multi=True))
+            ops.append(T("stitch_h", "Stitch side by side", images_stitch("h"), multi=True))
+            ops.append(T("stitch_v", "Stitch top to bottom", images_stitch("v"), multi=True))
+            ops.append(T("gif", "Make GIF…", images_to_gif, multi=True, ask=[("Seconds per image", "0.5")]))
     elif cat == "video":
         ops += [
             T("compress", "Compress", video_compress),

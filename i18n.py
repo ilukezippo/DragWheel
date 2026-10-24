@@ -701,3 +701,9 @@ _F12 = {
 for _code, (_a, _b, _c, _d) in _F12.items():
     T[_code].update({"Audio track": _a, "Off": _b, "Track {n}": _c,
                      "Play videos and music as soon as they open in Float": _d})
+
+from locales import images12 as _im12  # noqa: E402
+
+for _code, _vals in _im12.T.items():
+    assert len(_vals) == len(_im12.KEYS), _code
+    T[_code].update(dict(zip(_im12.KEYS, _vals)))

@@ -80,9 +80,9 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
-def cached_installer(name: str, size: int = 0, sha256: str = "") -> Path | None:
+def cached_installer(name: str, size: int = 0, sha256: str = "", folder: Path | None = None) -> Path | None:
     """An installer downloaded earlier (e.g. setup was cancelled) that is complete and unchanged."""
-    target = UPDATE_DIR / name
+    target = (folder or UPDATE_DIR) / name
     try:
         if not target.is_file() or (size and target.stat().st_size != size):
             return None
@@ -105,7 +105,7 @@ def cleanup(current_version: str):
 
 
 def download(url: str, name: str, progress=None, should_stop=lambda: False, parts: int = 8,
-             size: int = 0, sha256: str = "") -> Path:
+             size: int = 0, sha256: str = "", folder: Path | None = None) -> Path:
     """Download to %TEMP%\\DragWheel-update\\name. progress(done_bytes, total_bytes).
 
     An installer already downloaded and verified is reused instead of downloading it again.
@@ -117,13 +117,14 @@ def download(url: str, name: str, progress=None, should_stop=lambda: False, part
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    cached = cached_installer(name, size, sha256)
+    cached = cached_installer(name, size, sha256, folder)
     if cached:
         if progress:
             progress(cached.stat().st_size, cached.stat().st_size)
         return cached
-    UPDATE_DIR.mkdir(parents=True, exist_ok=True)
-    target = UPDATE_DIR / name
+    folder = folder or UPDATE_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / name
     part = target.with_suffix(target.suffix + ".part")
 
     # Probe: follows the redirect to the real file URL and tells us the size + range support.
