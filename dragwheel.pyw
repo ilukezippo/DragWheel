@@ -592,6 +592,264 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
         super().closeEvent(e)
 
 
+QUICK_SHARE_URL = "https://www.android.com/better-together/quick-share-app/"
+TEMP_HOSTS = ("litterbox.catbox.moe", "tmpfiles.org")
+
+
+class _Upload:
+    """A file read in pieces for an HTTP upload (multipart), reporting progress and stoppable."""
+
+    def __init__(self, path, field, fields, progress, cancelled):
+        import uuid
+        self.boundary = "----DragWheel" + uuid.uuid4().hex
+        pre = "".join(f'--{self.boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'
+                      for k, v in fields.items())
+        from urllib.parse import quote
+        pre += (f'--{self.boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{quote(Path(path).name)}"\r\n'
+                f"Content-Type: application/octet-stream\r\n\r\n")
+        self.parts = [pre.encode(), None, f"\r\n--{self.boundary}--\r\n".encode()]
+        self.f = open(path, "rb")
+        self.size = Path(path).stat().st_size
+        self.total = len(self.parts[0]) + self.size + len(self.parts[2])
+        self.done = 0
+        self.stage = 0
+        self.progress, self.cancelled = progress, cancelled
+
+    def read(self, n=-1):
+        if self.cancelled():
+            raise OSError("cancelled")
+        n = 256 * 1024 if n is None or n < 0 else n
+        while self.stage < 3:
+            if self.stage == 1:
+                data = self.f.read(n)
+                if not data:
+                    self.stage = 2
+                    continue
+            else:
+                data, self.parts[self.stage] = self.parts[self.stage], b""
+                self.stage += 1
+                if not data:
+                    continue
+            self.done += len(data)
+            self.progress(self.done / self.total)
+            return data
+        return b""
+
+    def close(self):
+        self.f.close()
+
+
+def upload_temporary(path, hours, progress=lambda f: None, cancelled=lambda: False) -> tuple[str, str]:
+    """Upload to a free temporary host; returns (download link, host). Litterbox (up to 1 GB, 1-72 h),
+    else tmpfiles.org (up to 100 MB, up to 48 h)."""
+    import json as _json
+    import urllib.request
+    size = Path(path).stat().st_size
+    errors = []
+    if size <= 1000 * 1024 * 1024:
+        body = _Upload(path, "fileToUpload", {"reqtype": "fileupload", "time": f"{hours}h"}, progress, cancelled)
+        try:
+            req = urllib.request.Request("https://litterbox.catbox.moe/resources/internals/api.php", data=body,
+                                         headers={"Content-Type": f"multipart/form-data; boundary={body.boundary}",
+                                                  "Content-Length": str(body.total), "User-Agent": f"DragWheel/{VERSION}"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                link = r.read().decode("utf-8", "replace").strip()
+            if link.startswith("https://"):
+                return link, TEMP_HOSTS[0]
+            errors.append(f"litterbox: {link[:120]}")
+        except Exception as e:
+            if cancelled():
+                raise
+            errors.append(f"litterbox: {e}")
+        finally:
+            body.close()
+    if size <= 100 * 1024 * 1024:
+        body = _Upload(path, "file", {"expire": str(min(48, hours) * 3600)}, progress, cancelled)
+        try:
+            req = urllib.request.Request("https://tmpfiles.org/api/v1/upload", data=body,
+                                         headers={"Content-Type": f"multipart/form-data; boundary={body.boundary}",
+                                                  "Content-Length": str(body.total), "User-Agent": f"DragWheel/{VERSION}"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                url = _json.loads(r.read().decode("utf-8", "replace"))["data"]["url"]
+            return url.replace("tmpfiles.org/", "tmpfiles.org/dl/", 1), TEMP_HOSTS[1]
+        except Exception as e:
+            if cancelled():
+                raise
+            errors.append(f"tmpfiles: {e}")
+        finally:
+            body.close()
+    winsys.log("temporary upload failed: " + " | ".join(errors))
+    if size > 1000 * 1024 * 1024:
+        raise OSError(tr("Too big for an internet link (the limit is 1 GB)."))
+    raise OSError(tr("Couldn't upload. Check the internet connection and try again."))
+
+
+class InternetShare(QDialog):
+    """Send to phone through a temporary internet link: upload, then a QR code to open it on any phone."""
+    HOURS = [1, 12, 24, 72]
+
+    def __init__(self, paths):
+        super().__init__(None, Qt.WindowStaysOnTopHint)
+        from PySide6.QtWidgets import QLayout, QProgressBar
+        self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.paths = [Path(x) for x in paths]
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetFixedSize)
+        what = self.paths[0].name if len(self.paths) == 1 and self.paths[0].is_file() else \
+            tr("{n} files (as one ZIP)", n=len(self.paths)) if len(self.paths) > 1 else self.paths[0].name + ".zip"
+        head = QLabel(f"<b>{tr('Internet link')}</b><br><span style='color:{theme.hexc('dim')}'>{what}</span>")
+        head.setWordWrap(True)
+        head.setFixedWidth(360)
+        lay.addWidget(head)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("Keep the link for")))
+        self.hours = QComboBox()
+        for h in self.HOURS:
+            self.hours.addItem(tr("{n} hour(s)", n=h), h)
+        self.hours.setCurrentIndex(max(0, self.hours.findData(int(settings().value("share_hours", 1)))))
+        row.addWidget(self.hours, 1)
+        lay.addLayout(row)
+        note = QLabel(tr("The file is uploaded to a free temporary file service (litterbox.catbox.moe, or tmpfiles.org) and "
+                         "deleted automatically after that time. Anyone with the link can download it until then. Up to 1 GB."))
+        note.setWordWrap(True)
+        note.setFixedWidth(360)
+        note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        lay.addWidget(note)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(8)
+        self.bar.hide()
+        lay.addWidget(self.bar)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        self.status.setFixedWidth(360)
+        lay.addWidget(self.status)
+        self.qr = QLabel()
+        self.qr.hide()
+        lay.addWidget(self.qr, 0, Qt.AlignHCenter)
+        self.link = QLabel()
+        self.link.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.link.setAlignment(Qt.AlignCenter)
+        self.link.hide()
+        lay.addWidget(self.link)
+        self.go = QPushButton(tr("Upload and make a link"))
+        self.go.clicked.connect(self._start)
+        lay.addWidget(self.go)
+        self.copy = QPushButton(tr("Copy link"))
+        self.copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.url))
+        self.copy.hide()
+        lay.addWidget(self.copy)
+        close = QPushButton(tr("Close"))
+        close.clicked.connect(self.close)
+        lay.addWidget(close)
+        self._cancel = False
+        self._frac = 0.0
+        self._result = None
+        self._poll = QTimer(self, interval=150, timeout=self._update)
+
+    def _start(self):
+        settings().setValue("share_hours", self.hours.currentData())
+        self.go.setEnabled(False)
+        self.hours.setEnabled(False)
+        self.bar.show()
+        self.status.setText(tr("Uploading…"))
+        hours = self.hours.currentData()
+
+        def work():
+            try:
+                src = self.paths[0]
+                if len(self.paths) > 1 or src.is_dir():
+                    import tempfile
+                    import zipfile
+                    tmp = Path(tempfile.mkdtemp(prefix="dragwheel-share-"))
+                    src = tmp / ((self.paths[0].name if len(self.paths) == 1 else "DragWheel") + ".zip")
+                    with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as z:
+                        for it in self.paths:
+                            for f in ([it] if it.is_file() else [x for x in it.rglob("*") if x.is_file()]):
+                                z.write(f, str(f.relative_to(it.parent)))
+                link, host = upload_temporary(src, hours, lambda f: setattr(self, "_frac", f), lambda: self._cancel)
+                self._result = ("ok", link, host)
+            except Exception as e:
+                self._result = ("err", str(e), "")
+        threading.Thread(target=work, daemon=True).start()
+        self._poll.start()
+
+    def _update(self):
+        self.bar.setValue(int(self._frac * 1000))
+        if self._result is None:
+            return
+        self._poll.stop()
+        kind, val, host = self._result
+        self.bar.hide()
+        if kind == "err":
+            self.status.setText(f"<span style='color:{theme.hexc('danger')}'>{val}</span>")
+            self.go.setEnabled(True)
+            self.hours.setEnabled(True)
+            return
+        self.url = val
+        winsys.log(f"send to phone (internet): uploaded to {host}")
+        self.status.setText("<b>" + tr("Scan with your phone's camera") + "</b> — " +
+                            tr("works on any network, even mobile data."))
+        try:
+            import io as _io
+            import segno
+            buf = _io.BytesIO()
+            segno.make(val, error="m").save(buf, kind="png", scale=7, border=3, dark="#000", light="#fff")
+            pm = QPixmap.fromImage(QImage.fromData(buf.getvalue()))
+            self.qr.setPixmap(pm)
+            self.qr.setFixedSize(pm.size())
+            self.qr.show()
+        except Exception as e:
+            winsys.log(f"qr: {e}")
+        self.link.setText(f"<span style='color:{theme.hexc('dim')}'>{val}</span>")
+        self.link.show()
+        self.go.hide()
+        self.copy.show()
+
+    def closeEvent(self, e):
+        self._cancel = True
+        super().closeEvent(e)
+
+
+class SendChooser(QDialog):
+    """How to send to the phone: Quick Share, an internet link, or the same Wi-Fi."""
+
+    def __init__(self, paths):
+        super().__init__(None, Qt.WindowStaysOnTopHint)
+        from PySide6.QtWidgets import QLayout
+        self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS) + f"QPushButton#way{{text-align:left;padding:10px 14px;font:600 10pt 'Segoe UI'}}"
+                           f"QPushButton#way[last=true]{{border:2px solid {theme.hexc('accent')}}}")
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetFixedSize)
+        what = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
+        lay.addWidget(QLabel(f"<b>{tr('How do you want to send it?')}</b><br>"
+                             f"<span style='color:{theme.hexc('dim')}'>{what}</span>"))
+        self.choice = None
+        last = settings().value("share_way", "quick")
+        for key, title, desc in (
+                ("quick", tr("Quick Share"), tr("Google's Quick Share sends straight to a nearby Android phone. No network setup.")),
+                ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network. Deleted after 1–72 hours.")),
+                ("wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Nothing leaves your home, but routers and firewalls can block it."))):
+            b = QPushButton(f"{title}\n{desc}")
+            b.setObjectName("way")
+            b.setAutoDefault(False)
+            b.setDefault(key == last)                         # the way used last time is highlighted
+            b.setMinimumWidth(380)
+            b.clicked.connect(lambda _=False, k=key: self._pick(k))
+            lay.addWidget(b)
+
+    def _pick(self, key):
+        self.choice = key
+        settings().setValue("share_way", key)
+        self.accept()
+
+
 def shutil_copy(fi, fo):
     while chunk := fi.read(1024 * 1024):
         fo.write(chunk)
@@ -628,7 +886,7 @@ class Actions:
             A("openwith", "Open with…", self.open_with),
             A("rename", "Rename…", self.rename, "several at once"),
             A("hash", "Checksum", self.checksum, "SHA-256"),
-            A("phone", "Send to phone", self.phone, "over Wi-Fi"),
+            A("phone", "Send to phone", self.phone),
             A("shred", "Shred…", self.shred, "can't be undone"),
         ]
 
@@ -687,11 +945,47 @@ class Actions:
         QTimer.singleShot(150, check)
 
     def phone(self, paths, p):
-        w = PhoneShare(paths)
+        chooser = SendChooser(paths)
+        if chooser.exec() != QDialog.Accepted:
+            return
+        if chooser.choice == "quick":
+            self.quick_share(paths)
+            return
+        w = PhoneShare(paths) if chooser.choice == "wifi" else InternetShare(paths)
         self.app._phone_windows = getattr(self.app, "_phone_windows", [])
         self.app._phone_windows.append(w)
         w.show()
         w.raise_()
+
+    def quick_share(self, paths):
+        try:
+            ok = winsys.invoke_shell_verb(paths, "Quick Share", "Nearby Share")
+        except Exception as e:
+            winsys.log(f"quick share: {e}")
+            ok = False
+        if ok:
+            self.app.toast.show_msg(tr("Quick Share"), tr("Pick your phone in the Quick Share window, then tap Accept on the phone."), "info", 6000)
+            return
+        exe = winsys.quick_share_installed()
+        box = QMessageBox()
+        box.setWindowTitle(f"{APP} — " + tr("Quick Share"))
+        box.setWindowIcon(app_icon())
+        box.setStyleSheet(i18n.css(DIALOG_CSS))
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        if exe:
+            box.setText(tr("Quick Share is installed but didn't offer to send these files. Opening it — drag the files into its window."))
+            box.exec()
+            os.startfile(exe)
+            winsys.reveal(paths)
+            return
+        box.setText("<b>" + tr("Quick Share isn't installed") + "</b><br><br>" +
+                    tr("It's free from Google and sends files to nearby Android phones (Samsung phones have it built in). "
+                       "Install it once, then choose Quick Share again."))
+        get = box.addButton(tr("Get Quick Share"), QMessageBox.AcceptRole)
+        box.addButton(tr("Close"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is get:
+            QDesktopServices.openUrl(QUrl(QUICK_SHARE_URL))
 
     def shred(self, paths, p):
         box = QMessageBox()

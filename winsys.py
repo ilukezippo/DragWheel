@@ -662,3 +662,65 @@ class WheelHook:
         user32.UnhookWindowsHookEx(hook)
         if khook:
             user32.UnhookWindowsHookEx(khook)
+
+
+# ----------------------------------------------------------------------------
+# Run an Explorer right-click entry (e.g. "Send with Quick Share") on files
+# ----------------------------------------------------------------------------
+def quick_share_installed() -> str | None:
+    """Path of Google's Quick Share for Windows, if installed."""
+    if not IS_WIN:
+        return None
+    roots = [os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", ""),
+             os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")]
+    for root in filter(None, roots):
+        for sub in ("Google\\NearbyShare", "Google\\QuickShare", "Google\\Quick Share", "Google\\Nearby Share"):
+            d = Path(root) / sub
+            if d.is_dir():
+                for exe in d.rglob("*.exe"):
+                    n = exe.name.lower()
+                    if ("nearby" in n or "quick" in n) and "uninstall" not in n and "update" not in n:
+                        return str(exe)
+    return None
+
+
+def invoke_shell_verb(paths, *names) -> bool:
+    """Run the right-click entry whose text contains one of `names` on all `paths` (same folder = one action).
+    True if it was found and started."""
+    if not IS_WIN or not paths:
+        return False
+    import pythoncom
+    import win32com.client
+    pythoncom.CoInitialize()
+    shell = win32com.client.Dispatch("Shell.Application")
+    by_folder = {}
+    for p in paths:
+        p = Path(p)
+        by_folder.setdefault(str(p.parent), []).append(p.name)
+    started = False
+    for folder, files in by_folder.items():
+        ns = shell.Namespace(folder)
+        if ns is None:
+            continue
+        if len(files) == 1:
+            item = ns.ParseName(files[0])
+            verbs = item.Verbs() if item is not None else None
+        else:
+            items = ns.Items()
+            try:
+                items.Filter(0x20 | 0x40 | 0x80, ";".join(files))      # folders, files, hidden: just these
+            except Exception:
+                pass
+            verbs = items.Verbs()
+        if verbs is None:
+            continue
+        for i in range(verbs.Count):
+            v = verbs.Item(i)
+            label = (v.Name or "").replace("&", "").lower()
+            if any(n.lower() in label for n in names):
+                log(f"shell verb: {v.Name} on {len(files)} item(s)")
+                v.DoIt()
+                started = True
+                break
+    return started
+

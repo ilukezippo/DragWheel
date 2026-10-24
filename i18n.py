@@ -815,3 +815,9 @@ from locales import stream12 as _st12  # noqa: E402
 for _code, _vals in _st12.T.items():
     assert len(_vals) == len(_st12.KEYS), _code
     T[_code].update(dict(zip(_st12.KEYS, _vals)))
+
+from locales import send12 as _sd12  # noqa: E402
+
+for _code, _vals in _sd12.T.items():
+    assert len(_vals) == len(_sd12.KEYS), (_code, len(_vals))
+    T[_code].update(dict(zip(_sd12.KEYS, _vals)))
