@@ -971,6 +971,80 @@ def _parse_subtitles(path) -> list[tuple[int, int, str]]:
     return cues
 
 
+LIVE_OUTPUT = ["-f", "mpegts"]
+LIVE_INPUT_EXTRA = []          # tests add "-re" to feed a recorded stream at live speed
+
+
+class LiveRelay:
+    """Plays a live stream through ffmpeg: ffmpeg follows the live playlist as it grows (Qt's player stops when
+    the first ~30 s run out) and passes one endless stream to the float over a local address."""
+
+    def __init__(self, url, headers=None):
+        import http.server
+        import subprocess
+        relay = self
+        self.procs = []
+        hdr = dict(headers or {})
+        args = ["-hide_banner", "-loglevel", "error", "-fflags", "+genpts"]
+        ua = next((v for k, v in hdr.items() if k.lower() == "user-agent"), None)
+        if ua:
+            args += ["-user_agent", ua]
+        extra = "".join(f"{k}: {v}\r\n" for k, v in hdr.items() if k.lower() != "user-agent")
+        if extra:
+            args += ["-headers", extra]
+        cmd = [engine.ffmpeg(), *args, *LIVE_INPUT_EXTRA, "-i", url, "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
+               *LIVE_OUTPUT, "pipe:1"]
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(h):
+                h.send_response(200)
+                h.send_header("Content-Type", "video/mp2t")
+                h.send_header("Cache-Control", "no-cache")
+                h.end_headers()
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                        creationflags=engine.NO_WINDOW)
+                relay.procs.append(proc)
+                sent = 0
+                try:
+                    while True:
+                        chunk = proc.stdout.read(65536)
+                        if not chunk:
+                            break
+                        h.wfile.write(chunk)
+                        sent += len(chunk)
+                except OSError:
+                    pass                                       # the float closed or reconnected
+                finally:
+                    try:
+                        proc.kill()
+                        err = proc.stderr.read().decode("utf-8", "replace").strip()
+                    except Exception:
+                        err = ""
+                    winsys.log(f"live relay: ffmpeg stopped after {sent // 1024} KB" + (f": {err[-300:]}" if err else ""))
+                    if proc in relay.procs:
+                        relay.procs.remove(proc)
+
+            def log_message(h, *a):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/live.ts"
+
+    def close(self):
+        for p in list(self.procs):
+            try:
+                p.kill()
+            except Exception:
+                pass
+        try:
+            self.server.shutdown()
+            self.server.server_close()
+        except Exception:
+            pass
+
+
 def _float_pins() -> list:
     """Floats that reopen when Windows starts: [{"id", "src", "link", "x", "y", "w", "on_top"}]."""
     try:
@@ -1017,6 +1091,7 @@ class FloatWindow(QWidget):
         self.pin_id = None               # set when this float reopens with Windows
         self._pin_timer = QTimer(self, singleShot=True, interval=500, timeout=self._save_pin)
         self.companion = None
+        self._relay = None
         self._play_now = play
         self._load(path, link)
         self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
@@ -1038,6 +1113,7 @@ class FloatWindow(QWidget):
         """Show `path` in this float (also used when another file is dropped on it).
         `link` = {"url", "title", "page"} when playing a web link (path is then the media URL)."""
         self._drop_companion()
+        self._stop_relay()
         if self.player:
             self.player.stop()
             self.player.setSource(QUrl())
@@ -1184,7 +1260,12 @@ class FloatWindow(QWidget):
         self.player.mediaStatusChanged.connect(self._on_status)
         if self.link and self.link.get("audio"):
             self._add_companion(self.link["audio"])
-        self.player.setSource(QUrl(self.path) if self.link else QUrl.fromLocalFile(self.path))
+        if self._live():
+            self._start_relay()
+            self.player.mediaStatusChanged.connect(lambda st: winsys.log(f"float: live status {st.name}"))
+            self.player.setSource(QUrl(self._relay.url))
+        else:
+            self.player.setSource(QUrl(self.path) if self.link else QUrl.fromLocalFile(self.path))
         if cat == "video" or self.autoplay:
             self.player.play()
         if cat == "video" and not self.link:
@@ -1265,7 +1346,9 @@ class FloatWindow(QWidget):
             self.player.setPosition(self._resume_ms)
             self._resume_ms = 0
         if status == QMediaPlayer.EndOfMedia and self._live():
-            QTimer.singleShot(50, self._live_continue)
+            import time
+            if time.monotonic() - getattr(self, "_live_fixing", 0) >= 8:
+                QTimer.singleShot(50, self._live_continue)
             return
         if status == QMediaPlayer.EndOfMedia and settings().value("float_autoplay", "true") == "true":
             if self._neighbour(1):
@@ -1383,6 +1466,29 @@ class FloatWindow(QWidget):
     def _live(self):
         return bool(self.link and self.link.get("live"))
 
+    def _start_relay(self):
+        self._stop_relay()
+        try:
+            self._relay = LiveRelay(self.path, (self.link or {}).get("headers"))
+        except Exception as e:
+            winsys.log(f"live relay failed: {e}")
+            self._relay = None
+
+    def _stop_relay(self):
+        r = getattr(self, "_relay", None)
+        if r is not None:
+            r.close()
+            self._relay = None
+
+    def restart_live(self, info):
+        """The stream link was renewed: keep the float as it is, restart the relay on the new link."""
+        self.link = info
+        self.path = info["url"]
+        self._start_relay()
+        if self.player is not None and self._relay is not None:
+            self.player.setSource(QUrl(self._relay.url))
+            self.player.play()
+
     def _live_continue(self, error=False):
         import time
         now = time.monotonic()
@@ -1394,11 +1500,16 @@ class FloatWindow(QWidget):
                 winsys.log(f"float: live stream re-opened ({'error' if error else 'stalled'})")
                 _APP._resolve_and_play(self.link["page"], self, quiet=True)
             return
-        self.player.setSource(QUrl(self.path))
+        relay = getattr(self, "_relay", None)
+        self.player.setSource(QUrl(relay.url if relay is not None else self.path))   # ffmpeg starts again
         self.player.play()
 
     def _on_media_error(self, *_a):
         if self._live() and self.player is not None:
+            import time
+            if time.monotonic() - getattr(self, "_live_fixing", 0) < 8:      # one reconnect at a time
+                return
+            self._live_fixing = time.monotonic()
             winsys.log(f"float: live stream error, reconnecting: {self.player.errorString()}")
             QTimer.singleShot(500, lambda: self._live_continue(error=True))
             return
@@ -1974,6 +2085,7 @@ class FloatWindow(QWidget):
 
     def closeEvent(self, e):
         self._drop_companion()
+        self._stop_relay()
         if self.player:
             self.player.stop()
             self.player.setSource(QUrl())
@@ -2415,6 +2527,42 @@ def _render_page(doc, i, width, extra_rot=0):
     return QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
 
 
+def _reorder_list_class():
+    from PySide6.QtWidgets import QListWidget
+
+    class ReorderList(QListWidget):
+        """Icon grid whose drag-and-drop reorders the pages (Qt's icon mode only moves the pictures around)."""
+        def dropEvent(self, e):
+            if not e.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
+                e.ignore()                                         # only pages from this grid
+                return
+            pos = e.position().toPoint()
+            target = self.indexAt(pos)
+            row = target.row() if target.isValid() else self.count()
+            if target.isValid():
+                r = self.visualItemRect(self.item(row))
+                if pos.x() > r.center().x():                       # dropped on the right half: after it
+                    row += 1
+            moving = sorted(self.selectedItems(), key=self.row)
+            if not moving:
+                e.ignore()
+                return
+            before = sum(1 for it in moving if self.row(it) < row)
+            taken = [self.takeItem(self.row(it)) for it in moving]
+            row -= before
+            for k, it in enumerate(taken):
+                self.insertItem(row + k, it)
+                it.setSelected(True)
+            e.setDropAction(Qt.IgnoreAction)
+            e.accept()
+            self.reordered()
+
+        def reordered(self):
+            pass
+
+    return ReorderList
+
+
 class PageGrid(QWidget):
     """Thumbnails of every page: drag to reorder, select and press Delete to remove, turn with the buttons.
     value() -> "orig:extra_rotation,..." in the new order."""
@@ -2428,12 +2576,16 @@ class PageGrid(QWidget):
         self.doc = pymupdf.open(path)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        self.grid = QListWidget()
+        self.grid = _reorder_list_class()()
+        self.grid.reordered = self._renumber
         self.grid.setViewMode(QListView.IconMode)
         self.grid.setIconSize(QSize(self.THUMB, self.THUMB))
         self.grid.setGridSize(QSize(self.THUMB + 24, self.THUMB + 34))
         self.grid.setResizeMode(QListView.Adjust)
-        self.grid.setMovement(QListView.Snap)
+        self.grid.setMovement(QListView.Static)
+        self.grid.setDragEnabled(True)
+        self.grid.setAcceptDrops(True)
+        self.grid.setDropIndicatorShown(True)
         self.grid.setDragDropMode(QAbstractItemView.InternalMove)
         self.grid.setDefaultDropAction(Qt.MoveAction)
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -2678,15 +2830,20 @@ class SignPlacer(QWidget):
         pick = QPushButton(tr("Use a picture…"))
         pick.clicked.connect(self._pick)
         side.addWidget(pick)
+        self.del_b = QPushButton(tr("Delete signature"))
+        self.del_b.clicked.connect(self._delete_sig)
+        side.addWidget(self.del_b)
         tip = QLabel(tr("Drag the signature into place and drag its corner to make it bigger or smaller. "
-                        "It's remembered for next time."))
+                        "It's remembered for next time.") + "\n\n" + tr("You can also drop a picture of your signature here."))
         tip.setWordWrap(True)
         tip.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
         side.addWidget(tip)
         side.addStretch(1)
         lay.addLayout(side)
         self._page_img = None
+        self.setAcceptDrops(True)
         self._go(0)
+        self.del_b.setEnabled(self.sig_img is not None)
         if self.sig_img is None:
             QTimer.singleShot(200, self._draw_new)
 
@@ -2776,7 +2933,46 @@ class SignPlacer(QWidget):
     def _set_sig(self, path):
         self.sig_path = path
         self.sig_img = QImage(str(path))
+        self.del_b.setEnabled(True)
         self._fit_rect_to_sig()
+        self.view.update()
+
+    def _image_url(self, e):
+        md = e.mimeData()
+        for u in (md.urls() if md.hasUrls() else []):
+            if u.isLocalFile() and engine.EXT_CATEGORY.get(engine.ext_of(u.toLocalFile())) == "image":
+                return u.toLocalFile()
+        return None
+
+    def dragEnterEvent(self, e):
+        if self._image_url(e) or e.mimeData().hasImage():
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e):
+        if self._image_url(e) or e.mimeData().hasImage():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        f = self._image_url(e)
+        try:
+            if not f and e.mimeData().hasImage():               # a picture dragged from a browser
+                f = str(_signature_file().with_name("signature-pasted.png"))
+                _signature_file().parent.mkdir(parents=True, exist_ok=True)
+                QImage(e.mimeData().imageData()).save(f)
+            if f:
+                self._set_sig(_clean_signature(f, _signature_file()))
+                e.acceptProposedAction()
+        except Exception as ex:
+            winsys.log(f"signature drop: {ex}")
+
+    def _delete_sig(self):
+        for f in _signature_file().parent.glob("signature*.png"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        self.sig_path, self.sig_img = None, None
+        self.del_b.setEnabled(False)
         self.view.update()
 
     def _draw_new(self):
@@ -2804,6 +3000,99 @@ class SignPlacer(QWidget):
         return json.dumps({"sig": str(self.sig_path), "page": self.page_i, "rect": [round(v, 5) for v in self.rect]})
 
 
+class WatermarkEditor(QWidget):
+    """Watermark… with a live preview of the first page: text (or the logo dragged with the PDF), angle,
+    size and strength. Remembers the last choices. value() -> JSON for engine.pdf_watermark."""
+
+    def __init__(self, paths):
+        super().__init__()
+        from PySide6.QtWidgets import QSlider
+        import pymupdf
+        self.pdf = next(x for x in paths if engine.EXT_CATEGORY.get(engine.ext_of(x)) == "pdf")
+        self.logo = next((x for x in paths if engine.EXT_CATEGORY.get(engine.ext_of(x)) == "image"), None)
+        src = pymupdf.open(self.pdf)
+        self.first = pymupdf.open()
+        self.first.insert_pdf(src, from_page=0, to_page=0)
+        try:
+            saved = json.loads(settings().value("pdf_watermark", "") or "{}")
+        except ValueError:
+            saved = {}
+        self.spec = dict(engine.WATERMARK_DEFAULT, **saved)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.view = QLabel()
+        self.view.setMinimumSize(380, 440)
+        self.view.setAlignment(Qt.AlignCenter)
+        self.view.setStyleSheet(f"background:{theme.hexc('canvas')};border-radius:8px")
+        lay.addWidget(self.view, 1)
+        side = QVBoxLayout()
+        side.setSpacing(8)
+        if not self.logo:
+            side.addWidget(QLabel(tr("Text")))
+            self.text = QLineEdit(self.spec.get("text") or "")
+            self.text.textChanged.connect(lambda t: self._set("text", t))
+            side.addWidget(self.text)
+        side.addWidget(QLabel(tr("Direction")))
+        row = QHBoxLayout()
+        for label, ang in (("↗", 45), ("→", 0), ("↘", -45), ("↑", 90)):
+            b = QPushButton(label)
+            b.setFixedWidth(46)
+            b.clicked.connect(lambda _=False, a=ang: self.angle.setValue(a))
+            row.addWidget(b)
+        row.addStretch(1)
+        side.addLayout(row)
+        self.angle = self._slider(-90, 90, int(self.spec["angle"]), "angle", lambda v: f"{v}°")
+        side.addLayout(self.angle._row)
+        side.addWidget(QLabel(tr("Size")))
+        self.size = self._slider(10, 100, int(float(self.spec["size"]) * 100), "size", lambda v: f"{v}%", scale=100)
+        side.addLayout(self.size._row)
+        side.addWidget(QLabel(tr("Strength")))
+        self.opacity = self._slider(5, 80, int(float(self.spec["opacity"]) * 100), "opacity", lambda v: f"{v}%", scale=100)
+        side.addLayout(self.opacity._row)
+        side.addStretch(1)
+        lay.addLayout(side)
+        self._timer = QTimer(self, singleShot=True, interval=120, timeout=self._render)
+        self._render()
+
+    def _slider(self, lo, hi, val, key, fmt, scale=1):
+        from PySide6.QtWidgets import QSlider
+        s = QSlider(Qt.Horizontal)
+        s.setRange(lo, hi)
+        s.setValue(val)
+        lbl = QLabel(fmt(val))
+        lbl.setFixedWidth(44)
+        s.valueChanged.connect(lambda v: (lbl.setText(fmt(v)), self._set(key, v / scale)))
+        s._row = QHBoxLayout()
+        s._row.addWidget(s, 1)
+        s._row.addWidget(lbl)
+        return s
+
+    def _set(self, key, v):
+        self.spec[key] = v
+        self._timer.start()
+
+    def _render(self):
+        import pymupdf
+        try:
+            d = pymupdf.open()
+            d.insert_pdf(self.first)
+            engine.apply_watermark(d, self.spec, self.logo)
+            pg = d[0]
+            z = 420 / max(pg.rect.width, pg.rect.height)
+            pix = pg.get_pixmap(matrix=pymupdf.Matrix(z, z), alpha=False)
+            img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
+            self.view.setPixmap(QPixmap.fromImage(img))
+        except Exception as e:
+            winsys.log(f"watermark preview: {e}")
+
+    def stop(self):
+        keep = {k: v for k, v in self.spec.items() if k in ("text", "angle", "size", "opacity")}
+        settings().setValue("pdf_watermark", json.dumps(keep))
+
+    def value(self):
+        return json.dumps(self.spec)
+
+
 def ask_params(op, paths) -> dict | None:
     dlg = QDialog(None, Qt.WindowStaysOnTopHint)
     title = tr(op.label).rstrip("…")
@@ -2823,9 +3112,10 @@ def ask_params(op, paths) -> dict | None:
             edits[name] = tw
             trims.append(tw)
             continue
-        if default in ("@pages", "@sign"):              # PDF page grid / signature placement
+        if default in ("@pages", "@sign", "@watermark"):     # PDF page grid / signature / watermark preview
             try:
-                w = PageGrid(paths[0]) if default == "@pages" else SignPlacer(paths)
+                w = (PageGrid(paths[0]) if default == "@pages" else SignPlacer(paths) if default == "@sign"
+                     else WatermarkEditor(paths))
             except Exception as e:
                 message(APP, tr("Couldn't open this PDF") + f"<br><small>{e}</small>")
                 return None
@@ -2867,8 +3157,8 @@ def ask_params(op, paths) -> dict | None:
     bb.accepted.connect(dlg.accept)
     bb.rejected.connect(dlg.reject)
     lay.addWidget(bb)
-    dlg.setMinimumWidth(680 if any(isinstance(t, (PageGrid, SignPlacer)) for t in trims) else 620 if trims else 340)
-    if any(isinstance(t, (PageGrid, SignPlacer)) for t in trims):
+    dlg.setMinimumWidth(680 if any(isinstance(t, (PageGrid, SignPlacer, WatermarkEditor)) for t in trims) else 620 if trims else 340)
+    if any(isinstance(t, (PageGrid, SignPlacer, WatermarkEditor)) for t in trims):
         dlg.resize(760, 560)
         scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         dlg.move(scr.availableGeometry().center() - QPoint(380, 280))
@@ -2881,7 +3171,7 @@ def ask_params(op, paths) -> dict | None:
             tw.stop()
     if not ok:
         return None
-    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview, PageGrid, SignPlacer)) else e.text())
+    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview, PageGrid, SignPlacer, WatermarkEditor)) else e.text())
             for k, e in edits.items()}
 
 
@@ -3579,7 +3869,7 @@ class DragWheelApp(QObject):
             from editor import CropResizeDialog
             for p in paths[:5]:           # one editor per image
                 try:
-                    dlg = CropResizeDialog(p, DIALOG_CSS, app_icon())
+                    dlg = CropResizeDialog(p, DIALOG_CSS, app_icon(), ensure_model=self._ensure_model)
                 except Exception as e:
                     self.toast.show_msg(tr("Couldn't open image"), str(e), "err", 6000)
                     continue
@@ -3700,10 +3990,7 @@ class DragWheelApp(QObject):
                 return
             if target is not None and target in self.floats:
                 if quiet:                                  # live stream reconnect: keep size and controls as they are
-                    target.link = info
-                    target.path = info["url"]
-                    target.player.setSource(QUrl(info["url"]))
-                    target.player.play()
+                    target.restart_live(info)
                     return
                 target._load(info["url"], info)
                 target._fade_to(1.0)

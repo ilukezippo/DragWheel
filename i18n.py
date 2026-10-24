@@ -773,3 +773,9 @@ from locales import pdf12 as _p12  # noqa: E402
 for _code, _vals in _p12.T.items():
     assert len(_vals) == len(_p12.KEYS), _code
     T[_code].update(dict(zip(_p12.KEYS, _vals)))
+
+from locales import pdf12b as _p12b  # noqa: E402
+
+for _code, _vals in _p12b.T.items():
+    assert len(_vals) == len(_p12b.KEYS), _code
+    T[_code].update(dict(zip(_p12b.KEYS, _vals)))

@@ -40,14 +40,41 @@ class CropCanvas(QWidget):
         self.crop = QRectF()           # in full-res image pixels
         self.aspect: float | None = None
         self._drag = None              # (mode, start_mouse_img, start_crop)
+        self._cache = None             # (view rect, pixmap of checkerboard + picture at screen size)
 
     # ---------------------------------------------------------- data
-    def set_image(self, qimg: QImage, full: QSize):
+    def set_image(self, qimg: QImage, full: QSize, keep_crop=False):
         self.img = qimg
         self.full = full
-        self.crop = QRectF(0, 0, full.width(), full.height())
-        self.apply_aspect()
+        self._cache = None
+        if not keep_crop:
+            self.crop = QRectF(0, 0, full.width(), full.height())
+            self.apply_aspect()
         self.update()
+
+    def resizeEvent(self, e):
+        self._cache = None
+        super().resizeEvent(e)
+
+    def _base(self, v: QRectF) -> QPixmap:
+        """The picture (on a checkerboard) scaled to the screen once — dragging then only redraws the box."""
+        if self._cache is None or self._cache[0] != v:
+            ratio = self.devicePixelRatioF()
+            w, h = max(1, round(v.width() * ratio)), max(1, round(v.height() * ratio))
+            pm = QPixmap(w, h)
+            pm.fill(theme.color("check_b"))
+            p = QPainter(pm)
+            tile = max(1, round(10 * ratio))
+            ca = theme.color("check_a")
+            for yy in range(0, h, tile):
+                for xx in range((yy // tile) % 2 * tile, w, tile * 2):
+                    p.fillRect(xx, yy, tile, tile, ca)
+            p.drawImage(QRectF(0, 0, w, h),
+                        self.img.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+            p.end()
+            pm.setDevicePixelRatio(ratio)
+            self._cache = (QRectF(v), pm)
+        return self._cache[1]
 
     def set_aspect(self, aspect):
         self.aspect = aspect
@@ -210,18 +237,7 @@ class CropCanvas(QWidget):
         if not self.img:
             return
         v = self._view()
-        # checkerboard behind transparent images
-        tile = 10
-        p.save()
-        p.setClipRect(v)
-        for yy in range(int(v.top()), int(v.bottom()) + tile, tile):
-            for xx in range(int(v.left()), int(v.right()) + tile, tile):
-                if ((xx - int(v.left())) // tile + (yy - int(v.top())) // tile) % 2:
-                    p.fillRect(xx, yy, tile, tile, theme.color("check_a"))
-                else:
-                    p.fillRect(xx, yy, tile, tile, theme.color("check_b"))
-        p.restore()
-        p.drawImage(v, self.img)
+        p.drawPixmap(v.topLeft(), self._base(v))
         c = self.to_widget(self.crop)
         # shade outside
         shade = QPainterPath()
@@ -248,7 +264,7 @@ class CropCanvas(QWidget):
 
 
 class CropResizeDialog(QDialog):
-    def __init__(self, path: str, css: str, icon=None):
+    def __init__(self, path: str, css: str, icon=None, ensure_model=None):
         super().__init__(None, Qt.Window | Qt.WindowStaysOnTopHint)
         self.path = path
         self.setWindowTitle(f"DragWheel — {tr('Crop & Resize')} — {Path(path).name}")
@@ -263,6 +279,9 @@ class CropResizeDialog(QDialog):
         prev = src.copy()
         prev.thumbnail((1800, 1800))
         self.base_preview = pil_to_qimage(prev)
+        self.prev_pil = prev
+        self.nobg_preview = None           # the preview with the background removed (made once, on demand)
+        self.ensure_model = ensure_model
         self.rotate = 0
         self.flip_h = False
         self.flip_v = False
@@ -316,6 +335,15 @@ class CropResizeDialog(QDialog):
             b.clicked.connect(fn)
             rr.addWidget(b)
         sv.addLayout(rr)
+
+        # --- remove background (AI, offline)
+        self.nobg = QCheckBox(tr("Remove background"))
+        self.nobg.toggled.connect(self._toggle_nobg)
+        sv.addWidget(self.nobg)
+        self.nobg_lbl = QLabel()
+        self.nobg_lbl.setObjectName("dim")
+        self.nobg_lbl.hide()
+        sv.addWidget(self.nobg_lbl)
 
         # --- crop readout
         self.crop_lbl = QLabel()
@@ -399,12 +427,65 @@ class CropResizeDialog(QDialog):
         w, h = self.src_size
         return QSize(h, w) if self.rotate % 180 else QSize(w, h)
 
-    def _rebuild_preview(self):
+    def _rebuild_preview(self, keep_crop=False):
         t = QTransform().rotate(self.rotate)
-        img = self.base_preview.transformed(t, Qt.SmoothTransformation)
+        base = self.nobg_preview if (self.nobg.isChecked() and self.nobg_preview is not None) else self.base_preview
+        img = base.transformed(t, Qt.SmoothTransformation)
         img = img.mirrored(self.flip_h, self.flip_v)
-        self.canvas.set_image(img, self._rotated_full())
-        self._apply_aspect_choice()
+        self.canvas.set_image(img, self._rotated_full(), keep_crop=keep_crop)
+        if not keep_crop:
+            self._apply_aspect_choice()
+
+    def _toggle_nobg(self, on):
+        if not on:
+            self.nobg_lbl.hide()
+            self._rebuild_preview(keep_crop=True)
+            return
+        if self.nobg_preview is not None:
+            self._rebuild_preview(keep_crop=True)
+            return
+        if not engine.model_ready("isnet"):
+            if self.ensure_model is None:
+                self.nobg.setChecked(False)
+                return
+            self.nobg.blockSignals(True)
+            self.nobg.setChecked(False)
+            self.nobg.blockSignals(False)
+
+            def ready():
+                self.nobg.setChecked(True)
+            self.ensure_model("isnet", tr("Remove background"), ready)
+            return
+        self.nobg_lbl.setText(tr("Finding the subject…"))
+        self.nobg_lbl.show()
+        self.nobg.setEnabled(False)
+        import threading
+        self._nobg_result = None
+
+        def work():
+            try:
+                self._nobg_result = ("ok", engine.remove_bg_image(self.prev_pil))
+            except Exception as e:
+                self._nobg_result = ("err", str(e))
+        threading.Thread(target=work, daemon=True).start()
+        from PySide6.QtCore import QTimer
+        self._nobg_poll = QTimer(self, interval=100)
+        self._nobg_poll.timeout.connect(self._nobg_check)
+        self._nobg_poll.start()
+
+    def _nobg_check(self):
+        if self._nobg_result is None:
+            return
+        self._nobg_poll.stop()
+        kind, val = self._nobg_result
+        self.nobg.setEnabled(True)
+        if kind == "err":
+            self.nobg_lbl.setText(tr(val))
+            self.nobg.setChecked(False)
+            return
+        self.nobg_lbl.hide()
+        self.nobg_preview = pil_to_qimage(val)
+        self._rebuild_preview(keep_crop=True)
 
     def _apply_aspect_choice(self):
         idx = self.aspect_group.checkedId()
@@ -431,6 +512,7 @@ class CropResizeDialog(QDialog):
 
     def _reset(self):
         self.rotate, self.flip_h, self.flip_v = 0, False, False
+        self.nobg.setChecked(False)
         self.aspect_group.button(0).setChecked(True)
         self._rebuild_preview()
 
@@ -465,6 +547,7 @@ class CropResizeDialog(QDialog):
     def params(self) -> dict:
         c = self.canvas.crop
         return {"rotate": self.rotate, "flip_h": self.flip_h, "flip_v": self.flip_v,
+                "remove_bg": self.nobg.isChecked(),
                 "box": (c.left(), c.top(), c.right(), c.bottom()),
                 "size": (self.w_spin.value(), self.h_spin.value()),
                 "format": self.fmt.currentData()}

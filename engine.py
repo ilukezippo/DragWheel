@@ -781,6 +781,9 @@ def resolve_link(url, _updated=False) -> dict:
             out = {"url": media, "title": info.get("title") or url, "page": info.get("webpage_url") or url}
             if info.get("is_live") or info.get("live_status") == "is_live":
                 out["live"] = True
+                hdr = info.get("http_headers") or next((f.get("http_headers") for f in info.get("requested_formats") or []
+                                                       if f.get("http_headers")), None) or {}
+                out["headers"] = {k: v for k, v in hdr.items() if k.lower() in ("user-agent", "referer", "origin", "cookie")}
             if audio:
                 out["audio"] = audio
             return out
@@ -1108,6 +1111,8 @@ def image_crop_resize(src, p):
     size (w,h) of the output, format ('' = same as source)."""
     Image, _ = _pil()
     img = open_image(src)
+    if p.get("remove_bg"):
+        img = remove_bg_image(img)
     rot = int(p.get("rotate", 0)) % 360
     if rot:
         img = img.rotate(-rot, expand=True)
@@ -1130,6 +1135,8 @@ def image_crop_resize(src, p):
     e = ext_of(src)
     fmt = p.get("format") or ("jpg" if e == "jpeg" else "tiff" if e == "tif" else "heic" if e == "heif" else e)
     if fmt not in SAVE_KW or fmt == "pdf":
+        fmt = "png"
+    if p.get("remove_bg") and fmt in ("jpg", "bmp", "heic"):        # these can't be see-through
         fmt = "png"
     return save_image(img, out_for(src, fmt, "edited"), fmt)
 
@@ -1407,10 +1414,10 @@ def _onnx(name):
     return _SESSIONS[name]
 
 
-def image_remove_bg(src, p):
+def remove_bg_image(img):
+    """The subject of a PIL image on a transparent background (AI model, offline)."""
     import numpy as np
     Image, _ = _pil()
-    img = open_image(src)
     rgb = _flatten(img)
     sess = _onnx("isnet")
     check_cancel()
@@ -1429,6 +1436,11 @@ def image_remove_bg(src, p):
     bbox = mask.point(lambda v: 255 if v > 8 else 0).getbbox()
     if not bbox:
         raise ConversionError("No subject found in this image")
+    return out_img
+
+
+def image_remove_bg(src, p):
+    out_img = remove_bg_image(open_image(src))
     return save_image(out_img, out_for(src, "png", "no background"), "png")
 
 
@@ -1774,57 +1786,66 @@ def pdf_page_numbers(src, p):
     return out
 
 
-def _stamp_pdf(text, color, opacity):
-    """A one-page PDF holding the watermark text (Arabic shaped correctly), to lay over pages at any angle."""
+WATERMARK_DEFAULT = {"text": "CONFIDENTIAL", "angle": 45, "opacity": 0.22, "size": 0.8, "color": "#808080"}
+
+
+def _watermark_stamp(spec, logo=None):
+    """A one-page PDF holding the watermark (text laid out properly, Arabic too, or the logo), so it can be
+    laid over pages at any angle."""
     mu = _mu()
-    w, h = max(200, 46 * len(text)), 120
     d = mu.open()
-    pg = d.new_page(width=w, height=h)
-    pg.insert_htmlbox(mu.Rect(0, 0, w, h), _html_text(text, 72, color, bold=True), opacity=opacity)
+    op = float(spec.get("opacity", 0.22))
+    if logo:
+        Image, _ = _pil()
+        img = open_image(logo).convert("RGBA")
+        img.thumbnail((1600, 1600))
+        img.putalpha(img.split()[-1].point(lambda v: int(v * op)))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        pg = d.new_page(width=img.width, height=img.height)
+        pg.insert_image(pg.rect, stream=buf.getvalue())
+    else:
+        text = (spec.get("text") or "").strip() or WATERMARK_DEFAULT["text"]
+        w, h = max(200, 46 * len(text)), 120
+        pg = d.new_page(width=w, height=h)
+        pg.insert_htmlbox(mu.Rect(0, 0, w, h), _html_text(text, 72, spec.get("color", "#808080"), bold=True), opacity=op)
     return d
 
 
-def _logo_png(path, opacity):
-    Image, _ = _pil()
-    img = open_image(path).convert("RGBA")
-    img.thumbnail((1600, 1600))
-    a = img.split()[-1].point(lambda v: int(v * opacity))
-    img.putalpha(a)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue(), img.width / max(1, img.height)
+def apply_watermark(doc, spec, logo=None, pages=None):
+    """spec: text, angle (degrees, counter-clockwise as you look at the page), opacity 0..1, size 0..1 of the page."""
+    stamp = _watermark_stamp(spec, logo)
+    angle = float(spec.get("angle", 45))
+    size = max(0.1, min(1.0, float(spec.get("size", 0.8))))
+    for i in (range(doc.page_count) if pages is None else pages):
+        check_cancel()
+        page = doc[i]
+        r = page.rect
+        w, h = r.width * size, r.height * size
+        box = _vis_rect(page, (r.width - w) / 2, (r.height - h) / 2, (r.width + w) / 2, (r.height + h) / 2)
+        page.show_pdf_page(box, stamp, 0, rotate=angle + page.rotation, overlay=True)
 
 
 def pdf_watermark(paths, p):
-    """Faint diagonal text across every page, or a logo dragged with the PDF in the middle of every page."""
+    """Text across every page, or a logo dragged with the PDF, at the angle, size and strength chosen in the preview."""
     mu = _mu()
     paths = paths if isinstance(paths, (list, tuple)) else [paths]
-    pdf = next(x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "pdf")
+    pdfs = [x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "pdf"]
     logo = next((x for x in paths if EXT_CATEGORY.get(ext_of(x)) == "image"), None)
-    doc = mu.open(str(pdf))
-    if logo:
-        data, aspect = _logo_png(logo, 0.22)
-        for page in doc:
-            check_cancel()
-            r = page.rect
-            w = r.width * 0.5
-            h = w / aspect
-            if h > r.height * 0.5:
-                h = r.height * 0.5
-                w = h * aspect
-            vis = (r.width / 2 - w / 2, r.height / 2 - h / 2, r.width / 2 + w / 2, r.height / 2 + h / 2)
-            page.insert_image(_vis_rect(page, *vis), stream=data, rotate=page.rotation, overlay=True)
-    else:
-        text = (p.get("Text") or "").strip() or "CONFIDENTIAL"
-        stamp = _stamp_pdf(text, "#808080", 0.22)
-        for page in doc:
-            check_cancel()
-            r = page.rect
-            box = _vis_rect(page, r.width * 0.08, r.height * 0.25, r.width * 0.92, r.height * 0.75)
-            page.show_pdf_page(box, stamp, 0, rotate=-45 if page.rotation in (0, 180) else 45, overlay=True)
-    out = out_for(pdf, "pdf", "watermarked")
-    doc.save(str(out), garbage=3, deflate=True)
-    return out
+    try:
+        spec = dict(WATERMARK_DEFAULT, **json.loads(p.get("Watermark") or "{}"))
+    except ValueError:
+        spec = dict(WATERMARK_DEFAULT)
+    if p.get("Text"):
+        spec["text"] = p["Text"]
+    outs = []
+    for pdf in pdfs:                                   # several PDFs get the same watermark
+        doc = mu.open(str(pdf))
+        apply_watermark(doc, spec, logo)
+        out = out_for(pdf, "pdf", "watermarked")
+        doc.save(str(out), garbage=3, deflate=True)
+        outs.append(out)
+    return outs
 
 
 def pdf_grayscale(src, p):
@@ -2870,7 +2891,7 @@ def tools(paths: list[str]) -> list[Op]:
                 T("arrange", "Arrange pages…", pdf_arrange, ask=[("Layout", "@pages")]),
                 T("numbers", "Page numbers…", pdf_page_numbers,
                   ask=[("Position", PAGE_NUMBER_POSITIONS), ("Style", PAGE_NUMBER_STYLES)]),
-                T("watermark", "Watermark…", pdf_watermark, ask=[("Text", "CONFIDENTIAL")]),
+                T("watermark", "Watermark…", pdf_watermark, multi=True, ask=[("Watermark", "@watermark")]),
                 T("sign", "Sign…", pdf_sign, ask=[("Sign", "@sign")]),
                 T("gray", "Grayscale", pdf_grayscale),
                 T("count", "Word count", count_words),
@@ -2879,7 +2900,7 @@ def tools(paths: list[str]) -> list[Op]:
                 ops.insert(0, T("unlock", "Unlock…", pdf_unlock, ask=[("Password", "")]))
         elif n == 2 and sorted(EXT_CATEGORY.get(ext_of(x)) for x in paths) == ["image", "pdf"]:
             ops += [T("sign", "Sign…", pdf_sign, multi=True, ask=[("Sign", "@sign")]),
-                    T("logo", "Watermark with logo", pdf_watermark, multi=True)]
+                    T("logo", "Watermark with logo…", pdf_watermark, multi=True, ask=[("Watermark", "@watermark")])]
         if n > 1:
             ops.append(T("merge", "Merge", pdf_merge, multi=True))
     elif cat in ("document", "slides", "ebook"):
