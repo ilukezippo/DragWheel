@@ -50,6 +50,7 @@ EXT_CATEGORY = {
     **{e: "slides" for e in "pptx ppt odp key".split()},
     **{e: "spreadsheet" for e in "xlsx xlsm xls ods csv tsv".split()},
     **{e: "subtitle" for e in "srt vtt ass ssa".split()},
+    **{e: "font" for e in "ttf otf woff woff2".split()},
     **{e: "ebook" for e in "epub mobi fb2 xps oxps".split()},
     **{e: "comic" for e in "cbz cbr cb7 cbt".split()},
     **{e: "archive" for e in "zip tar gz tgz bz2 tbz2 xz txz 7z rar iso cab".split()},
@@ -58,7 +59,7 @@ EXT_CATEGORY = {
 CATEGORY_LABEL = {
     "image": "Image", "video": "Video", "audio": "Audio", "pdf": "PDF",
     "document": "Document", "slides": "Slides", "spreadsheet": "Spreadsheet",
-    "subtitle": "Subtitles", "ebook": "E-book", "comic": "Comic book", "archive": "Archive",
+    "subtitle": "Subtitles", "font": "Font", "ebook": "E-book", "comic": "Comic book", "archive": "Archive",
     "folder": "Folder", "mixed": "Files", "other": "File",
 }
 
@@ -2807,6 +2808,236 @@ def gzip_file(src, p):
     return out
 
 
+# ---- 1.2: files & archives ---------------------------------------------------------------------
+SPLIT_SIZES = ["10 MB", "25 MB (email)", "100 MB", "700 MB (CD)", "4 GB (USB stick, FAT32)"]
+
+
+def _size_bytes(label) -> int:
+    n, unit = str(label).split()[:2]
+    return int(float(n) * (1024 ** 3 if unit.upper().startswith("GB") else 1024 ** 2))
+
+
+def split_parts(paths, p):
+    """Cut into numbered parts (name.zip.001, .002 …) that 7-Zip or WinRAR join back, or DragWheel's Join parts.
+    Archives are cut as they are; anything else is zipped first."""
+    paths = paths if isinstance(paths, (list, tuple)) else [paths]
+    size = _size_bytes(p.get("Part size", SPLIT_SIZES[1]))
+    first = Path(paths[0])
+    if len(paths) == 1 and first.is_file() and EXT_CATEGORY.get(ext_of(first)) in ("archive", "video", "audio"):
+        src = first
+    else:
+        src = pack_paths(paths, "zip")
+    total = src.stat().st_size
+    if total <= size:
+        raise ConversionError("This is already smaller than one part")
+    outs = []
+    with open(src, "rb") as fi:
+        i = 1
+        while True:
+            check_cancel()
+            out = _remember(_target_dir(src) / f"{src.name}.{i:03d}")
+            with open(out, "wb") as fo:
+                left = size
+                while left > 0:
+                    chunk = fi.read(min(8 * 1024 * 1024, left))
+                    if not chunk:
+                        break
+                    fo.write(chunk)
+                    left -= len(chunk)
+            if out.stat().st_size == 0:
+                out.unlink()
+                break
+            outs.append(out)
+            report_progress(min(1.0, i * size / total))
+            i += 1
+    if src != first:
+        src.unlink(missing_ok=True)                 # keep only the parts of the zip we made
+    return outs
+
+
+def is_part_file(path) -> bool:
+    return bool(re.search(r"\.\d{3}$", str(path)))
+
+
+def join_parts(paths, p):
+    """name.ext.001 + .002 + … -> name.ext (all parts are found from any one of them)."""
+    one = Path(paths[0])
+    base = one.name[:-4]
+    parts = sorted(f for f in one.parent.iterdir() if f.name.startswith(base + ".") and is_part_file(f.name)
+                   and f.name[len(base) + 1:].isdigit())
+    nums = [int(f.name[-3:]) for f in parts]
+    if not parts or nums != list(range(1, len(parts) + 1)):
+        missing = sorted(set(range(1, (max(nums) if nums else 0) + 1)) - set(nums))
+        raise ConversionError("Some parts are missing" + (f": {', '.join(f'{n:03d}' for n in missing[:8])}" if missing else ""))
+    out = unique_path(_target_dir(one) / base)
+    total = sum(f.stat().st_size for f in parts)
+    done = 0
+    with open(out, "wb") as fo:
+        for f in parts:
+            with open(f, "rb") as fi:
+                while chunk := fi.read(8 * 1024 * 1024):
+                    check_cancel()
+                    fo.write(chunk)
+                    done += len(chunk)
+                    report_progress(done / max(1, total))
+    return out
+
+
+PROTECT_FORMATS = ["ZIP (AES-256)", "7Z (AES-256, hides file names)"]
+
+
+def protect_archive(paths, p):
+    """A password-protected archive. ZIP opens in 7-Zip/WinRAR (Windows' own ZIP can't read AES);
+    7Z also hides the file names."""
+    paths = paths if isinstance(paths, (list, tuple)) else [paths]
+    pw = p.get("Password", "")
+    if not pw:
+        raise ConversionError("Password cannot be empty")
+    items = [Path(x) for x in paths]
+    first = items[0]
+    name = (first.name if first.is_dir() else first.stem) if len(items) == 1 else (first.parent.name or "Archive")
+    files = []
+    for it in items:
+        if it.is_dir():
+            files += [(f, f.relative_to(it.parent)) for f in sorted(it.rglob("*")) if f.is_file()]
+        else:
+            files.append((it, Path(it.name)))
+    if p.get("Format", PROTECT_FORMATS[0]).startswith("7Z"):
+        import py7zr
+        out = unique_path(_target_dir(first) / f"{name} (protected).7z")
+        _remember(out)
+        with py7zr.SevenZipFile(out, "w", password=pw, header_encryption=True) as z:
+            for f, arc in files:
+                check_cancel()
+                z.write(f, str(arc).replace("\\", "/"))
+        return out
+    import pyzipper
+    out = unique_path(_target_dir(first) / f"{name} (protected).zip")
+    _remember(out)
+    with pyzipper.AESZipFile(out, "w", compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as z:
+        z.setpassword(pw.encode("utf-8"))
+        for f, arc in files:
+            check_cancel()
+            z.write(f, str(arc).replace("\\", "/"))
+    return out
+
+
+# fonts
+def _font(src):
+    from fontTools.ttLib import TTFont
+    return TTFont(str(src))
+
+
+def _font_ext(font) -> str:
+    return "otf" if "CFF " in font or "CFF2" in font else "ttf"
+
+
+def font_to(fmt):
+    def f(src, p):
+        font = _font(src)
+        if fmt in ("woff", "woff2"):
+            font.flavor = fmt
+            out = out_for(src, fmt)
+        elif fmt == "otf" and _font_ext(font) == "ttf":      # a TrueType web font stays TrueType
+            font.flavor = None
+            out = out_for(src, "ttf")
+        elif fmt == "ttf" and _font_ext(font) == "otf":
+            _otf_to_ttf(font)
+            font.flavor = None
+            out = out_for(src, "ttf")
+        else:
+            font.flavor = None
+            out = out_for(src, fmt)
+        font.save(str(out))
+        return out
+    return f
+
+
+def _otf_to_ttf(font, max_err=1.0, reverse_direction=True):
+    """CFF (PostScript) outlines -> TrueType quadratic outlines (fontTools' otf2ttf recipe)."""
+    from fontTools.pens.cu2quPen import Cu2QuPen
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+    from fontTools.ttLib import newTable
+    glyph_order = font.getGlyphOrder()
+    glyph_set = font.getGlyphSet()
+    glyf = newTable("glyf")
+    glyf.glyphOrder = glyph_order
+    glyf.glyphs = {}
+    for name in glyph_order:
+        pen = TTGlyphPen(glyph_set)
+        glyph_set[name].draw(Cu2QuPen(pen, max_err, reverse_direction=reverse_direction))
+        glyf[name] = pen.glyph()
+    font["loca"] = newTable("loca")
+    font["glyf"] = glyf
+    for t in ("CFF ", "CFF2", "VORG"):
+        if t in font:
+            del font[t]
+    font["maxp"] = newTable("maxp")
+    font["maxp"].tableVersion = 0x00010000
+    for k in ("maxZones", "maxTwilightPoints", "maxStorage", "maxFunctionDefs", "maxInstructionDefs",
+              "maxStackElements", "maxSizeOfInstructions", "maxComponentElements"):
+        setattr(font["maxp"], k, 0)
+    font["maxp"].maxZones = 1
+    font["head"].glyphDataFormat = 0
+    font["post"].formatType = 2.0
+    font["post"].extraNames = []
+    font["post"].mapping = {}
+    font["post"].glyphOrder = glyph_order
+    font.sfntVersion = "\x00\x01\x00\x00"
+
+
+def font_install(src, p):
+    """Install for the signed-in user (no admin needed): copied to the user's Fonts folder and registered."""
+    font = _font(src)
+    family = font["name"].getDebugName(4) or Path(src).stem
+    if font.flavor:                                     # web fonts: Windows needs plain TTF/OTF
+        font.flavor = None
+    ext = _font_ext(font)
+    folder = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Fonts"
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{Path(src).stem}.{ext}"
+    font.save(str(dest))
+    if IS_WIN:
+        import ctypes
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows NT\CurrentVersion\Fonts") as k:
+            winreg.SetValueEx(k, f"{family} ({'TrueType' if ext == 'ttf' else 'OpenType'})", 0, winreg.REG_SZ, str(dest))
+        ctypes.windll.gdi32.AddFontResourceW(str(dest))
+        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001D, 0, 0, 0x0002, 1000, None)   # WM_FONTCHANGE
+    return "info:" + json.dumps({"font": family}, ensure_ascii=False)
+
+
+# Arabic text that shows as Ø§Ù„... or as ??? / boxes
+_MOJIBAKE = re.compile("[ØÙÚÛ][\\x80-\\xbf\\u0152\\u0153\\u0160\\u0161\\u0178\\u017d\\u017e\\u0192\\u02c6\\u02dc\\u2013-\\u203a\\u20ac\\u2122]")
+
+
+def _fix_arabic_text(raw: bytes) -> tuple[str, str]:
+    """-> (text, what was wrong)"""
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1256", "replace"), "windows-1256"
+    if len(_MOJIBAKE.findall(text)) >= 3:                 # UTF-8 that was opened as Western text and saved again
+        for enc in ("cp1252", "latin-1"):
+            try:
+                fixed = text.encode(enc).decode("utf-8")
+                return fixed, "mojibake"
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+    return text, ""
+
+
+def fix_arabic_text(src, p):
+    raw = Path(src).read_bytes()
+    text, what = _fix_arabic_text(raw)
+    if not what:
+        raise ConversionError("This file's Arabic text is already fine (UTF-8)")
+    out = out_for(src, ext_of(src), "fixed")
+    bom = ext_of(src) in ("csv", "txt", "tsv")              # Excel and old Notepad read Arabic correctly with a BOM
+    out.write_text(text, encoding="utf-8-sig" if bom else "utf-8", newline="")
+    return out
+
+
 def archive_targets(exclude: str = "") -> list[str]:
     return [f for f in ARCHIVE_OUT if f != exclude]
 
@@ -2913,6 +3144,10 @@ def conversions(paths: list[str]) -> list[Op]:
             else:
                 add(f, subs_ffmpeg(f))
         add("txt", subs_to_txt)
+    elif cat == "font":
+        for f in ("ttf", "woff", "woff2", "otf"):
+            if f != e and not (f == "otf" and e == "ttf"):        # TrueType -> CFF isn't a clean conversion
+                add(f, font_to(f), f.upper())
     elif cat == "comic":
         add("pdf", comic_to_pdf)
         if e != "cbz":
@@ -3047,9 +3282,18 @@ def tools(paths: list[str]) -> list[Op]:
             set(EXT_CATEGORY.get(ext_of(x)) for x in paths) == {"subtitle", "video"}:
         ops.append(T("burn", "Burn subtitles", burn_subtitles, multi=True))
         ops.append(T("muxsubs", "Add subtitles to MKV", mux_subtitles, multi=True))
+    if cat == "font":
+        ops.append(T("install", "Install font", font_install))
+    if all(ext_of(x) in ("txt", "csv", "tsv", "srt", "ass", "ssa", "vtt", "md", "html", "htm") for x in paths):
+        ops.append(T("fixarabic", "Fix Arabic text", fix_arabic_text))
+    if paths and all(is_part_file(x) for x in paths):        # name.zip.001 …: put them back together
+        return [T("join", "Join parts", join_parts, multi=True)]
     # Folders, archives and "other" files already get ZIP/7Z/... in the Convert wheel
     if cat not in ("archive", "folder", "mixed", "other"):
         ops.append(T("zip", "Zip", to_zip, multi=True))
+    ops.append(T("protect_zip", "Zip with password…", protect_archive, multi=True,
+                 ask=[("Password", ""), ("Format", PROTECT_FORMATS)]))
+    ops.append(T("splitparts", "Split into parts…", split_parts, multi=True, ask=[("Part size", SPLIT_SIZES)]))
     return ops
 
 

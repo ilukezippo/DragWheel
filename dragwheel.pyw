@@ -66,6 +66,395 @@ def mode_keys() -> dict[str, str]:
 
 
 # ============================================================================
+# Files: batch rename, checksum, shred, send to phone
+# ============================================================================
+_AR_NUM = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
+_EN_NUM = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+
+def _date_of(path, source):
+    import datetime
+    if source == "today":
+        return datetime.date.today()
+    if source == "taken":
+        try:
+            from PIL import Image
+            with Image.open(path) as im:
+                v = (im.getexif().get_ifd(0x8769) or {}).get(36867) or im.getexif().get(306)
+            if v:
+                return datetime.datetime.strptime(str(v)[:10], "%Y:%m:%d").date()
+        except Exception:
+            pass
+    return datetime.date.fromtimestamp(os.path.getmtime(path))
+
+
+class BatchRenameDialog(QDialog):
+    """Rename many files at once with a live preview: new name or find/replace, numbers, dates,
+    Arabic or Western numerals, letter case."""
+    DATE_FORMATS = ["2026-10-24", "24-10-2026", "20261024"]
+
+    def __init__(self, paths):
+        super().__init__(None, Qt.WindowStaysOnTopHint)
+        from PySide6.QtWidgets import QSpinBox, QTableWidget, QHeaderView, QRadioButton, QButtonGroup
+        self.setWindowTitle(f"{APP} — " + tr("Rename…").rstrip("…"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.resize(820, 560)
+        natural = lambda t: [int(x) if x.isdigit() else x.lower() for x in __import__("re").split(r"(\d+)", Path(t).name)]
+        self.paths = sorted((str(p) for p in paths), key=natural)
+        root = QHBoxLayout(self)
+        form = QFormLayout()
+        side = QVBoxLayout()
+        side.addLayout(form)
+        root.addLayout(side, 0)
+        self.name_mode = QComboBox()
+        self.name_mode.addItem(tr("Keep the name"), "keep")
+        self.name_mode.addItem(tr("New name"), "new")
+        form.addRow(tr("Name"), self.name_mode)
+        self.new_name = QLineEdit()
+        self.new_name.setPlaceholderText(tr("e.g. Trip"))
+        form.addRow("", self.new_name)
+        self.find, self.repl = QLineEdit(), QLineEdit()
+        form.addRow(tr("Find"), self.find)
+        form.addRow(tr("Replace with"), self.repl)
+        self.num_on = QCheckBox(tr("Add a number"))
+        self.num_start, self.num_digits = QSpinBox(), QSpinBox()
+        self.num_start.setRange(0, 99999)
+        self.num_start.setValue(1)
+        self.num_digits.setRange(1, 6)
+        self.num_digits.setValue(max(2, len(str(len(self.paths)))))
+        nrow = QHBoxLayout()
+        nrow.addWidget(QLabel(tr("from")))
+        nrow.addWidget(self.num_start)
+        nrow.addWidget(QLabel(tr("digits")))
+        nrow.addWidget(self.num_digits)
+        form.addRow(self.num_on, nrow)
+        self.date_on = QCheckBox(tr("Add the date"))
+        self.date_src = QComboBox()
+        for label, key in ((tr("Date taken (photos) or modified"), "taken"), (tr("Date modified"), "modified"), (tr("Today"), "today")):
+            self.date_src.addItem(label, key)
+        self.date_fmt = QComboBox()
+        for f in self.DATE_FORMATS:
+            self.date_fmt.addItem(f, f)
+        drow = QVBoxLayout()
+        drow.addWidget(self.date_src)
+        drow.addWidget(self.date_fmt)
+        form.addRow(self.date_on, drow)
+        self.place = QComboBox()
+        self.place.addItem(tr("After the name"), "after")
+        self.place.addItem(tr("Before the name"), "before")
+        form.addRow(tr("Number and date go"), self.place)
+        self.digits = QComboBox()
+        for label, key in ((tr("Keep numerals as they are"), "keep"), ("0123 " + tr("Western"), "en"), ("٠١٢٣ " + tr("Arabic"), "ar")):
+            self.digits.addItem(label, key)
+        form.addRow(tr("Numerals"), self.digits)
+        self.case = QComboBox()
+        for label, key in ((tr("Keep"), "keep"), ("lowercase", "lower"), ("UPPERCASE", "upper"), ("Title Case", "title")):
+            self.case.addItem(label, key)
+        form.addRow(tr("Letters"), self.case)
+        side.addStretch(1)
+        right = QVBoxLayout()
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels([tr("Now"), tr("After")])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setStyleSheet(f"QTableWidget{{background:{theme.hexc('surface')};color:{theme.hexc('text')};"
+                                 f"gridline-color:{theme.hexc('border')};border:1px solid {theme.hexc('border')};border-radius:6px}}"
+                                 f"QHeaderView::section{{background:{theme.hexc('bg')};color:{theme.hexc('dim')};border:none;padding:4px}}")
+        right.addWidget(self.table, 1)
+        self.status = QLabel()
+        right.addWidget(self.status)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.ok = bb.button(QDialogButtonBox.Ok)
+        self.ok.setText(tr("Rename"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        right.addWidget(bb)
+        root.addLayout(right, 1)
+        for w in (self.name_mode, self.date_src, self.date_fmt, self.place, self.digits, self.case):
+            w.currentIndexChanged.connect(self._preview)
+        for w in (self.new_name, self.find, self.repl):
+            w.textChanged.connect(self._preview)
+        for w in (self.num_on, self.date_on):
+            w.toggled.connect(self._preview)
+        for w in (self.num_start, self.num_digits):
+            w.valueChanged.connect(self._preview)
+        self.new_name.textChanged.connect(lambda t: t and self.name_mode.setCurrentIndex(1))
+        self._dates = {}
+        self._preview()
+
+    def new_names(self):
+        out = []
+        mode = self.name_mode.currentData()
+        for i, p in enumerate(self.paths):
+            src = Path(p)
+            stem, suffix = (src.name, "") if src.is_dir() else (src.stem, src.suffix)
+            base = self.new_name.text().strip() if mode == "new" and self.new_name.text().strip() else stem
+            if self.find.text():
+                base = base.replace(self.find.text(), self.repl.text())
+            extra = []
+            if self.date_on.isChecked():
+                key = (p, self.date_src.currentData())
+                if key not in self._dates:
+                    self._dates[key] = _date_of(p, key[1])
+                d = self._dates[key]
+                fmt = self.date_fmt.currentData()
+                extra.append(d.strftime("%Y-%m-%d") if fmt.startswith("2026-") else
+                             d.strftime("%d-%m-%Y") if fmt.startswith("24-") else d.strftime("%Y%m%d"))
+            if self.num_on.isChecked():
+                extra.append(str(self.num_start.value() + i).zfill(self.num_digits.value()))
+            if extra:
+                tag = " ".join(extra)
+                base = f"{tag} {base}" if self.place.currentData() == "before" else f"{base} {tag}"
+            case = self.case.currentData()
+            base = base.lower() if case == "lower" else base.upper() if case == "upper" else base.title() if case == "title" else base
+            dig = self.digits.currentData()
+            base = base.translate(_AR_NUM) if dig == "ar" else base.translate(_EN_NUM) if dig == "en" else base
+            base = "".join(c for c in base if c not in '<>:"/\\|?*').strip().rstrip(".")
+            out.append(str(src.with_name((base or stem) + suffix)))
+        return out
+
+    def _preview(self):
+        from PySide6.QtWidgets import QTableWidgetItem
+        new = self.new_names()
+        self.table.setRowCount(len(self.paths))
+        seen, problems = {}, 0
+        for old, n in zip(self.paths, new):
+            seen[n.lower()] = seen.get(n.lower(), 0) + 1
+        olds = {p.lower() for p in self.paths}
+        for r, (old, n) in enumerate(zip(self.paths, new)):
+            a, b = QTableWidgetItem(Path(old).name), QTableWidgetItem(Path(n).name)
+            clash = seen[n.lower()] > 1 or (n.lower() not in olds and os.path.exists(n))
+            if clash:
+                b.setForeground(QColor(theme.hexc("danger")))
+                problems += 1
+            self.table.setItem(r, 0, a)
+            self.table.setItem(r, 1, b)
+        changed = sum(1 for o, n in zip(self.paths, new) if o != n)
+        self.status.setText(tr("{n} names clash — change the settings", n=problems) if problems
+                            else tr("{n} of {m} files will be renamed", n=changed, m=len(self.paths)))
+        self.ok.setEnabled(problems == 0 and changed > 0)
+
+    def apply(self):
+        """Two steps (via temporary names) so swapping names never collides. Returns [(old, new)]."""
+        import uuid
+        pairs = [(o, n) for o, n in zip(self.paths, self.new_names()) if o != n]
+        temps = []
+        for o, n in pairs:
+            t = str(Path(o).with_name(f".dw-{uuid.uuid4().hex[:8]}{Path(o).suffix}"))
+            os.rename(o, t)
+            temps.append((t, n, o))
+        done = []
+        for t, n, o in temps:
+            os.rename(t, n)
+            done.append((o, n))
+        return done
+
+
+def file_sha256(path, progress=None) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(4 * 1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def shred_path(path):
+    """Overwrite with random data, rename, then delete — so the content can't be undeleted.
+    (On SSDs the drive may keep old copies internally; nothing outside the drive can fully prevent that.)"""
+    import uuid
+    p = Path(path)
+    if p.is_dir() and not p.is_symlink():
+        for f in sorted(p.rglob("*"), key=lambda x: len(x.parts), reverse=True):
+            shred_path(f) if f.is_file() else f.rmdir()
+        p.rmdir()
+        return
+    size = p.stat().st_size
+    with open(p, "r+b", buffering=0) as f:
+        left = size
+        while left > 0:
+            n = min(1024 * 1024, left)
+            f.write(os.urandom(n))
+            left -= n
+        f.flush()
+        os.fsync(f.fileno())
+        f.truncate(0)
+    tmp = p.with_name(uuid.uuid4().hex)
+    os.rename(p, tmp)
+    os.remove(tmp)
+
+
+def _lan_ip() -> str:
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))                  # picks the Wi-Fi/LAN address; nothing is sent
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+class PhoneShare(QDialog):
+    """Share files with a phone on the same Wi-Fi: a QR code opens a page served straight from this PC."""
+
+    def __init__(self, paths):
+        super().__init__(None, Qt.WindowStaysOnTopHint)
+        import http.server
+        import secrets
+        import urllib.parse
+        self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.paths = [Path(x) for x in paths]
+        token = secrets.token_urlsafe(6)
+        share = self
+        self.hits = 0
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(h):
+                path = urllib.parse.unquote(h.path)
+                if not path.startswith(f"/{token}"):
+                    h.send_error(404)
+                    return
+                rest = path[len(token) + 1:].strip("/")
+                if rest == "" and not (len(share.paths) == 1 and share.paths[0].is_file()):
+                    return h._page()
+                if rest == "" or rest.startswith("f/"):
+                    i = 0 if rest == "" else int(rest[2:])
+                    f = share.paths[i]
+                    return h._zip([f]) if f.is_dir() else h._file(f)
+                if rest == "all.zip":
+                    return h._zip(share.paths)
+                h.send_error(404)
+
+            def _page(h):
+                import html as _h
+                rows = "".join(f'<a class="f" href="/{token}/f/{i}">{_h.escape(p.name)}{" (ZIP)" if p.is_dir() else ""}'
+                               f'<small>{_human(p)}</small></a>' for i, p in enumerate(share.paths))
+                body = (f'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>DragWheel</title>'
+                        f'<style>body{{font:16px system-ui;margin:0;padding:18px;background:#1c1c1e;color:#f5f5f7}}'
+                        f'.f{{display:block;padding:14px;margin:10px 0;border-radius:12px;background:#2c2c2e;color:#fff;text-decoration:none}}'
+                        f'small{{display:block;color:#a1a1a6;margin-top:4px}}.all{{background:#ff8a00;color:#1c1c1e;font-weight:600}}</style>'
+                        f'<h3>DragWheel</h3>{rows}<a class="f all" href="/{token}/all.zip">Download all (ZIP)</a>').encode()
+                h.send_response(200)
+                h.send_header("Content-Type", "text/html; charset=utf-8")
+                h.send_header("Content-Length", str(len(body)))
+                h.end_headers()
+                h.wfile.write(body)
+
+            def _file(h, f):
+                import mimetypes
+                share._hit(f.name)
+                h.send_response(200)
+                h.send_header("Content-Type", mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+                h.send_header("Content-Length", str(f.stat().st_size))
+                h.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(f.name))
+                h.end_headers()
+                with open(f, "rb") as fi:
+                    try:
+                        shutil_copy(fi, h.wfile)
+                    except OSError:
+                        pass
+
+            def _zip(h, items):
+                import zipfile
+                name = (items[0].name if len(items) == 1 else "DragWheel") + ".zip"
+                share._hit(name)
+                h.send_response(200)
+                h.send_header("Content-Type", "application/zip")
+                h.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(name))
+                h.end_headers()
+                try:
+                    with zipfile.ZipFile(h.wfile, "w", zipfile.ZIP_STORED) as z:      # streamed as it's made
+                        for it in items:
+                            files = [it] if it.is_file() else [x for x in it.rglob("*") if x.is_file()]
+                            for x in files:
+                                z.write(x, str(x.relative_to(it.parent)))
+                except OSError:
+                    pass
+
+            def log_message(h, *a):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), H)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://{_lan_ip()}:{self.server.server_address[1]}/{token}/"
+        lay = QVBoxLayout(self)
+        title = QLabel("<b>" + tr("Scan with your phone's camera") + "</b>")
+        title.setAlignment(Qt.AlignCenter)
+        lay.addWidget(title)
+        qr = QLabel()
+        qr.setAlignment(Qt.AlignCenter)
+        try:
+            import io as _io
+            import segno
+            buf = _io.BytesIO()
+            segno.make(self.url, error="m").save(buf, kind="png", scale=7, border=3, dark="#000", light="#fff")
+            qr.setPixmap(QPixmap.fromImage(QImage.fromData(buf.getvalue())))
+        except Exception as e:
+            winsys.log(f"qr: {e}")
+        lay.addWidget(qr)
+        link = QLabel(f"<span style='color:{theme.hexc('dim')}'>{self.url}</span>")
+        link.setAlignment(Qt.AlignCenter)
+        link.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(link)
+        what = self.paths[0].name if len(self.paths) == 1 else tr("{n} files", n=len(self.paths))
+        info = QLabel(tr("Sharing {what}. Your phone must be on the same Wi-Fi. If Windows asks, allow DragWheel on "
+                         "private networks. Nothing goes through the internet; sharing stops when you close this window.",
+                         what=what))
+        info.setWordWrap(True)
+        info.setFixedWidth(360)
+        lay.addWidget(info)
+        self.count = QLabel()
+        lay.addWidget(self.count)
+        stop = QPushButton(tr("Stop sharing"))
+        stop.clicked.connect(self.close)
+        lay.addWidget(stop)
+        self._poll = QTimer(self, interval=500, timeout=self._update)
+        self._poll.start()
+        self._last = ""
+
+    def _hit(self, name):
+        self.hits += 1
+        self._last = name
+
+    def _update(self):
+        if self.hits:
+            self.count.setText(tr("Downloaded {n} time(s) — last: {name}", n=self.hits, name=self._last))
+
+    def closeEvent(self, e):
+        try:
+            self.server.shutdown()
+            self.server.server_close()
+        except Exception:
+            pass
+        super().closeEvent(e)
+
+
+def shutil_copy(fi, fo):
+    while chunk := fi.read(1024 * 1024):
+        fo.write(chunk)
+
+
+def _human(p: Path) -> str:
+    try:
+        n = p.stat().st_size if p.is_file() else sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+    except OSError:
+        return ""
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "bytes" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+# ============================================================================
 # File actions (don't use the engine)
 # ============================================================================
 class Actions:
@@ -83,7 +472,113 @@ class Actions:
             A("float", "Float", self.float),
             A("reveal", "Show", self.reveal, "in Explorer"),
             A("openwith", "Open with…", self.open_with),
+            A("rename", "Rename…", self.rename, "several at once"),
+            A("hash", "Checksum", self.checksum, "SHA-256"),
+            A("phone", "Send to phone", self.phone, "over Wi-Fi"),
+            A("shred", "Shred…", self.shred, "can't be undone"),
         ]
+
+    def rename(self, paths, p):
+        dlg = BatchRenameDialog(paths)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        try:
+            done = dlg.apply()
+        except OSError as e:
+            self.app.toast.show_msg(tr("Couldn't rename"), str(e), "err", 8000)
+            return
+        winsys.log("renamed: " + "; ".join(f"{Path(o).name} -> {Path(n).name}" for o, n in done[:50]))
+        self.app.toast.show_result(tr("Renamed {n} files", n=len(done)), [n for _, n in done])
+
+    def checksum(self, paths, p):
+        files = [Path(x) for x in paths if Path(x).is_file()]
+        if not files:
+            self.app.toast.show_msg(tr("Checksum"), tr("Pick files, not folders"), "err", 4000)
+            return
+        card = self.app.toast.show_busy(tr("Checksum"), files[0].name if len(files) == 1 else tr("{n} files", n=len(files)))
+        result = {}
+        clip = QGuiApplication.clipboard().text().strip().lower()
+
+        def work():
+            try:
+                result["ok"] = [(f, file_sha256(f)) for f in files]
+            except Exception as e:
+                result["err"] = str(e)
+
+        def check():
+            if not result:
+                QTimer.singleShot(150, check)
+                return
+            if card in self.app.toast.cards:
+                card.close_card()
+            if "err" in result:
+                self.app.toast.show_msg(tr("Checksum"), result["err"], "err", 6000)
+                return
+            pairs = result["ok"]
+            text = "\n".join(f"{h}  {f.name}" for f, h in pairs)
+            import re as _re
+            if _re.fullmatch(r"[0-9a-f]{64}", clip):                     # a hash was copied: compare
+                match = next((f for f, h in pairs if h == clip), None)
+                if match:
+                    self.app.toast.show_msg("✓ " + tr("Checksum matches"), tr("{name} is the genuine file.", name=match.name), "ok", 10000)
+                else:
+                    self.app.toast.show_msg("✗ " + tr("Checksum doesn't match"),
+                                            tr("The copied checksum is different — the file may be damaged or not the original."),
+                                            "err", 12000)
+                return
+            QGuiApplication.clipboard().setText(text)
+            short = pairs[0][1][:16] + "…" if len(pairs) == 1 else tr("{n} files", n=len(pairs))
+            self.app.toast.show_msg(tr("SHA-256 copied"), f"{short}<br><small>{tr('Copy a published checksum first to compare it instead.')}</small>", "ok", 9000)
+        threading.Thread(target=work, daemon=True).start()
+        QTimer.singleShot(150, check)
+
+    def phone(self, paths, p):
+        w = PhoneShare(paths)
+        self.app._phone_windows = getattr(self.app, "_phone_windows", [])
+        self.app._phone_windows.append(w)
+        w.show()
+        w.raise_()
+
+    def shred(self, paths, p):
+        box = QMessageBox()
+        box.setWindowTitle(f"{APP} — " + tr("Shred…").rstrip("…"))
+        box.setWindowIcon(app_icon())
+        box.setStyleSheet(i18n.css(DIALOG_CSS))
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        box.setIcon(QMessageBox.Warning)
+        names = "<br>".join("• " + Path(x).name for x in paths[:6]) + ("<br>…" if len(paths) > 6 else "")
+        box.setText("<b>" + tr("Destroy {n} item(s) for good?", n=len(paths)) + "</b><br><br>" + names + "<br><br>" +
+                    tr("They're overwritten and deleted. They won't go to the Recycle Bin and can't be recovered."))
+        go = box.addButton(tr("Shred"), QMessageBox.DestructiveRole)
+        box.addButton(tr("Cancel"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not go:
+            return
+        card = self.app.toast.show_busy(tr("Shredding…"), Path(paths[0]).name)
+        result = {}
+
+        def work():
+            errs = []
+            for x in paths:
+                try:
+                    shred_path(x)
+                except Exception as e:
+                    errs.append(f"{Path(x).name}: {e}")
+            result["errs"] = errs
+
+        def check():
+            if not result:
+                QTimer.singleShot(200, check)
+                return
+            if card in self.app.toast.cards:
+                card.close_card()
+            winsys.log(f"shredded {len(paths)} item(s); errors: {result['errs']}")
+            if result["errs"]:
+                self.app.toast.show_msg(tr("Some items couldn't be shredded"), "<br>".join(result["errs"][:4]), "err", 10000)
+            else:
+                self.app.toast.show_msg(tr("Shredded"), tr("{n} item(s) destroyed", n=len(paths)), "ok", 4000)
+        threading.Thread(target=work, daemon=True).start()
+        QTimer.singleShot(200, check)
 
     def copy(self, paths, p):
         md = QMimeData()
@@ -4441,6 +4936,9 @@ class DragWheelApp(QObject):
         elif err:
             winsys.log(f"job failed: {op.group}/{op.id} on {worker.paths[:3]}: {err}")
             target.show_msg(tr("{what} failed", what=tr(op.label).rstrip("…")), tr(err), "err", 8000)
+        elif op.id == "install" and outs:
+            names = [json.loads(str(o)[5:]).get("font", "") for o in outs if str(o).startswith("info:")]
+            target.show_msg(tr("Font installed"), ", ".join(names) + "<br>" + tr("Ready in your apps (restart an app if it was open)."), "ok", 8000)
         elif op.id == "count" and outs:
             infos = [json.loads(str(o)[5:]) for o in outs if str(o).startswith("info:")]
             tot = {k: sum(i.get(k, 0) for i in infos) for k in ("words", "chars", "chars_spaces", "pages")}
