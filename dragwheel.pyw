@@ -2527,84 +2527,43 @@ def _render_page(doc, i, width, extra_rot=0):
     return QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
 
 
-def _reorder_list_class():
-    from PySide6.QtWidgets import QListWidget
+class PageBoard(QWidget):
+    """The pages of one or more PDFs (and pictures) as thumbnails. Drag to reorder (an orange line shows where
+    they'll go), Ctrl/Shift to pick several, Delete removes, turn left/right; drop PDFs or pictures from Explorer
+    to add their pages. value() -> JSON for engine.pdf_arrange."""
+    TH = 128            # thumbnail box
+    GAP = 18
+    LABEL = 20
 
-    class ReorderList(QListWidget):
-        """Icon grid whose drag-and-drop reorders the pages (Qt's icon mode only moves the pictures around)."""
-        def dropEvent(self, e):
-            if not e.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
-                e.ignore()                                         # only pages from this grid
-                return
-            pos = e.position().toPoint()
-            target = self.indexAt(pos)
-            row = target.row() if target.isValid() else self.count()
-            if target.isValid():
-                r = self.visualItemRect(self.item(row))
-                if pos.x() > r.center().x():                       # dropped on the right half: after it
-                    row += 1
-            moving = sorted(self.selectedItems(), key=self.row)
-            if not moving:
-                e.ignore()
-                return
-            before = sum(1 for it in moving if self.row(it) < row)
-            taken = [self.takeItem(self.row(it)) for it in moving]
-            row -= before
-            for k, it in enumerate(taken):
-                self.insertItem(row + k, it)
-                it.setSelected(True)
-            e.setDropAction(Qt.IgnoreAction)
-            e.accept()
-            self.reordered()
-
-        def reordered(self):
-            pass
-
-    return ReorderList
-
-
-class PageGrid(QWidget):
-    """Thumbnails of every page: drag to reorder, select and press Delete to remove, turn with the buttons.
-    value() -> "orig:extra_rotation,..." in the new order."""
-    THUMB = 132
-
-    def __init__(self, path):
+    def __init__(self, paths):
         super().__init__()
-        from PySide6.QtWidgets import QListWidget, QListView, QAbstractItemView
-        import pymupdf
-        self.path = path
-        self.doc = pymupdf.open(path)
+        from PySide6.QtWidgets import QScrollArea
+        self.sources = []       # file paths
+        self.docs = {}          # source index -> open PyMuPDF document
+        self.items = []         # dicts: src, page, rot, thumb (QImage | None), sel
+        self._anchor = None
+        self._press = None      # (pos, index, was_selected)
+        self._drop_at = None    # insertion index while dragging
+        self.canvas = QWidget()
+        self.canvas.setMouseTracking(True)
+        self.canvas.setFocusPolicy(Qt.StrongFocus)
+        self.canvas.paintEvent = self._paint
+        self.canvas.mousePressEvent = self._mouse_press
+        self.canvas.mouseMoveEvent = self._mouse_move
+        self.canvas.mouseReleaseEvent = self._mouse_release
+        self.canvas.keyPressEvent = self._key
+        self.canvas.resizeEvent = lambda e: self._relayout()
+        self.scroll = QScrollArea()
+        self.scroll.setWidget(self.canvas)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setMinimumSize(640, 380)
+        self.scroll.setStyleSheet(f"QScrollArea{{background:{theme.hexc('canvas')};border:none;border-radius:8px}}")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        self.grid = _reorder_list_class()()
-        self.grid.reordered = self._renumber
-        self.grid.setViewMode(QListView.IconMode)
-        self.grid.setIconSize(QSize(self.THUMB, self.THUMB))
-        self.grid.setGridSize(QSize(self.THUMB + 24, self.THUMB + 34))
-        self.grid.setResizeMode(QListView.Adjust)
-        self.grid.setMovement(QListView.Static)
-        self.grid.setDragEnabled(True)
-        self.grid.setAcceptDrops(True)
-        self.grid.setDropIndicatorShown(True)
-        self.grid.setDragDropMode(QAbstractItemView.InternalMove)
-        self.grid.setDefaultDropAction(Qt.MoveAction)
-        self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.grid.setMinimumSize(640, 380)
-        self.grid.setStyleSheet(f"QListWidget{{background:{theme.hexc('canvas')};border:none;border-radius:8px}}"
-                                f"QListWidget::item{{color:{theme.hexc('text')}}}"
-                                f"QListWidget::item:selected{{background:{theme.hexc('accent')};color:{theme.hexc('on_accent')};border-radius:6px}}")
-        lay.addWidget(self.grid)
-        from PySide6.QtWidgets import QListWidgetItem
-        self.images = {}
-        for i in range(self.doc.page_count):
-            it = QListWidgetItem(str(i + 1))
-            it.setData(Qt.UserRole, i)
-            it.setData(Qt.UserRole + 1, 0)
-            it.setTextAlignment(Qt.AlignHCenter)
-            self.grid.addItem(it)
+        lay.addWidget(self.scroll)
         row = QHBoxLayout()
         for label, fn in (("⟲  " + tr("Turn left"), lambda: self._turn(-90)), ("⟳  " + tr("Turn right"), lambda: self._turn(90)),
-                          ("✕  " + tr("Delete"), self._delete)):
+                          ("✕  " + tr("Delete"), self._delete), ("＋  " + tr("Add files…"), self._add_dialog)):
             b = QPushButton(label)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -2612,74 +2571,262 @@ class PageGrid(QWidget):
         self.count = QLabel()
         row.addWidget(self.count)
         lay.addLayout(row)
-        hint = QLabel(tr("Drag pages to change the order · select several with Ctrl or Shift · Delete removes them"))
+        hint = QLabel(tr("Drag pages to change the order · Ctrl or Shift picks several · Delete removes them · "
+                         "drop PDFs or pictures here to add their pages"))
+        hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
         lay.addWidget(hint)
-        self.grid.model().rowsMoved.connect(lambda *a: self._renumber())
-        self._renumber()
-        self._stop = False
-        self._next = 0
-        self._timer = QTimer(self, interval=0, timeout=self._load_some)   # a few pages per tick: stays responsive
-        self._timer.start()
+        self.setAcceptDrops(True)
+        self._timer = QTimer(self, interval=0, timeout=self._render_some)
+        for f in paths:
+            self._add_file(f)
+        self._original = len(self.items)
 
-    def _load_some(self):
+    # ---- content
+    def _add_file(self, f, at=None):
+        import pymupdf
+        cat = engine.EXT_CATEGORY.get(engine.ext_of(f))
+        if cat not in ("pdf", "image"):
+            return 0
+        si = len(self.sources)
+        self.sources.append(str(f))
+        try:
+            self.docs[si] = pymupdf.open(str(f)) if cat == "pdf" else None
+        except Exception as e:
+            winsys.log(f"page board: {f}: {e}")
+            return 0
+        n = self.docs[si].page_count if cat == "pdf" else 1
+        new = [{"src": si, "page": i, "rot": 0, "thumb": None, "sel": False} for i in range(n)]
+        at = len(self.items) if at is None else at
+        self.items[at:at] = new
+        self._relayout()
+        self._timer.start()
+        return n
+
+    def _render_some(self):
         import time
         t0 = time.monotonic()
-        while self._next < self.doc.page_count and time.monotonic() - t0 < 0.04 and not self._stop:
+        for it in self.items:
+            if it["thumb"] is not None:
+                continue
             try:
-                self._got(self._next, _render_page(self.doc, self._next, self.THUMB))
+                d = self.docs.get(it["src"])
+                if d is None:                                 # a picture
+                    img = QImage(self.sources[it["src"]])
+                    if img.isNull():
+                        pil = engine.open_image(self.sources[it["src"]])
+                        pil.thumbnail((400, 400))
+                        img = QImage(pil.convert("RGBA").tobytes("raw", "RGBA"), pil.width, pil.height,
+                                     pil.width * 4, QImage.Format_RGBA8888).copy()
+                    it["thumb"] = img.scaled(self.TH * 2, self.TH * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                else:
+                    it["thumb"] = _render_page(d, it["page"], self.TH * 2)
             except Exception as e:
-                winsys.log(f"page grid: page {self._next + 1}: {e}")
-            self._next += 1
-        if self._next >= self.doc.page_count or self._stop:
+                winsys.log(f"page board thumb: {e}")
+                it["thumb"] = QImage()
+            if time.monotonic() - t0 > 0.04:
+                break
+        self.canvas.update()
+        if all(it["thumb"] is not None for it in self.items):
             self._timer.stop()
 
-    def _got(self, i, img):
-        self.images[i] = img
-        for r in range(self.grid.count()):
-            it = self.grid.item(r)
-            if it.data(Qt.UserRole) == i:
-                self._set_icon(it)
+    # ---- layout
+    def _cols(self):
+        return max(1, (self.scroll.viewport().width() - self.GAP) // (self.TH + self.GAP))
 
-    def _set_icon(self, it):
-        img = self.images.get(it.data(Qt.UserRole))
-        if img is None:
-            return
+    def _cell(self, i):
+        c = self._cols()
+        x = self.GAP + (i % c) * (self.TH + self.GAP)
+        y = self.GAP + (i // c) * (self.TH + self.LABEL + self.GAP)
+        return QRectF(x, y, self.TH, self.TH)
+
+    def _relayout(self):
+        rows = (len(self.items) + self._cols() - 1) // self._cols()
+        self.canvas.setMinimumHeight(self.GAP + rows * (self.TH + self.LABEL + self.GAP))
+        n, orig = len(self.items), getattr(self, "_original", len(self.items))
+        self.count.setText(tr("{n} pages", n=n))
+        self.canvas.update()
+
+    def _index_at(self, pos):
+        for i in range(len(self.items)):
+            if self._cell(i).adjusted(-4, -4, 4, self.LABEL).contains(pos):
+                return i
+        return None
+
+    def _insert_at(self, pos):
+        """Where dropped pages would go: before the page under the cursor, or after it on its right half."""
+        c = self._cols()
+        row_h = self.TH + self.LABEL + self.GAP
+        r = max(0, int((pos.y() - self.GAP / 2) // row_h))
+        col = int(round((pos.x() - self.GAP) / (self.TH + self.GAP)))
+        col = max(0, min(c, col))
+        return max(0, min(len(self.items), r * c + col))
+
+    # ---- painting
+    def _paint(self, _):
+        p = QPainter(self.canvas)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.fillRect(self.canvas.rect(), theme.color("canvas"))
         from PySide6.QtGui import QTransform
-        rot = it.data(Qt.UserRole + 1)
-        pm = QPixmap.fromImage(img.transformed(QTransform().rotate(rot)) if rot else img)
-        it.setIcon(QIcon(pm.scaled(self.THUMB, self.THUMB, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+        for i, it in enumerate(self.items):
+            cell = self._cell(i)
+            if it["sel"]:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(theme.hexc("accent")))
+                p.drawRoundedRect(cell.adjusted(-6, -6, 6, self.LABEL), 8, 8)
+            img = it["thumb"]
+            if img is not None and not img.isNull():
+                if it["rot"]:
+                    img = img.transformed(QTransform().rotate(it["rot"]))
+                s = min(cell.width() / img.width(), cell.height() / img.height())
+                w, h = img.width() * s, img.height() * s
+                r = QRectF(cell.center().x() - w / 2, cell.center().y() - h / 2, w, h)
+                p.fillRect(r, QColor("white"))
+                p.drawImage(r, img)
+            else:
+                p.setPen(QPen(theme.color("dim"), 1, Qt.DashLine))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(cell.adjusted(20, 10, -20, -10))
+            p.setPen(QColor(theme.hexc("on_accent")) if it["sel"] else theme.color("text"))
+            label = str(i + 1) if len(self.sources) == 1 else f"{i + 1}  ·  {Path(self.sources[it['src']]).stem[:14]}"
+            p.drawText(QRectF(cell.left() - 6, cell.bottom() + 2, cell.width() + 12, self.LABEL - 2),
+                       Qt.AlignCenter, label)
+        if self._drop_at is not None:
+            i = self._drop_at
+            c = self._cols()
+            if i < len(self.items):
+                ref = self._cell(i)
+                x = ref.left() - self.GAP / 2
+            else:
+                ref = self._cell(max(0, i - 1))
+                x = ref.right() + self.GAP / 2
+            if i > 0 and i % c == 0 and i < len(self.items):           # start of a row: show after the last of the row above
+                prev = self._cell(i - 1)
+                p.setPen(QPen(QColor(theme.hexc("accent")), 3))
+                p.drawLine(QPointF(prev.right() + self.GAP / 2, prev.top()), QPointF(prev.right() + self.GAP / 2, prev.bottom()))
+            p.setPen(QPen(QColor(theme.hexc("accent")), 3))
+            p.drawLine(QPointF(x, ref.top()), QPointF(x, ref.bottom()))
 
-    def _turn(self, deg):
-        for it in self.grid.selectedItems() or []:
-            it.setData(Qt.UserRole + 1, (it.data(Qt.UserRole + 1) + deg) % 360)
-            self._set_icon(it)
+    # ---- mouse
+    def _mouse_press(self, e):
+        self.canvas.setFocus()
+        if e.button() != Qt.LeftButton:
+            return
+        pos = e.position()
+        i = self._index_at(pos)
+        mods = e.modifiers()
+        if i is None:
+            if not mods & (Qt.ControlModifier | Qt.ShiftModifier):
+                for it in self.items:
+                    it["sel"] = False
+            self.canvas.update()
+            return
+        was = self.items[i]["sel"]
+        if mods & Qt.ShiftModifier and self._anchor is not None:
+            a, b = sorted((self._anchor, i))
+            for k, it in enumerate(self.items):
+                it["sel"] = a <= k <= b
+        elif mods & Qt.ControlModifier:
+            self.items[i]["sel"] = not was
+            self._anchor = i
+        elif not was:
+            for k, it in enumerate(self.items):
+                it["sel"] = k == i
+            self._anchor = i
+        self._press = (pos, i, was)
+        self.canvas.update()
 
-    def _delete(self):
-        sel = self.grid.selectedItems()
-        if len(sel) >= self.grid.count():
-            return                                         # keep at least one page
-        for it in sel:
-            self.grid.takeItem(self.grid.row(it))
-        self._renumber()
+    def _mouse_move(self, e):
+        if self._press is None or not e.buttons() & Qt.LeftButton:
+            return
+        pos = e.position()
+        if self._drop_at is None and (pos - self._press[0]).manhattanLength() < 8:
+            return
+        self.canvas.setCursor(Qt.ClosedHandCursor)
+        self._drop_at = self._insert_at(pos)
+        self.scroll.ensureVisible(int(pos.x()), int(pos.y()), 10, 40)      # scroll near the edges
+        self.canvas.update()
 
-    def keyPressEvent(self, e):
+    def _mouse_release(self, e):
+        if self._drop_at is not None:
+            at = self._drop_at
+            moving = [it for it in self.items if it["sel"]]
+            before = sum(1 for k, it in enumerate(self.items) if it["sel"] and k < at)
+            self.items = [it for it in self.items if not it["sel"]]
+            at -= before
+            self.items[at:at] = moving
+        elif self._press is not None and not e.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
+            i = self._press[1]                            # plain click on a selected page: just that one
+            for k, it in enumerate(self.items):
+                it["sel"] = k == i
+            self._anchor = i
+        self._press = None
+        self._drop_at = None
+        self.canvas.setCursor(Qt.ArrowCursor)
+        self._relayout()
+
+    def _key(self, e):
         if e.key() in (Qt.Key_Delete, Qt.Key_Backspace):
             self._delete()
-        else:
-            super().keyPressEvent(e)
+        elif e.key() == Qt.Key_A and e.modifiers() & Qt.ControlModifier:
+            for it in self.items:
+                it["sel"] = True
+            self.canvas.update()
 
-    def _renumber(self):
-        n = self.grid.count()
-        self.count.setText(tr("{n} pages", n=n) + (f"  ·  {tr('{n} removed', n=self.doc.page_count - n)}"
-                                                   if n < self.doc.page_count else ""))
+    # ---- buttons
+    def _turn(self, deg):
+        for it in self.items:
+            if it["sel"]:
+                it["rot"] = (it["rot"] + deg) % 360
+        self.canvas.update()
+
+    def _delete(self):
+        keep = [it for it in self.items if not it["sel"]]
+        if keep and len(keep) < len(self.items):
+            self.items = keep
+            self._relayout()
+
+    def _add_dialog(self):
+        files, _ = QFileDialog.getOpenFileNames(self, tr("Add files…"), str(Path(self.sources[0]).parent),
+                                                "PDF / Images (*.pdf *.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.heic)")
+        for f in files:
+            self._add_file(f)
+
+    # ---- files dropped from Explorer
+    def _files(self, e):
+        md = e.mimeData()
+        return [u.toLocalFile() for u in (md.urls() if md.hasUrls() else []) if u.isLocalFile()
+                and engine.EXT_CATEGORY.get(engine.ext_of(u.toLocalFile())) in ("pdf", "image")]
+
+    def dragEnterEvent(self, e):
+        if self._files(e):
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e):
+        if self._files(e):
+            pos = self.canvas.mapFrom(self, e.position().toPoint())
+            self._drop_at = self._insert_at(QPointF(pos))
+            self.canvas.update()
+            e.acceptProposedAction()
+
+    def dragLeaveEvent(self, e):
+        self._drop_at = None
+        self.canvas.update()
+
+    def dropEvent(self, e):
+        at = self._drop_at if self._drop_at is not None else len(self.items)
+        for f in self._files(e):
+            at += self._add_file(f, at)
+        self._drop_at = None
+        self._relayout()
+        e.acceptProposedAction()
 
     def stop(self):
-        self._stop = True
+        self._timer.stop()
 
     def value(self):
-        return ",".join(f"{self.grid.item(r).data(Qt.UserRole)}:{self.grid.item(r).data(Qt.UserRole + 1)}"
-                        for r in range(self.grid.count()))
+        return json.dumps({"sources": self.sources, "pages": [[it["src"], it["page"], it["rot"]] for it in self.items]})
 
 
 def _signature_file() -> Path:
@@ -2801,7 +2948,8 @@ class SignPlacer(QWidget):
         elif _signature_file().exists():
             self.sig_path = _signature_file()
         self.sig_img = QImage(str(self.sig_path)) if self.sig_path else None
-        self.rect = [0.58, 0.78, 0.90, 0.88]                 # 0..1 of the page
+        self.places = {}                                     # page -> [x0, y0, x1, y1] (0..1 of the page)
+        self._last = [0.58, 0.78, 0.90, 0.88]
         self._drag = None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -2824,6 +2972,16 @@ class SignPlacer(QWidget):
         nav.addWidget(self.page_lbl, 1)
         nav.addWidget(self.next_b)
         side.addLayout(nav)
+        self.here = QCheckBox(tr("Signature on this page"))
+        self.here.toggled.connect(self._toggle_here)
+        side.addWidget(self.here)
+        every = QPushButton(tr("Same place on every page"))
+        every.clicked.connect(self._everywhere)
+        side.addWidget(every)
+        self.signed_lbl = QLabel()
+        self.signed_lbl.setWordWrap(True)
+        self.signed_lbl.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        side.addWidget(self.signed_lbl)
         draw = QPushButton(tr("Draw signature…"))
         draw.clicked.connect(self._draw_new)
         side.addWidget(draw)
@@ -2842,10 +3000,20 @@ class SignPlacer(QWidget):
         lay.addLayout(side)
         self._page_img = None
         self.setAcceptDrops(True)
+        self.places[self.page_i] = list(self._last)       # signatures usually go on the last page
         self._go(0)
         self.del_b.setEnabled(self.sig_img is not None)
         if self.sig_img is None:
             QTimer.singleShot(200, self._draw_new)
+
+    @property
+    def box(self):
+        return self.places.get(self.page_i)
+
+    @box.setter
+    def box(self, v):
+        self.places[self.page_i] = v
+        self._last = list(v)
 
     # page
     def _go(self, step):
@@ -2854,7 +3022,39 @@ class SignPlacer(QWidget):
         self.prev_b.setEnabled(self.page_i > 0)
         self.next_b.setEnabled(self.page_i < self.doc.page_count - 1)
         self._page_img = _render_page(self.doc, self.page_i, 900)
+        if hasattr(self, "here"):
+            self.here.blockSignals(True)
+            self.here.setChecked(self.page_i in self.places)
+            self.here.blockSignals(False)
+            self._signed_label()
         self.view.update()
+
+    def _toggle_here(self, on):
+        if on:
+            self.places[self.page_i] = list(self._last)
+            self._fit_rect_to_sig()
+        else:
+            self.places.pop(self.page_i, None)
+        self._signed_label()
+        self.view.update()
+
+    def _everywhere(self):
+        box = self.box or self._last
+        for i in range(self.doc.page_count):
+            self.places[i] = list(box)
+        self.here.setChecked(True)
+        self._signed_label()
+        self.view.update()
+
+    def _signed_label(self):
+        pages = sorted(self.places)
+        if not pages:
+            txt = tr("No page signed yet")
+        elif len(pages) == self.doc.page_count and len(pages) > 1:
+            txt = tr("Signed on every page")
+        else:
+            txt = tr("Signed pages: {list}", list=", ".join(str(i + 1) for i in pages[:12]) + ("…" if len(pages) > 12 else ""))
+        self.signed_lbl.setText(txt)
 
     def _page_rect(self):
         img = self._page_img
@@ -2864,21 +3064,21 @@ class SignPlacer(QWidget):
 
     def _sig_rect(self):
         pr = self._page_rect()
-        x0, y0, x1, y1 = self.rect
+        x0, y0, x1, y1 = self.box
         return QRectF(pr.x() + x0 * pr.width(), pr.y() + y0 * pr.height(), (x1 - x0) * pr.width(), (y1 - y0) * pr.height())
 
     def _fit_rect_to_sig(self):
         """Keep the box the signature's shape (same width, matching height)."""
-        if self.sig_img is None or self.sig_img.isNull():
+        if self.sig_img is None or self.sig_img.isNull() or self.box is None:
             return
         pr = self._page_rect()
-        x0, y0, x1, _ = self.rect
+        x0, y0, x1, _ = self.box
         w_px = (x1 - x0) * pr.width()
         h_px = w_px * self.sig_img.height() / max(1, self.sig_img.width())
         y1 = y0 + h_px / max(1.0, pr.height())
         if y1 > 1.0:
             y0, y1 = max(0.0, 1.0 - (y1 - y0)), 1.0
-        self.rect = [x0, y0, x1, y1]
+        self.box = [x0, y0, x1, y1]
 
     def _paint(self, _):
         p = QPainter(self.view)
@@ -2887,7 +3087,7 @@ class SignPlacer(QWidget):
         p.fillRect(self.view.rect(), theme.color("canvas"))
         pr = self._page_rect()
         p.drawImage(pr, self._page_img)
-        if self.sig_img is not None and not self.sig_img.isNull():
+        if self.sig_img is not None and not self.sig_img.isNull() and self.box is not None:
             sr = self._sig_rect()
             p.drawImage(sr, self.sig_img)
             p.setPen(QPen(QColor(theme.hexc("accent")), 1.5, Qt.DashLine))
@@ -2900,17 +3100,27 @@ class SignPlacer(QWidget):
     def _press(self, e):
         if self.sig_img is None:
             return
+        if self.box is None:                                 # click on an unsigned page: sign it here
+            pr = self._page_rect()
+            pos = e.position()
+            w, h = self._last[2] - self._last[0], self._last[3] - self._last[1]
+            x = min(max(0.0, (pos.x() - pr.x()) / pr.width() - w / 2), 1 - w)
+            y = min(max(0.0, (pos.y() - pr.y()) / pr.height() - h / 2), 1 - h)
+            self.box = [x, y, x + w, y + h]
+            self.here.setChecked(True)
+            self.view.update()
+            return
         pos = e.position()
         sr = self._sig_rect()
         if (pos - sr.bottomRight()).manhattanLength() < 16:
-            self._drag = ("size", pos, list(self.rect))
+            self._drag = ("size", pos, list(self.box))
         elif sr.contains(pos):
-            self._drag = ("move", pos, list(self.rect))
+            self._drag = ("move", pos, list(self.box))
 
     def _move(self, e):
         pos = e.position()
         if self._drag is None:
-            sr = self._sig_rect() if self.sig_img is not None else QRectF()
+            sr = self._sig_rect() if (self.sig_img is not None and self.box is not None) else QRectF()
             near = (pos - sr.bottomRight()).manhattanLength() < 16
             self.view.setCursor(Qt.SizeFDiagCursor if near else Qt.OpenHandCursor if sr.contains(pos) else Qt.ArrowCursor)
             return
@@ -2922,10 +3132,10 @@ class SignPlacer(QWidget):
             w, h = x1 - x0, y1 - y0
             nx = max(0.0, min(1.0 - w, x0 + dx))
             ny = max(0.0, min(1.0 - h, y0 + dy))
-            self.rect = [nx, ny, nx + w, ny + h]
+            self.box = [nx, ny, nx + w, ny + h]
         else:
             nx1 = max(x0 + 0.05, min(1.0, x1 + dx))
-            self.rect = [x0, y0, nx1, y1]
+            self.box = [x0, y0, nx1, y1]
             self._fit_rect_to_sig()
         self.view.update()
 
@@ -2997,7 +3207,8 @@ class SignPlacer(QWidget):
     def value(self):
         if not self.sig_path:
             return ""
-        return json.dumps({"sig": str(self.sig_path), "page": self.page_i, "rect": [round(v, 5) for v in self.rect]})
+        places = [{"page": i, "rect": [round(v, 5) for v in r]} for i, r in sorted(self.places.items())]
+        return json.dumps({"sig": str(self.sig_path), "places": places}) if places else ""
 
 
 class WatermarkEditor(QWidget):
@@ -3032,6 +3243,25 @@ class WatermarkEditor(QWidget):
             self.text = QLineEdit(self.spec.get("text") or "")
             self.text.textChanged.connect(lambda t: self._set("text", t))
             side.addWidget(self.text)
+        if not self.logo:
+            side.addWidget(QLabel(tr("Color")))
+            crow = QHBoxLayout()
+            self._swatches = []
+            for col in ("#808080", "#000000", "#d0312d", "#1f5fbf", "#2e8b57", "#ff8a00"):
+                b = QPushButton()
+                b.setFixedSize(28, 28)
+                b.setToolTip(col)
+                b.clicked.connect(lambda _=False, c=col: self._set_color(c))
+                crow.addWidget(b)
+                self._swatches.append((b, col))
+            more = QPushButton("…")
+            more.setFixedSize(34, 28)
+            more.setToolTip(tr("More colors…"))
+            more.clicked.connect(self._pick_color)
+            crow.addWidget(more)
+            crow.addStretch(1)
+            side.addLayout(crow)
+            self._paint_swatches()
         side.addWidget(QLabel(tr("Direction")))
         row = QHBoxLayout()
         for label, ang in (("↗", 45), ("→", 0), ("↘", -45), ("↑", 90)):
@@ -3071,6 +3301,22 @@ class WatermarkEditor(QWidget):
         self.spec[key] = v
         self._timer.start()
 
+    def _paint_swatches(self):
+        cur = str(self.spec.get("color", "#808080")).lower()
+        for b, col in self._swatches:
+            ring = theme.hexc("accent") if col == cur else theme.hexc("border")
+            b.setStyleSheet(f"QPushButton{{background:{col};border:3px solid {ring};border-radius:14px;padding:0}}")
+
+    def _set_color(self, col):
+        self._set("color", col)
+        self._paint_swatches()
+
+    def _pick_color(self):
+        from PySide6.QtWidgets import QColorDialog
+        c = QColorDialog.getColor(QColor(self.spec.get("color", "#808080")), self, tr("Color"))
+        if c.isValid():
+            self._set_color(c.name())
+
     def _render(self):
         import pymupdf
         try:
@@ -3086,7 +3332,7 @@ class WatermarkEditor(QWidget):
             winsys.log(f"watermark preview: {e}")
 
     def stop(self):
-        keep = {k: v for k, v in self.spec.items() if k in ("text", "angle", "size", "opacity")}
+        keep = {k: v for k, v in self.spec.items() if k in ("text", "angle", "size", "opacity", "color")}
         settings().setValue("pdf_watermark", json.dumps(keep))
 
     def value(self):
@@ -3114,7 +3360,7 @@ def ask_params(op, paths) -> dict | None:
             continue
         if default in ("@pages", "@sign", "@watermark"):     # PDF page grid / signature / watermark preview
             try:
-                w = (PageGrid(paths[0]) if default == "@pages" else SignPlacer(paths) if default == "@sign"
+                w = (PageBoard(paths) if default == "@pages" else SignPlacer(paths) if default == "@sign"
                      else WatermarkEditor(paths))
             except Exception as e:
                 message(APP, tr("Couldn't open this PDF") + f"<br><small>{e}</small>")
@@ -3157,8 +3403,8 @@ def ask_params(op, paths) -> dict | None:
     bb.accepted.connect(dlg.accept)
     bb.rejected.connect(dlg.reject)
     lay.addWidget(bb)
-    dlg.setMinimumWidth(680 if any(isinstance(t, (PageGrid, SignPlacer, WatermarkEditor)) for t in trims) else 620 if trims else 340)
-    if any(isinstance(t, (PageGrid, SignPlacer, WatermarkEditor)) for t in trims):
+    dlg.setMinimumWidth(680 if any(isinstance(t, (PageBoard, SignPlacer, WatermarkEditor)) for t in trims) else 620 if trims else 340)
+    if any(isinstance(t, (PageBoard, SignPlacer, WatermarkEditor)) for t in trims):
         dlg.resize(760, 560)
         scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         dlg.move(scr.availableGeometry().center() - QPoint(380, 280))
@@ -3171,7 +3417,7 @@ def ask_params(op, paths) -> dict | None:
             tw.stop()
     if not ok:
         return None
-    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview, PageGrid, SignPlacer, WatermarkEditor)) else e.text())
+    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview, PageBoard, SignPlacer, WatermarkEditor)) else e.text())
             for k, e in edits.items()}
 
 

@@ -1893,23 +1893,47 @@ def pdf_unlock(src, p):
     return out
 
 
-def pdf_arrange(src, p):
-    """Apply the page grid: new order, pages left out are deleted, each page's turn. Layout = "3:90,1:0,2:0"."""
+def _image_pdf_page(path):
+    """A one-page PDF holding a picture (for mixing pictures into a PDF)."""
     mu = _mu()
-    doc = mu.open(str(src))
-    plan = []
-    for part in str(p.get("Layout", "")).split(","):
-        if ":" in part:
-            i, rot = part.split(":")
-            plan.append((int(i), int(rot)))
-    if not plan:
+    img = open_image(path)
+    buf = io.BytesIO()
+    _flatten(img).save(buf, format="PDF", resolution=150)
+    return mu.open("pdf", buf.getvalue())
+
+
+def pdf_arrange(paths, p):
+    """Apply the page board. Layout = JSON {"sources": [files], "pages": [[source, page, extra turn], ...]}
+    (pages can come from several PDFs and pictures), or the older "3:90,1:0" for one PDF."""
+    mu = _mu()
+    paths = paths if isinstance(paths, (list, tuple)) else [paths]
+    raw = str(p.get("Layout", ""))
+    try:
+        plan = json.loads(raw)
+        sources, pages = plan["sources"], plan["pages"]
+    except (ValueError, KeyError, TypeError):
+        sources = [paths[0]]
+        pages = [[0, int(a), int(b)] for a, b in (x.split(":") for x in raw.split(",") if ":" in x)]
+    if not pages:
         raise ConversionError("No pages left")
-    base = {i: doc[i].rotation for i, _ in plan if 0 <= i < doc.page_count}
-    doc.select([i for i, _ in plan])
-    for page, (i, rot) in zip(doc, plan):
-        page.set_rotation((base.get(i, 0) + rot) % 360)
-    out = out_for(src, "pdf", "arranged")
-    doc.save(str(out), garbage=3, deflate=True)
+    opened = {}
+
+    def src_doc(i):
+        if i not in opened:
+            f = sources[i]
+            opened[i] = mu.open(str(f)) if EXT_CATEGORY.get(ext_of(f)) == "pdf" else _image_pdf_page(f)
+        return opened[i]
+    out_doc = mu.open()
+    for si, pi, rot in pages:
+        check_cancel()
+        d = src_doc(int(si))
+        pi = int(pi)
+        base = d[pi].rotation
+        out_doc.insert_pdf(d, from_page=pi, to_page=pi)
+        out_doc[-1].set_rotation((base + int(rot)) % 360)
+    first_pdf = next((f for f in sources if EXT_CATEGORY.get(ext_of(f)) == "pdf"), sources[0])
+    out = out_for(first_pdf, "pdf", "arranged")
+    out_doc.save(str(out), garbage=3, deflate=True)
     return out
 
 
@@ -1926,11 +1950,14 @@ def pdf_sign(paths, p):
     if not sig or not os.path.exists(sig):
         raise ConversionError("No signature was placed")
     doc = mu.open(str(pdf))
-    page = doc[max(0, min(doc.page_count - 1, int(spec.get("page", 0))))]
-    r = page.rect
-    x0, y0, x1, y1 = spec.get("rect", [0.6, 0.8, 0.9, 0.9])
-    vis = (x0 * r.width, y0 * r.height, x1 * r.width, y1 * r.height)
-    page.insert_image(_vis_rect(page, *vis), filename=str(sig), rotate=page.rotation, keep_proportion=True, overlay=True)
+    places = spec.get("places") or [{"page": spec.get("page", 0), "rect": spec.get("rect", [0.6, 0.8, 0.9, 0.9])}]
+    for pl in places:                                   # the same signature on as many pages as you placed it
+        page = doc[max(0, min(doc.page_count - 1, int(pl.get("page", 0))))]
+        r = page.rect
+        x0, y0, x1, y1 = pl.get("rect", [0.6, 0.8, 0.9, 0.9])
+        vis = (x0 * r.width, y0 * r.height, x1 * r.width, y1 * r.height)
+        page.insert_image(_vis_rect(page, *vis), filename=str(sig), rotate=page.rotation, keep_proportion=True,
+                          overlay=True)
     out = out_for(pdf, "pdf", "signed")
     doc.save(str(out), garbage=3, deflate=True)
     return out
@@ -2888,7 +2915,7 @@ def tools(paths: list[str]) -> list[Op]:
                 T("rotate", "Rotate 90°", pdf_rotate),
                 T("images", "Extract images", pdf_extract_images),
                 T("protect", "Password…", pdf_protect, ask=[("Password", "")]),
-                T("arrange", "Arrange pages…", pdf_arrange, ask=[("Layout", "@pages")]),
+                T("arrange", "Arrange pages…", pdf_arrange, multi=True, ask=[("Layout", "@pages")]),
                 T("numbers", "Page numbers…", pdf_page_numbers,
                   ask=[("Position", PAGE_NUMBER_POSITIONS), ("Style", PAGE_NUMBER_STYLES)]),
                 T("watermark", "Watermark…", pdf_watermark, multi=True, ask=[("Watermark", "@watermark")]),
@@ -2903,6 +2930,8 @@ def tools(paths: list[str]) -> list[Op]:
                     T("logo", "Watermark with logo…", pdf_watermark, multi=True, ask=[("Watermark", "@watermark")])]
         if n > 1:
             ops.append(T("merge", "Merge", pdf_merge, multi=True))
+            if not any(o.id == "arrange" for o in ops):
+                ops.append(T("arrange", "Arrange pages…", pdf_arrange, multi=True, ask=[("Layout", "@pages")]))
     elif cat in ("document", "slides", "ebook"):
         if all(ext_of(x) in ("txt", "md", "html", "htm", "docx", "odt", "pptx", "epub") for x in paths):
             ops.append(T("count", "Word count", count_words))
