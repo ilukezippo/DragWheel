@@ -886,17 +886,41 @@ class FloatWindow(QWidget):
 
     def __init__(self, path):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.path = path
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
+        self.setAcceptDrops(True)        # drop another file on the float to replace it
+        self.player = None
+        self.hover = None
+        self.ctrl = 1.0                  # opacity of the controls; fades with the cursor
+        self._fade = QVariantAnimation(self)
+        self._fade.setDuration(180)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade.valueChanged.connect(self._set_ctrl)
+        self._press = None               # (kind, global pos, local pos, geometry, edges)
+        self._seeking = False
+        self._drop_hover = False
+        self._load(path)
+        self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
+        # show the controls briefly so people know they exist, then let them fade
+        QTimer.singleShot(1600, self._maybe_hide_controls)
+
+    def _load(self, path):
+        """Show `path` in this float (also used when another file is dropped on it)."""
+        if self.player:
+            self.player.stop()
+            self.player.setSource(QUrl())
+            self.player.deleteLater()
+            self.player = None
+        self.path = path
         cat = engine.EXT_CATEGORY.get(engine.ext_of(path))
         self.kind = "other"          # image | video | audio | other
-        self.src = None              # QPixmap for images and icons
+        self.src = None              # QPixmap for images, album covers and icons
+        self.art = False             # True when src is an album cover
         self.frame = None            # current video frame (QImage)
         self.aspect = None           # width / height of the picture, kept while resizing
-        self.player = None
+        self._scaled = None
         if cat == "image":
             try:
                 img = engine.open_image(path)
@@ -912,30 +936,76 @@ class FloatWindow(QWidget):
             self.kind = cat
             if cat == "video":
                 self.aspect = 16 / 9
+            else:
+                self._set_cover(engine.cover_art(path))
         if self.src is None:
             from PySide6.QtCore import QFileInfo
             from PySide6.QtWidgets import QFileIconProvider
             self.src = QFileIconProvider().icon(QFileInfo(path)).pixmap(256, 256)
-        self._scaled = None
-        self.hover = None
-        self.ctrl = 1.0              # opacity of the controls; fades with the cursor
-        self._fade = QVariantAnimation(self)
-        self._fade.setDuration(180)
-        self._fade.setEasingCurve(QEasingCurve.OutCubic)
-        self._fade.valueChanged.connect(self._set_ctrl)
-        self._press = None           # (kind, global pos, local pos, geometry)
-        self._seeking = False
         if self.kind == "image":
             w = 300 if self.aspect >= 1 else int(300 * self.aspect)
         elif self.kind == "video":
             w = 420
+        elif self.art:
+            w = 280
         else:
             w = 200
+        c = self.frameGeometry().center() if self.isVisible() else None
         self._apply_size(w, self._height_for(w))
-        self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
+        if c is not None:
+            self.move(c - QPoint(self.width() // 2, self.height() // 2))
         self.setToolTip(f"{path}\n" + tr("Drag to move · drag ⠿ to drop the file · double-click to open · scroll to resize"))
-        # show the controls briefly so people know they exist, then let them fade
-        QTimer.singleShot(1600, self._maybe_hide_controls)
+        self.update()
+
+    def _set_cover(self, data):
+        """Use an album cover (PNG bytes or QImage) as the picture of an audio float."""
+        img = QImage.fromData(data) if isinstance(data, (bytes, bytearray)) else data
+        if img is None or img.isNull():
+            return
+        self.src = QPixmap.fromImage(img)
+        self.art = True
+        self.aspect = img.width() / max(1, img.height())
+        self._scaled = None
+
+    def _on_metadata(self):
+        if self.kind != "audio" or self.art or not self.player:
+            return
+        from PySide6.QtMultimedia import QMediaMetaData
+        md = self.player.metaData()
+        for key in (QMediaMetaData.CoverArtImage, QMediaMetaData.ThumbnailImage):
+            img = md.value(key)
+            if isinstance(img, QImage) and not img.isNull():
+                self._set_cover(img)
+                c = self.frameGeometry().center()
+                self._apply_size(280, self._height_for(280))
+                self.move(c - QPoint(self.width() // 2, self.height() // 2))
+                return
+
+    # ---------------------------------------------------------------- drop to replace
+    def _dropped_path(self, md):
+        if not md.hasUrls():
+            return None
+        files = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+        return files[0] if files and os.path.exists(files[0]) and files[0] != self.path else None
+
+    def dragEnterEvent(self, e):
+        if self._dropped_path(e.mimeData()):
+            e.acceptProposedAction()
+            self._drop_hover = True
+            self.update()
+
+    def dragLeaveEvent(self, e):
+        self._drop_hover = False
+        self.update()
+
+    def dropEvent(self, e):
+        self._drop_hover = False
+        path = self._dropped_path(e.mimeData())
+        if path:
+            e.acceptProposedAction()
+            self._load(path)
+            self._fade_to(1.0)
+            QTimer.singleShot(1600, self._maybe_hide_controls)
 
     # ---------------------------------------------------------------- media
     def _start_player(self, cat):
@@ -958,6 +1028,8 @@ class FloatWindow(QWidget):
         self.player.durationChanged.connect(lambda _d: self.update())
         self.player.playbackStateChanged.connect(lambda _s: self.update())
         self.player.errorOccurred.connect(self._on_media_error)
+        if cat == "audio":
+            self.player.metaDataChanged.connect(self._on_metadata)
         self.player.setSource(QUrl.fromLocalFile(self.path))
         if cat == "video":
             self.player.play()
@@ -986,6 +1058,7 @@ class FloatWindow(QWidget):
         self.player.stop()
         self.player = None
         self.kind = "other"
+        self.art = False
         self.aspect = None
         self.frame = None
         self._apply_size(200, 200)
@@ -1039,7 +1112,7 @@ class FloatWindow(QWidget):
         return QRectF(10, self.height() - 38, 28, 28)
 
     def _play_center(self):
-        if self.kind == "audio":
+        if self.kind == "audio" and not self.art:
             return QPointF(self.width() / 2, (self.height() - self._band_h()) / 2 + 8)
         return QPointF(self.width() / 2, self.height() / 2 - 8)
 
@@ -1050,9 +1123,12 @@ class FloatWindow(QWidget):
         return QRectF(cx - side / 2, cy - side / 2, side, side)
 
     def _edges(self, pos):
-        e = self.EDGE
+        e, c = self.EDGE, 18                                 # edge band, corner grab area
         x, y, w, h = pos.x(), pos.y(), self.width(), self.height()
-        return (x < e, y < e, x > w - e, y > h - e)        # left, top, right, bottom
+        l, t, r, b = x < e, y < e, x > w - e, y > h - e
+        if (x < c or x > w - c) and (y < c or y > h - c) and (l or t or r or b):
+            l, r, t, b = x < c, x > w - c, y < c, y > h - c    # near a corner: grab the corner
+        return (l, t, r, b)                                   # left, top, right, bottom
 
     def _hit(self, pos):
         c = self._close_center()
@@ -1111,8 +1187,8 @@ class FloatWindow(QWidget):
         clip.addRoundedRect(r, self.RADIUS, self.RADIUS)
         p.setClipPath(clip)
         p.fillRect(r, QColor(0, 0, 0) if self.kind == "video" else C("panel"))
-        media = self.kind in ("image", "video")
-        if self.kind == "image":
+        media = self.kind in ("image", "video") or self.art
+        if self.kind == "image" or self.art:
             if self._scaled is None or self._scaled.size() != self.size():
                 self._scaled = self.src.scaled(self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             p.drawPixmap(0, 0, self._scaled)
@@ -1178,8 +1254,12 @@ class FloatWindow(QWidget):
         # border
         p.setClipping(False)
         p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(ACCENT if (self.hover and self.hover != "icon") else C("line"), 1.2))
-        p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
+        if self._drop_hover:                                # a file is being dragged over: drop replaces
+            p.setPen(QPen(ACCENT, 3))
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), self.RADIUS, self.RADIUS)
+        else:
+            p.setPen(QPen(ACCENT if (self.hover and self.hover != "icon") else C("line"), 1.2))
+            p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
 
     def _paint_player(self, p, fg):
         # big play / pause in the middle
@@ -1196,7 +1276,7 @@ class FloatWindow(QWidget):
             p.drawPolygon(tri)
         # seek bar
         sr = self._seek_rect()
-        p.setBrush(QColor(255, 255, 255, 70) if self.kind == "video" else C("busy_track"))
+        p.setBrush(QColor(255, 255, 255, 70) if (self.kind == "video" or self.art) else C("busy_track"))
         p.drawRoundedRect(sr, 2, 2)
         dur = self.player.duration()
         if dur > 0:
@@ -1292,8 +1372,11 @@ class FloatWindow(QWidget):
         dw = (delta.x() if r else -delta.x() if l else 0)
         dh = (delta.y() if b else -delta.y() if t else 0)
         nw, nh = w + dw, h + dh
-        if self.aspect:                       # keep the picture's shape: follow the larger change
-            if (l or r) and (not (t or b) or abs(dw) >= abs(dh) * self.aspect):
+        if self.aspect:                       # keep the picture's shape
+            if (l or r) and (t or b):         # corner: follow the mouse in any direction (project on the diagonal)
+                k = (dw * self.aspect + dh) / (self.aspect ** 2 + 1)
+                nw, nh = w + k * self.aspect, h + k
+            elif l or r:
                 nh = nw / self.aspect
             else:
                 nw = nh * self.aspect

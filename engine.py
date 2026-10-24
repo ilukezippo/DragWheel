@@ -252,6 +252,17 @@ def ffmpeg() -> str:
     return exe
 
 
+def cover_art(src) -> bytes | None:
+    """The album cover embedded in a music file (MP3, M4A, FLAC, ...) as PNG bytes, or None."""
+    try:
+        r = subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-i", str(src), "-an",
+                            "-map", "0:v:0?", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
+                           capture_output=True, timeout=8, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+        return r.stdout if r.returncode == 0 and len(r.stdout) > 100 else None
+    except Exception:
+        return None
+
+
 def ff(src, out, *args, pre: tuple = ()) -> Path:
     run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *pre, "-i", str(src), *args, str(out)])
     return Path(out)
