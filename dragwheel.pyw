@@ -2122,13 +2122,8 @@ class Toast(QWidget):
             play_finish_sound(kind)                  # every error; "done" only when a job finished
         self._sound_for_this = False
         self._set_icon(kind)
+        # screen readers read the card by its name; no "alert" event: on Windows that also plays the system sound
         self.setAccessibleName(f"{title}. {QTextDocumentFragment.fromHtml(body).toPlainText()}")
-        try:
-            from PySide6.QtGui import QAccessible, QAccessibleEvent
-            if QAccessible.isActive():
-                QAccessible.updateAccessibility(QAccessibleEvent(self, QAccessible.Alert))
-        except Exception:
-            pass
         self.wanted = True          # counts in the stack even before Windows shows it
         self._place()               # position first, so it never flashes in the middle of the screen
         self.show()
