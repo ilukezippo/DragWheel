@@ -2239,6 +2239,95 @@ def _save_float_pins(pins):
     settings().setValue("float_pins", json.dumps(pins))
 
 
+class MediaOSD(QWidget):
+    """A big see-through play/pause/next/previous sign in the middle of the screen for a second."""
+    _one = None
+
+    @staticmethod
+    def wanted(focused) -> bool:
+        s = settings()
+        if s.value("media_osd", "true") != "true":
+            return False
+        return s.value("media_osd_when", "unfocused") == "always" or not focused
+
+    @classmethod
+    def flash(cls, kind, near=None):
+        if cls._one is None:
+            cls._one = MediaOSD()
+        cls._one._show(kind, near)
+
+    def __init__(self):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+                         | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.kind = "play"
+        self.setFixedSize(180, 180)
+        self._hold = QTimer(self, singleShot=True, timeout=self._fade)
+        self._anim = QPropertyAnimation(self, b"windowOpacity", self)
+        self._anim.finished.connect(self._done)
+
+    def _show(self, kind, near):
+        self.kind = kind
+        scr = (near.screen() if near is not None else None) or QGuiApplication.screenAt(QCursor.pos()) \
+            or QGuiApplication.primaryScreen()
+        g = scr.geometry()
+        self.move(g.center().x() - self.width() // 2, g.center().y() - self.height() // 2)
+        self._anim.stop()
+        self.setWindowOpacity(1.0)
+        self.show()
+        self.raise_()
+        self.update()
+        self._hold.start(750)
+
+    def _fade(self):
+        self._anim.setDuration(250)
+        self._anim.setStartValue(1.0)
+        self._anim.setEndValue(0.0)
+        self._anim.start()
+
+    def _done(self):
+        if self.windowOpacity() < 0.05:
+            self.hide()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 120))
+        p.drawEllipse(self.rect().adjusted(2, 2, -2, -2))
+        p.setBrush(QColor(255, 255, 255, 215))
+        c = self.rect().center()
+        cx, cy = c.x() + 1, c.y() + 1
+
+        path = QPainterPath()
+        path.setFillRule(Qt.WindingFill)
+
+        def tri(x0, pointing_right=True, w=46, h=56):
+            x1 = x0 + w if pointing_right else x0 - w
+            path.addPolygon(QPolygonF([QPointF(x0, cy - h / 2), QPointF(x1, cy), QPointF(x0, cy + h / 2),
+                                       QPointF(x0, cy - h / 2)]))
+
+        k = self.kind
+        if k == "play":
+            tri(cx - 20, w=54, h=64)
+        elif k == "pause":
+            p.drawRoundedRect(QRectF(cx - 26, cy - 32, 18, 64), 4, 4)
+            p.drawRoundedRect(QRectF(cx + 8, cy - 32, 18, 64), 4, 4)
+        elif k == "stop":
+            p.drawRoundedRect(QRectF(cx - 28, cy - 28, 56, 56), 6, 6)
+        elif k == "next":
+            tri(cx - 40)
+            tri(cx - 4)
+            p.drawRoundedRect(QRectF(cx + 40, cy - 28, 9, 56), 2, 2)
+        elif k == "prev":
+            tri(cx + 40, False)
+            tri(cx + 4, False)
+            p.drawRoundedRect(QRectF(cx - 49, cy - 28, 9, 56), 2, 2)
+        p.drawPath(path.simplified())
+        p.end()
+
+
 class FloatWindow(QWidget):
     closed = Signal()
     RADIUS = 14
@@ -2541,6 +2630,7 @@ class FloatWindow(QWidget):
         if nxt:
             self._play_now = True
             self._load(nxt)
+        return bool(nxt)
 
     def _check_busy(self):
         import time
@@ -2853,14 +2943,15 @@ class FloatWindow(QWidget):
     def media_key(self, key):
         """Play/pause, next, previous, stop from the keyboard's media keys."""
         if not self.player:
-            return
+            return None
         if key == "play":
             self._toggle_play()
-        elif key == "stop":
+            return "pause" if not self._playing() else "play"
+        if key == "stop":
             self.player.pause()
             self.player.setPosition(0)
-        else:
-            self._step(1 if key == "next" else -1)
+            return "stop"
+        return key if self._step(1 if key == "next" else -1) else None
 
     def _toggle_play(self):
         if not self.player:
@@ -3372,8 +3463,8 @@ class FloatWindow(QWidget):
             self.close_by_user()
         elif e.key() == Qt.Key_Space and self.player:
             self._toggle_play()
-        elif e.key() in (Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_MediaPrevious, Qt.Key_MediaNext) and self.player:
-            self._step(-1 if e.key() in (Qt.Key_PageUp, Qt.Key_MediaPrevious) else 1)
+        elif e.key() in (Qt.Key_PageUp, Qt.Key_PageDown) and self.player:     # media keys: DragWheelApp._media_tick
+            self._step(-1 if e.key() == Qt.Key_PageUp else 1)
         elif e.key() in (Qt.Key_Left, Qt.Key_Right) and self.player:
             self.player.setPosition(max(0, self.player.position() + (5000 if e.key() == Qt.Key_Right else -5000)))
 
@@ -5310,6 +5401,8 @@ class SettingsDialog(QDialog):
             "autoplay": self.autoplay.isChecked(),
             "on_top": self.on_top.isChecked(),
             "ctrl_open": self.ctrl_open.isChecked(),
+            "media_osd": self.media_osd.isChecked(),
+            "media_osd_when": self.media_osd_when.currentData(),
         }
 
     def _initial(self) -> dict:
@@ -5327,6 +5420,8 @@ class SettingsDialog(QDialog):
             "autoplay": s.value("float_autoplay", "true") == "true",
             "on_top": s.value("float_on_top", "true") == "true",
             "ctrl_open": s.value("float_ctrl_open", "true") == "true",
+            "media_osd": s.value("media_osd", "true") == "true",
+            "media_osd_when": s.value("media_osd_when", "unfocused"),
         }
 
     def _theme_changed(self, _idx):
@@ -5465,6 +5560,20 @@ class SettingsDialog(QDialog):
         self.ctrl_open = QCheckBox(tr("Hold Ctrl and double-click a file, or press Ctrl+Enter, to open it in Float"))
         self.ctrl_open.setChecked(st["ctrl_open"])
         vf.addWidget(self.ctrl_open)
+        self.media_osd = QCheckBox(tr("Show a big play/pause sign on screen when the keyboard's media keys control a float"))
+        self.media_osd.setChecked(st["media_osd"])
+        vf.addWidget(self.media_osd)
+        self.media_osd_when = QComboBox()
+        self.media_osd_when.addItem(tr("Only when the float isn't in focus"), "unfocused")
+        self.media_osd_when.addItem(tr("All the time"), "always")
+        self.media_osd_when.setCurrentIndex(max(0, self.media_osd_when.findData(st["media_osd_when"])))
+        self.media_osd_when.setEnabled(st["media_osd"])
+        self.media_osd.toggled.connect(self.media_osd_when.setEnabled)
+        row = QHBoxLayout()
+        row.setContentsMargins(24, 0, 0, 0)
+        row.addWidget(self.media_osd_when)
+        row.addStretch(1)
+        vf.addLayout(row)
         lay.addWidget(gf)
 
         g3 = QGroupBox("Windows")
@@ -5740,6 +5849,8 @@ class SettingsDialog(QDialog):
         s.setValue("float_autoplay", "true" if self.autoplay.isChecked() else "false")
         s.setValue("float_on_top", "true" if self.on_top.isChecked() else "false")
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
+        s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
+        s.setValue("media_osd_when", self.media_osd_when.currentData())
         self.app.watcher.refresh_settings()
         engine.OUTPUT_DIR = (self.out.text().strip() or None) if mode == "folder" else None
         s.setValue("language", self.lang.currentData())
@@ -6290,7 +6401,10 @@ class DragWheelApp(QObject):
             if down and not self._media_down.get(vk):
                 target = FloatWindow.last_used if FloatWindow.last_used in floats else None
                 target = target or next((f for f in floats if f._playing()), floats[-1])
-                target.media_key(key)
+                focused = target.isActiveWindow()
+                shown = target.media_key(key)
+                if shown and MediaOSD.wanted(focused):
+                    MediaOSD.flash(shown, target)
             self._media_down[vk] = down
 
     def _start(self, op, paths, params):

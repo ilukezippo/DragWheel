@@ -51,6 +51,9 @@ KEYS = [
     "e.g. For the web",
     "e.g. Resize, WebP and ZIP",
     "Other",
+    "Show a big play/pause sign on screen when the keyboard's media keys control a float",
+    "Only when the float isn't in focus",
+    'All the time',
 ]
 
 T = {
@@ -106,6 +109,9 @@ T = {
         "مثلًا: للويب",
         "مثلًا: تغيير الحجم و WebP و ZIP",
         "أخرى",
+        'إظهار علامة تشغيل/إيقاف كبيرة على الشاشة عندما تتحكم مفاتيح الوسائط في لوحة المفاتيح بنافذة عائمة',
+        'فقط عندما لا تكون النافذة العائمة نشطة',
+        'طوال الوقت',
     ],
     "fr": [
         "Une chaîne doit avoir au moins deux étapes.",
@@ -159,6 +165,9 @@ T = {
         "ex. Pour le web",
         "ex. Redimensionner, WebP et ZIP",
         "Autre",
+        "Afficher un grand signe lecture/pause à l'écran quand les touches multimédias du clavier contrôlent un flottant",
+        "Seulement quand le flottant n'est pas actif",
+        'Tout le temps',
     ],
     "es": [
         "Una cadena necesita al menos dos pasos.",
@@ -212,6 +221,9 @@ T = {
         "p. ej. Para la web",
         "p. ej. Redimensionar, WebP y ZIP",
         "Otro",
+        'Mostrar un gran símbolo de reproducir/pausa en pantalla cuando las teclas multimedia del teclado controlan un flotante',
+        'Solo cuando el flotante no está activo',
+        'Siempre',
     ],
     "tr": [
         "Bir zincirde en az iki adım olmalı.",
@@ -265,6 +277,9 @@ T = {
         "ör. Web için",
         "ör. Yeniden boyutlandır, WebP ve ZIP",
         "Diğer",
+        'Klavyenin medya tuşları bir yüzen pencereyi kontrol ettiğinde ekranda büyük bir oynat/duraklat işareti göster',
+        'Yalnızca yüzen pencere etkin değilken',
+        'Her zaman',
     ],
     "de": [
         "Eine Kette braucht mindestens zwei Schritte.",
@@ -318,6 +333,9 @@ T = {
         "z. B. Fürs Web",
         "z. B. Größe ändern, WebP und ZIP",
         "Sonstige",
+        'Großes Play/Pause-Zeichen auf dem Bildschirm zeigen, wenn die Medientasten der Tastatur ein Float steuern',
+        'Nur wenn das Float nicht im Fokus ist',
+        'Immer',
     ],
     "ru": [
         "В цепочке должно быть не меньше двух шагов.",
@@ -371,6 +389,9 @@ T = {
         "напр. Для сайта",
         "напр. Размер, WebP и ZIP",
         "Другое",
+        'Показывать большой значок воспроизведения/паузы на экране, когда медиаклавиши клавиатуры управляют плавающим окном',
+        'Только когда плавающее окно не активно',
+        'Всегда',
     ],
     "zh": [
         "一个组合至少需要两个步骤。",
@@ -424,6 +445,9 @@ T = {
         "例如：用于网页",
         "例如：调整大小、WebP 和 ZIP",
         "其他",
+        '当键盘媒体键控制浮窗时，在屏幕上显示大的播放/暂停图标',
+        '仅当浮窗不在焦点时',
+        '始终',
     ],
     "ja": [
         "チェーンには 2 つ以上のステップが必要です。",
@@ -477,6 +501,9 @@ T = {
         "例: Web 用",
         "例: サイズ変更、WebP、ZIP",
         "その他",
+        'キーボードのメディアキーでフロートを操作したとき、画面に大きな再生/一時停止マークを表示',
+        'フロートがアクティブでないときだけ',
+        '常に',
     ],
     "pt": [
         "Uma cadeia precisa de pelo menos dois passos.",
@@ -530,6 +557,9 @@ T = {
         "ex.: Para a web",
         "ex.: Redimensionar, WebP e ZIP",
         "Outro",
+        'Mostrar um grande sinal de reproduzir/pausa no ecrã quando as teclas multimédia do teclado controlam um flutuante',
+        'Só quando o flutuante não está em foco',
+        'Sempre',
     ],
     "it": [
         "Una catena richiede almeno due passaggi.",
@@ -583,6 +613,9 @@ T = {
         "es. Per il web",
         "es. Ridimensiona, WebP e ZIP",
         "Altro",
+        'Mostra un grande simbolo play/pausa sullo schermo quando i tasti multimediali della tastiera controllano un float',
+        'Solo quando il float non è attivo',
+        'Sempre',
     ],
     "hi": [
         "चेन में कम से कम दो चरण होने चाहिए।",
@@ -636,6 +669,9 @@ T = {
         "जैसे: वेब के लिए",
         "जैसे: आकार बदलें, WebP और ZIP",
         "अन्य",
+        'जब कीबोर्ड की मीडिया कुंजियाँ किसी फ़्लोट को नियंत्रित करें, तो स्क्रीन पर बड़ा प्ले/पॉज़ चिह्न दिखाएँ',
+        'केवल जब फ़्लोट फ़ोकस में न हो',
+        'हर समय',
     ],
     "fa": [
         "زنجیره دست‌کم به دو مرحله نیاز دارد.",
@@ -689,6 +725,9 @@ T = {
         "مثلاً: برای وب",
         "مثلاً: تغییر اندازه، WebP و ZIP",
         "سایر",
+        'وقتی کلیدهای رسانهٔ صفحه\u200cکلید یک پنجرهٔ شناور را کنترل می\u200cکنند، نشانهٔ بزرگ پخش/توقف روی صفحه نمایش داده شود',
+        'فقط وقتی پنجرهٔ شناور فعال نیست',
+        'همیشه',
     ],
     "ur": [
         "چین میں کم از کم دو مراحل ہونے چاہییں۔",
@@ -742,5 +781,8 @@ T = {
         "مثلاً: ویب کے لیے",
         "مثلاً: سائز بدلیں، WebP اور ZIP",
         "دیگر",
+        'جب کی بورڈ کی میڈیا کیز کسی فلوٹ کو کنٹرول کریں تو اسکرین پر بڑا پلے/پاز نشان دکھائیں',
+        'صرف جب فلوٹ فوکس میں نہ ہو',
+        'ہر وقت',
     ],
 }
