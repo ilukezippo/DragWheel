@@ -1425,7 +1425,25 @@ class Wheel(QWidget):
         self.mode = mode
         self.ops = self.app.ops_for(mode, self.paths) if self.paths else []
         self.hover = -1
+        if self.isVisible():
+            self._keep_on_screen()                    # more slices = a bigger ring
         self.update()
+
+    def _keep_on_screen(self):
+        """Centre the wheel on the pointer, but slide it in so the whole ring and the key buttons show,
+        even right at the edge of the screen."""
+        pos = getattr(self, "_anchor", None) or QCursor.pos()
+        scr = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+        geo = scr.availableGeometry()
+        c = self.center()
+        outer = self._outer() + 18                    # ring + its shadow
+        pills = self._pill_rects()
+        half_w = max(outer, (max(r.right() for r in pills.values()) - min(r.left() for r in pills.values())) / 2 + 4)
+        top_extent = outer
+        bottom_extent = max(outer, max(r.bottom() for r in pills.values()) - c.y() + 6)
+        cx = min(max(pos.x(), geo.left() + half_w), geo.right() - half_w)
+        cy = min(max(pos.y(), geo.top() + top_extent), geo.bottom() - bottom_extent)
+        self.move(int(cx - c.x()), int(cy - c.y()))
 
     def set_paths(self, paths):
         self.paths = paths
@@ -1442,12 +1460,9 @@ class Wheel(QWidget):
         self.set_mode(mode)
         pos = at or QCursor.pos()
         c = self.center()
-        geo = QGuiApplication.screenAt(pos).availableGeometry() if QGuiApplication.screenAt(pos) else None
-        x, y = int(pos.x() - c.x()), int(pos.y() - c.y())
-        if geo and click_mode:   # keep it fully on-screen when not dragging
-            x = max(geo.left(), min(x, geo.right() - self.width()))
-            y = max(geo.top(), min(y, geo.bottom() - self.height()))
-        self.move(x, y)
+        self._anchor = pos
+        self.move(int(pos.x() - c.x()), int(pos.y() - c.y()))
+        self._keep_on_screen()
         self._closing = False
         self._style = wheel_anim()
         self.t_anim.stop()
@@ -6464,7 +6479,7 @@ class SettingsDialog(QDialog):
         v.addWidget(self.tour_start)
         v.addStretch(1)
         b = QPushButton(tr("Show the quick tour again"))
-        b.clicked.connect(lambda: self.app.show_tour())
+        b.clicked.connect(lambda: self.app.show_tour(parent=self))
         v.addWidget(b)
         lay.addWidget(g)
         lay.addStretch(1)
@@ -7099,8 +7114,8 @@ class TourCanvas(QWidget):
 class TourDialog(QDialog):
     """First launch: how DragWheel works in three steps, shown as a short looping animation."""
 
-    def __init__(self, app):
-        super().__init__(None, Qt.WindowStaysOnTopHint)
+    def __init__(self, app, parent=None):
+        super().__init__(parent, Qt.WindowStaysOnTopHint if parent is None else Qt.Dialog)
         self.app = app
         key = tr(mode_keys()["convert"])
         self.setWindowTitle(tr("Welcome to {app}", app=APP))
@@ -7343,7 +7358,7 @@ class DragWheelApp(QObject):
         self.pending_timer = QTimer(self, singleShot=True, interval=350, timeout=self._flush_pending)
 
         self.tray = QSystemTrayIcon(app_icon())
-        self.tray.activated.connect(lambda r: self.pick_files() if r == QSystemTrayIcon.DoubleClick else None)
+        self.tray.activated.connect(lambda r: self.show_settings() if r == QSystemTrayIcon.Trigger else None)
         self._build_tray_menu()
         self.tray.show()
         self._update_jobs = set()
@@ -8266,9 +8281,21 @@ class DragWheelApp(QObject):
 
     # ---- windows
     def show_settings(self):
-        SettingsDialog(self).exec()
+        open_one = getattr(self, "_settings_dlg", None)
+        if open_one is not None:                    # already open: bring it forward instead of a second one
+            open_one.raise_()
+            open_one.activateWindow()
+            return
+        self._settings_dlg = SettingsDialog(self)
+        try:
+            self._settings_dlg.exec()
+        finally:
+            self._settings_dlg = None
 
-    def show_tour(self):
+    def show_tour(self, parent=None):
+        if parent is not None:                 # from Settings: on top of it, and usable while it's open
+            TourDialog(self, parent).exec()
+            return
         d = TourDialog(self)
         d.show()
         d.raise_()

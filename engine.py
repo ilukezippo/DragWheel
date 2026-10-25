@@ -32,6 +32,7 @@ logging.getLogger().setLevel(logging.WARNING)   # pdf2docx is chatty
 IS_WIN = sys.platform == "win32"
 OUTPUT_DIR: str | None = None   # None = save next to the original
 NO_WINDOW = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW
+DETACHED = 0x00000008 if IS_WIN else 0   # DETACHED_PROCESS: no console at all (so a tool can't beep through one)
 # Heavy tools (ffmpeg, whisper…) run below normal priority so a video playing in a float stays smooth.
 LOW_PRIORITY = 0x00004000 if IS_WIN else 0  # BELOW_NORMAL_PRIORITY_CLASS
 
@@ -205,7 +206,7 @@ def report_progress(frac: float, token=None) -> None:
 
 
 def run(cmd: list[str], cwd: str | None = None, ok_codes=(0,), progress_total: float = 0.0,
-        span: tuple = (0.0, 1.0)) -> None:
+        span: tuple = (0.0, 1.0), detached: bool = False) -> None:
     """Run an external tool; killed immediately if the job is cancelled.
     With progress_total (seconds), cmd must write ffmpeg's -progress to stdout; it's turned into %."""
     check_cancel()
@@ -213,7 +214,8 @@ def run(cmd: list[str], cwd: str | None = None, ok_codes=(0,), progress_total: f
     t = _token()
     with tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE if progress_total else subprocess.DEVNULL,
-                                stderr=err, stdin=subprocess.DEVNULL, cwd=cwd, creationflags=NO_WINDOW | LOW_PRIORITY)
+                                stderr=err, stdin=subprocess.DEVNULL, cwd=cwd,
+                                creationflags=(DETACHED if detached else NO_WINDOW) | LOW_PRIORITY)
         if progress_total:
             def reader(stream=proc.stdout):
                 last = -1.0
@@ -2616,7 +2618,7 @@ def _extract_into(src: Path, dest: Path):
     if (exe := seven_zip()):
         run([exe, "x", "-y", f"-o{dest}", str(src)])
     elif fmt == "rar" and (exe := winrar("UnRAR.exe")):
-        run([exe, "x", "-y", "-idq", str(src), str(dest) + os.sep])
+        run([exe, "x", "-y", "-inul", str(src), str(dest) + os.sep], detached=True)
     elif (exe := windows_tar()):
         run([exe, "-xf", str(src), "-C", str(dest)])
     else:
@@ -2795,7 +2797,7 @@ def _write_archive(items: list[Path], root: Path, fmt: str, out: Path) -> Path:
             if not exe:
                 raise ConversionError("Creating RAR files needs WinRAR installed")
             rel = [str(it.relative_to(root)) for it in items]
-            run([exe, "a", "-r", "-idq", "-y", str(tmp), *rel], cwd=str(root), ok_codes=(0, 1))
+            run([exe, "a", "-r", "-inul", "-y", str(tmp), *rel], cwd=str(root), ok_codes=(0, 1), detached=True)
             # Rar.exe appends .rar when the name doesn't end with it
             if not tmp.exists() and Path(str(tmp) + ".rar").exists():
                 Path(str(tmp) + ".rar").rename(tmp)
