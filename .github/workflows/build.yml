@@ -48,12 +48,34 @@ jobs:
           --collect-data imageio_ffmpeg --collect-binaries imageio_ffmpeg
           --collect-all pillow_heif --hidden-import win32timezone --hidden-import py7zr
           --hidden-import win32com.shell.shell --hidden-import editor --hidden-import jobproc --hidden-import updater --hidden-import theme --collect-submodules locales --hidden-import PySide6.QtMultimedia --hidden-import onnxruntime --collect-binaries onnxruntime --exclude-module sympy
-          --exclude-module tkinter --exclude-module matplotlib
+          --exclude-module tkinter --exclude-module matplotlib --exclude-module cv2
           dragwheel.pyw
       - name: Trim unused Qt files
         run: |
           Remove-Item dist/DragWheel/_internal/PySide6/opengl32sw.dll -ErrorAction SilentlyContinue
           Remove-Item dist/DragWheel/_internal/PySide6/translations -Recurse -ErrorAction SilentlyContinue
+      # Code signing through SignPath (free for open source). Runs only once the SignPath project exists and
+      # the repository has the variable SIGNPATH_ORGANIZATION_ID and the secret SIGNPATH_API_TOKEN (docs/CODE_SIGNING.md).
+      - name: Upload the app for signing
+        id: unsigned
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-unsigned
+          path: dist/DragWheel
+          retention-days: 1
+      - name: Sign DragWheel.exe (SignPath)
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'DragWheel' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: app
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist/DragWheel
       - name: Zip portable
         run: Compress-Archive -Path dist/DragWheel -DestinationPath DragWheel-portable.zip
       - uses: actions/upload-artifact@v4
@@ -88,6 +110,26 @@ jobs:
           cd installer
           makensis -V2 -DDISTDIR="$GITHUB_WORKSPACE/dist/DragWheel" dragwheel.nsi
           ls -la ../dist
+      - name: Upload the installer for signing
+        id: unsigned_setup
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-unsigned
+          path: dist/DragWheel-Setup-*.exe
+          retention-days: 1
+      - name: Sign the installer (SignPath)
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'DragWheel' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned_setup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist
       - uses: actions/upload-artifact@v4
         with:
           name: DragWheel-windows
@@ -119,7 +161,7 @@ jobs:
             **Drag a file, tap a key, drop it on the wheel.** Offline file converter and toolbox for Windows.
 
             **Install:** download `DragWheel-Setup-${{ needs.app.outputs.version }}.exe` below and run it (asks for admin, installs to `C:\Program Files\DragWheel`).
-            Windows SmartScreen may warn because the installer isn't code-signed — choose *More info → Run anyway*.
+            ${{ vars.SIGNPATH_ORGANIZATION_ID != '' && 'The installer and app are code-signed.' || 'Windows SmartScreen may warn because the installer is not code-signed yet — choose *More info → Run anyway*.' }}
 
             **Portable:** `DragWheel-portable.zip` — unzip anywhere and run `DragWheel.exe`.
 

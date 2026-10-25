@@ -1571,6 +1571,7 @@ class Wheel(QWidget):
             self.hover = (self.hover + step) % n
         else:
             self.hover = 0 if step > 0 else n - 1
+        play_tick()
         self._announce()
         self.scroll_active = True
         local = QPointF(self.mapFromGlobal(QCursor.pos()))
@@ -1594,6 +1595,8 @@ class Wheel(QWidget):
             if pill and pill != self.mode:
                 self.pill_timer.start()
         if new_hover != self.hover:
+            if new_hover >= 0:
+                play_tick()
             self.hover = new_hover
             self.update()
             self._announce()
@@ -1616,6 +1619,7 @@ class Wheel(QWidget):
 
     def _pill_dwell(self):
         if self.hover_pill:
+            play_tick()
             self.set_mode(self.hover_pill)
 
     # ------------------------------------------------------------- click mode
@@ -1912,6 +1916,26 @@ def _media_sound(words) -> str | None:
     return found
 
 
+_TICK = None
+
+
+def play_tick():
+    """The soft click when the highlight moves to another slice (Settings → Everyday)."""
+    global _TICK
+    if settings().value("tick_sound", "true") != "true":
+        return
+    try:
+        if _TICK is None:
+            from PySide6.QtMultimedia import QSoundEffect
+            _TICK = QSoundEffect()
+            _TICK.setSource(QUrl.fromLocalFile(asset("sounds/tick.wav")))
+            _TICK.setVolume(1.0)
+        _TICK.stop()
+        _TICK.play()
+    except Exception as e:
+        winsys.log(f"tick sound: {e}")
+
+
 def play_finish_sound(kind="ok"):
     """Windows' "Notify Calendar" sound when a job finishes, "Notify Messaging" for an error (Settings → Everyday)."""
     if settings().value("finish_sound", "true") != "true" or not winsys.IS_WIN:
@@ -2156,6 +2180,7 @@ class Toast(QWidget):
     def _undo(self):
         fn, self.on_undo = self.on_undo, None
         if fn:
+            play_finish_sound("err")
             ok = fn()
             self.btn.hide()
             self.undo_btn.hide()
@@ -6163,6 +6188,8 @@ class SettingsDialog(QDialog):
             "shake": self.shake.isChecked(),
             "tour_start": self.tour_start.isChecked(),
             "cursor_busy": self.cursor_busy.isChecked(),
+            "tick_sound": self.tick_sound.isChecked(),
+            "crash_reports": self.crash_reports.isChecked(),
             "job_mode": self.job_mode.currentData(),
             "link_stops": self.link_stops.isChecked(),
             "peek": self.peek.isChecked(),
@@ -6192,6 +6219,8 @@ class SettingsDialog(QDialog):
             "shake": s.value("shake", "true") == "true",
             "tour_start": s.value("tour_at_start", "true") == "true",
             "cursor_busy": s.value("cursor_busy", "true") == "true",
+            "tick_sound": s.value("tick_sound", "true") == "true",
+            "crash_reports": s.value("crash_reports", "false") == "true",
             "job_mode": s.value("job_mode", "queue"),
             "link_stops": s.value("float_link_stops", "true") == "true",
             "peek": s.value("peek", "true") == "true",
@@ -6400,9 +6429,12 @@ class SettingsDialog(QDialog):
         self.finish_anim = QCheckBox(tr("Animate the tick on the notification"))
         self.finish_anim.setChecked(st["finish_anim"])
         v.addWidget(self.finish_anim)
-        self.finish_sound = QCheckBox(tr("Play a sound (Windows' Calendar sound when done, Messaging sound on errors)"))
+        self.finish_sound = QCheckBox(tr("Play a sound (Windows' Calendar sound when done, Messaging sound on errors, Cancel and Undo)"))
         self.finish_sound.setChecked(st["finish_sound"])
         v.addWidget(self.finish_sound)
+        self.tick_sound = QCheckBox(tr("Soft click when moving between slices"))
+        self.tick_sound.setChecked(st["tick_sound"])
+        v.addWidget(self.tick_sound)
         lay.addWidget(g)
 
         g = QGroupBox(tr("While DragWheel is working"))
@@ -6468,14 +6500,19 @@ class SettingsDialog(QDialog):
         lay.addWidget(g)
 
         g = QGroupBox(tr("Help"))
-        v = QHBoxLayout(g)
+        v = QVBoxLayout(g)
+        row = QHBoxLayout()
         self.tour_start = QCheckBox(tr("Show the welcome tour every time DragWheel starts"))
         self.tour_start.setChecked(st["tour_start"])
-        v.addWidget(self.tour_start)
-        v.addStretch(1)
+        row.addWidget(self.tour_start)
+        row.addStretch(1)
         b = QPushButton(tr("Show the quick tour again"))
         b.clicked.connect(lambda: self.app.show_tour(parent=self))
-        v.addWidget(b)
+        row.addWidget(b)
+        v.addLayout(row)
+        self.crash_reports = QCheckBox(tr("When something goes wrong, offer to send a crash report (you see it first)"))
+        self.crash_reports.setChecked(st["crash_reports"])
+        v.addWidget(self.crash_reports)
         lay.addWidget(g)
         lay.addStretch(1)
         return page
@@ -6766,7 +6803,8 @@ class SettingsDialog(QDialog):
         s.setValue("job_mode", self.job_mode.currentData())
         for key, box in (("shake", self.shake), ("peek", self.peek), ("finish_anim", self.finish_anim),
                          ("finish_sound", self.finish_sound), ("tour_at_start", self.tour_start),
-                         ("cursor_busy", self.cursor_busy), ("float_link_stops", self.link_stops)):
+                         ("cursor_busy", self.cursor_busy), ("float_link_stops", self.link_stops),
+                         ("tick_sound", self.tick_sound), ("crash_reports", self.crash_reports)):
             s.setValue(key, "true" if box.isChecked() else "false")
         if self.full_menu is not None and self.full_menu.isChecked() != winsys.full_menu_enabled():
             try:
@@ -7482,6 +7520,7 @@ class DragWheelApp(QObject):
     def on_tap(self, mode):
         if self.wheel.is_open():
             if mode != self.wheel.mode:
+                play_tick()
                 self.wheel.set_mode(mode)
             if not self.wheel.paths:
                 self._fill_from_explorer()
@@ -7947,6 +7986,7 @@ class DragWheelApp(QObject):
     def _cancel_job(self, worker):
         if worker.cancel_requested:
             return
+        play_finish_sound("err")
         if worker in self.waiting:                 # not started yet: just take it out of the line
             self.waiting.remove(worker)
             worker.cancel()
@@ -8305,6 +8345,149 @@ class DragWheelApp(QObject):
 
 
 # ============================================================================
+# Crash reports — off by default. When turned on, DragWheel shows the report and asks before anything is sent;
+# sending opens a GitHub issue in your browser that you can read and edit first. Nothing is sent by itself.
+# ============================================================================
+def _crash_dir() -> Path:
+    d = winsys.log_path().parent / "crash"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _anonymize(text: str) -> str:
+    """Hide the Windows user name and home folder in a report."""
+    import getpass
+    home = str(Path.home())
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    for needle in {home, home.replace("\\", "/")}:
+        if needle:
+            text = text.replace(needle, "%USERPROFILE%")
+    if user and len(user) > 2:
+        text = text.replace(user, "<user>")
+    return text
+
+
+def crash_report_text(kind, details) -> str:
+    import platform
+    try:
+        from PySide6 import __version__ as qt
+    except Exception:
+        qt = "?"
+    lines = [f"DragWheel {VERSION} ({'installed' if getattr(sys, 'frozen', False) else 'source'})",
+             f"Windows {platform.version()} · Python {platform.python_version()} · Qt {qt}",
+             f"Language: {settings().value('language', '') or 'system'}", "", f"What happened: {kind}", "", details.strip()]
+    try:                                                           # the last lines of the log help a lot
+        tail = winsys.log_path().read_text(encoding="utf-8", errors="replace").splitlines()[-25:]
+        lines += ["", "Last log lines:"] + tail
+    except OSError:
+        pass
+    return _anonymize("\n".join(lines))
+
+
+class CrashDialog(QDialog):
+    """Shows exactly what a report contains, then lets you send it (on GitHub), copy it, or close."""
+
+    def __init__(self, text):
+        super().__init__(None, Qt.WindowStaysOnTopHint)
+        self.text = text
+        self.setWindowTitle(f"{APP} — " + tr("Something went wrong"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.resize(620, 460)
+        lay = QVBoxLayout(self)
+        head = QLabel("<b>" + tr("Something went wrong in DragWheel") + "</b><br>" +
+                      tr("Sending this report helps fix it. This is everything it contains — your user name is hidden. "
+                         "Send opens GitHub in your browser, where you can read it again and change it before posting."))
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        from PySide6.QtWidgets import QPlainTextEdit
+        box = QPlainTextEdit(text)
+        box.setReadOnly(True)
+        box.setStyleSheet(f"background:{theme.hexc('surface')};color:{theme.hexc('text')};font:9pt Consolas")
+        lay.addWidget(box, 1)
+        row = QHBoxLayout()
+        b = QPushButton(tr("Copy"))
+        b.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.text))
+        row.addWidget(b)
+        row.addStretch(1)
+        b = QPushButton(tr("Don't send"))
+        b.clicked.connect(self.reject)
+        row.addWidget(b)
+        send = QPushButton(tr("Send report"))
+        send.setDefault(True)
+        send.clicked.connect(self._send)
+        row.addWidget(send)
+        lay.addLayout(row)
+
+    def _send(self):
+        from urllib.parse import quote
+        first = next((ln for ln in reversed(self.text.splitlines()) if "Error" in ln or "Exception" in ln), "Crash report")
+        body = self.text if len(self.text) < 6000 else self.text[:6000] + "\n…"
+        url = (f"{updater.REPO_URL}/issues/new?title={quote('Crash: ' + first.strip()[:90])}"
+               f"&labels=crash&body={quote('```\n' + body + '\n```')}")
+        QDesktopServices.openUrl(QUrl(url))
+        winsys.log("crash report: opened on GitHub")
+        self.accept()
+
+
+_CRASH_SEEN = set()
+
+
+def report_crash(kind, details):
+    """Every crash goes to the log and the crash folder; the report window only when crash reports are on."""
+    text = crash_report_text(kind, details)
+    import time
+    try:
+        (_crash_dir() / time.strftime("crash-%Y%m%d-%H%M%S.txt")).write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+    winsys.log(f"crash: {kind}: {details.strip().splitlines()[-1] if details.strip() else ''}")
+    key = details.strip().splitlines()[-1] if details.strip() else kind
+    if settings().value("crash_reports", "false") != "true" or key in _CRASH_SEEN:
+        return
+    _CRASH_SEEN.add(key)
+    app = QApplication.instance()
+    if app is not None:
+        QTimer.singleShot(0, lambda: CrashDialog(text).exec())
+
+
+def install_crash_handlers():
+    import faulthandler
+    import threading as _th
+    import traceback as _tb
+
+    def hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            return
+        report_crash(exc_type.__name__, "".join(_tb.format_exception(exc_type, exc, tb)))
+    sys.excepthook = hook
+    _th.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
+    # a hard crash (inside Qt or a library) can't be caught: faulthandler writes it down, and the next start offers it
+    d = _crash_dir()
+    native, running = d / "last-session.txt", d / "running"
+    if running.exists() and native.exists() and native.stat().st_size > 0:
+        QTimer.singleShot(3000, lambda t=native.read_text(encoding="utf-8", errors="replace"):
+                          report_crash("DragWheel closed unexpectedly last time", t))
+    running.write_text(str(os.getpid()), encoding="utf-8")
+    global _FAULT_FILE
+    _FAULT_FILE = open(native, "w", encoding="utf-8")
+    faulthandler.enable(_FAULT_FILE, all_threads=True)
+
+
+def crash_handlers_clean_exit():
+    try:
+        (_crash_dir() / "running").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+_FAULT_FILE = None
+
+
+# ============================================================================
 # Single instance
 # ============================================================================
 SERVER_NAME = f"dragwheel-{getpass.getuser()}"
@@ -8441,6 +8624,12 @@ def main():
                                     float_label=tr("Open Float"))
     except Exception as e:
         winsys.log(f"context menu refresh failed: {e}")
+
+    try:
+        install_crash_handlers()
+        qapp.aboutToQuit.connect(crash_handlers_clean_exit)
+    except Exception as e:
+        winsys.log(f"crash handlers: {e}")
 
     QLocalServer.removeServer(SERVER_NAME)
     server = QLocalServer()

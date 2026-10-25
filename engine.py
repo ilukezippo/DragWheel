@@ -427,32 +427,80 @@ SOCIAL_SHAPES = ["9:16 — Reel · Story · TikTok · Shorts", "1:1 — Square p
                  "2:3 — Pinterest pin", "16:9 — YouTube · widescreen"]
 
 
+_YUNET = None
+
+
+def detect_faces(rgb, score_thr=0.6, nms_thr=0.3) -> list[tuple[float, float, float, float, float]]:
+    """Faces in a PIL image as (x, y, w, h, score), with the YuNet model run by onnxruntime
+    (the same model and maths OpenCV's FaceDetectorYN uses, without shipping OpenCV)."""
+    global _YUNET
+    import numpy as np
+    import onnxruntime as ort
+    Image, _ = _pil()
+    if _YUNET is None:
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        _YUNET = ort.InferenceSession(str(_asset("models", "face_detection_yunet_2023mar.onnx")), opts,
+                                      providers=["CPUExecutionProvider"])
+    rgb = rgb.convert("RGB")
+    w0, h0 = rgb.size
+    pw, ph = (w0 + 31) // 32 * 32, (h0 + 31) // 32 * 32          # the network wants multiples of 32
+    canvas = np.zeros((ph, pw, 3), np.float32)
+    canvas[:h0, :w0] = np.asarray(rgb, np.float32)[:, :, ::-1]   # BGR, 0-255, like OpenCV
+    names = [o.name for o in _YUNET.get_outputs()]
+    out = dict(zip(names, _YUNET.run(None, {_YUNET.get_inputs()[0].name: canvas.transpose(2, 0, 1)[None]})))
+    boxes, scores = [], []
+    for st in (8, 16, 32):
+        cols = pw // st
+        cls = np.clip(out[f"cls_{st}"][0, :, 0], 0, 1)
+        obj = np.clip(out[f"obj_{st}"][0, :, 0], 0, 1)
+        score = np.sqrt(cls * obj)
+        keep = np.where(score >= score_thr)[0]
+        if not len(keep):
+            continue
+        b = out[f"bbox_{st}"][0][keep]
+        r, c = keep // cols, keep % cols
+        cx, cy = (c + b[:, 0]) * st, (r + b[:, 1]) * st
+        bw, bh = np.exp(b[:, 2]) * st, np.exp(b[:, 3]) * st
+        boxes.append(np.stack([cx - bw / 2, cy - bh / 2, bw, bh], 1))
+        scores.append(score[keep])
+    if not boxes:
+        return []
+    boxes, scores = np.concatenate(boxes), np.concatenate(scores)
+    order, picked = scores.argsort()[::-1], []
+    while len(order):
+        i, rest = order[0], order[1:]
+        picked.append(i)
+        x1 = np.maximum(boxes[i, 0], boxes[rest, 0])
+        y1 = np.maximum(boxes[i, 1], boxes[rest, 1])
+        x2 = np.minimum(boxes[i, 0] + boxes[i, 2], boxes[rest, 0] + boxes[rest, 2])
+        y2 = np.minimum(boxes[i, 1] + boxes[i, 3], boxes[rest, 1] + boxes[rest, 3])
+        inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+        iou = inter / (boxes[i, 2] * boxes[i, 3] + boxes[rest, 2] * boxes[rest, 3] - inter + 1e-9)
+        order = rest[iou <= nms_thr]
+    return [(*map(float, boxes[i]), float(scores[i])) for i in picked]
+
+
 def _face_center_x(src, samples=6) -> float | None:
     """Where faces are, horizontally (0..1), from a few frames — so the crop keeps the subject in view."""
     try:
-        import cv2
         import numpy as np
+        Image, _ = _pil()
         dur = media_duration(src)
         tmp = temp_dir()
         xs = []
-        det = None
         for i in range(samples):
             check_cancel()
             at = dur * (i + 0.5) / samples
             png = tmp / f"f{i}.png"
             run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{at:.2f}", "-i", str(src),
                  "-frames:v", "1", "-vf", "scale=640:-2", str(png)])
-            img = cv2.imread(str(png))
-            if img is None:
+            if not png.exists():
                 continue
-            if det is None:
-                det = cv2.FaceDetectorYN.create(str(_asset("models", "face_detection_yunet_2023mar.onnx")), "",
-                                                (img.shape[1], img.shape[0]), 0.6, 0.3, 5000)
-            det.setInputSize((img.shape[1], img.shape[0]))
-            _, faces = det.detect(img)
-            if faces is not None:
-                for f in faces:
-                    xs.append((f[0] + f[2] / 2) / img.shape[1])
+            with Image.open(png) as frame:
+                frame.load()
+                for f in detect_faces(frame):
+                    xs.append((f[0] + f[2] / 2) / frame.width)
         return float(np.median(xs)) if xs else None
     except Exception:
         return None
@@ -1486,19 +1534,14 @@ def image_remove_bg(src, p):
 
 
 def image_blur_faces(src, p):
-    import cv2
-    import numpy as np
     from PIL import ImageDraw, ImageFilter
     Image, _ = _pil()
     img = open_image(src)
     rgb = _flatten(img)
     scale = min(1.0, 1600 / max(rgb.size))
     small = rgb.resize((max(1, int(rgb.width * scale)), max(1, int(rgb.height * scale))), Image.LANCZOS) if scale < 1 else rgb
-    bgr = cv2.cvtColor(np.asarray(small), cv2.COLOR_RGB2BGR)
-    det = cv2.FaceDetectorYN.create(str(_asset("models", "face_detection_yunet_2023mar.onnx")), "",
-                                    (bgr.shape[1], bgr.shape[0]), 0.6, 0.3, 5000)
-    _, faces = det.detect(bgr)
-    if faces is None or len(faces) == 0:
+    faces = detect_faces(small)
+    if not faces:
         raise ConversionError("No faces found in this image")
     out = img.convert("RGBA") if img.mode in ("RGBA", "LA") else rgb.copy()
     for f in faces:

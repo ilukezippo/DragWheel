@@ -9,7 +9,7 @@ if not exist ".venv\Scripts\python.exe" (
 ".venv\Scripts\pyinstaller.exe" --noconfirm --clean --windowed --name DragWheel ^
   --icon assets\dragwheel.ico --version-file version_info.txt --add-data "assets;assets" ^
   --collect-data imageio_ffmpeg --collect-binaries imageio_ffmpeg ^
-  --collect-all pillow_heif --hidden-import win32timezone --hidden-import py7zr --hidden-import win32com.shell.shell --hidden-import editor --hidden-import jobproc --hidden-import updater --hidden-import theme --collect-submodules locales --hidden-import PySide6.QtMultimedia --hidden-import onnxruntime --collect-binaries onnxruntime --exclude-module sympy ^
+  --collect-all pillow_heif --hidden-import win32timezone --hidden-import py7zr --hidden-import win32com.shell.shell --hidden-import editor --hidden-import jobproc --hidden-import updater --hidden-import theme --collect-submodules locales --hidden-import PySide6.QtMultimedia --hidden-import onnxruntime --collect-binaries onnxruntime --exclude-module sympy --exclude-module cv2 ^
   --exclude-module tkinter --exclude-module matplotlib ^
   dragwheel.pyw || (pause & exit /b 1)
 del /q "dist\DragWheel\_internal\PySide6\opengl32sw.dll" 2>nul

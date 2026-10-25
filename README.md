@@ -181,7 +181,7 @@ Free code signing provided by [SignPath.io](https://about.signpath.io), certific
 
 Every release is built from this repository's source by GitHub Actions and manually approved before signing.
 
-**Privacy:** DragWheel does not transfer any information to other networked systems, except the optional update check that asks GitHub for the latest release (can be turned off in Settings). See the [privacy policy](PRIVACY.md).
+**Privacy:** conversions never leave your PC. DragWheel only goes online for features you use: the update check (can be turned off), one-time downloads you agree to, links you play in Float, and *Send to phone → Internet link*, which uploads the file you choose. Crash reports are off by default and are never sent without you seeing them first. See the [privacy policy](PRIVACY.md).
 
 ## License
 
