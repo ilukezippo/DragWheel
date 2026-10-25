@@ -43,8 +43,11 @@ def child_main(group, op_id, paths, params, output_dir, q, cancel_evt):
             token.cancel()
         threading.Thread(target=watch, daemon=True).start()
 
-        ops = engine.conversions(paths) if group == "convert" else engine.tools(paths)
-        op = next((o for o in ops if o.id == op_id), None)
+        if op_id.startswith("custom:"):                 # a preset or chain the user made (its recipe comes along)
+            op = engine.custom_op(params.get("_spec") or {}, group)
+        else:
+            ops = engine.conversions(paths) if group == "convert" else engine.tools(paths)
+            op = next((o for o in ops if o.id == op_id), None)
         if op is None:
             q.put(("error", f"Unknown operation: {op_id}"))
             return

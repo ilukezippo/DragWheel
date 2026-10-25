@@ -14,6 +14,7 @@ import getpass
 import json
 import math
 import os
+import shutil
 import sys
 import threading
 import time
@@ -3438,6 +3439,8 @@ QDialog{background:$bg} QWidget#page{background:$bg} QLabel{color:$text;font:10p
 border:1px solid $border;border-radius:8px;margin-top:22px;padding:10px 8px 8px 8px} QGroupBox::title{subcontrol-origin:margin;subcontrol-position:top left;padding:0 6px;left:8px;top:0px}
 QLineEdit,QComboBox{background:$surface;color:$text;border:1px solid $border;border-radius:6px;padding:5px 8px;font:10pt 'Segoe UI'}
 QLineEdit:focus,QComboBox:focus{border-color:$accent} QCheckBox{color:$text;font:10pt 'Segoe UI'}
+QListWidget{background:$surface;color:$text;border:1px solid $border;border-radius:6px;padding:2px}
+QListWidget::item{padding:3px 4px} QListWidget::item:selected{background:$accent;color:$on_accent;border-radius:4px}
 QPushButton{background:$button;color:$text;border:none;border-radius:6px;padding:6px 16px;font:600 9pt 'Segoe UI'}
 QPushButton:default{background:$accent;color:$on_accent} QPushButton:hover{background:$hover} QPushButton:default:hover{background:$accent2}
 QComboBox QAbstractItemView{background:$surface;color:$text;selection-background-color:$accent;selection-color:$on_accent}
@@ -4834,6 +4837,447 @@ def message(title, html):
 KEY_NAMES = ["Shift", "Ctrl", "Alt", "CapsLock"]
 
 
+# ============================================================================
+# Make it yours: wheel layout, presets, chains, your own slices, where results go, export/import
+# ============================================================================
+WHEEL_TYPES = [("image", "Image"), ("video", "Video"), ("audio", "Audio"), ("pdf", "PDF"), ("document", "Document"),
+               ("spreadsheet", "Spreadsheet"), ("slides", "Slides"), ("archive", "Archive"), ("ebook", "E-book"),
+               ("comic", "Comic book"), ("font", "Font"), ("subtitle", "Subtitles"), ("folder", "Folder"),
+               ("other", "Other")]
+WHEEL_MODES = [("convert", "Convert"), ("tool", "Tools"), ("action", "Actions")]
+OUTPUT_MODES = ["next", "folder", "replace", "clipboard"]
+
+
+def _jload(key, default):
+    try:
+        v = json.loads(settings().value(key, "") or "null")
+        return default if v is None else v
+    except (TypeError, ValueError):
+        return default
+
+
+def custom_slices() -> list:
+    return _jload("custom_slices", [])
+
+
+def save_custom_slices(lst):
+    settings().setValue("custom_slices", json.dumps(lst, ensure_ascii=False))
+
+
+def my_slices_file() -> Path:
+    return Path(engine.models_dir()).parent / "my-slices.json"
+
+
+MY_SLICES_TEMPLATE = """// Your own slices for the Actions wheel. Save this file and they appear right away.
+// "for": image, video, audio, pdf, document, spreadsheet, slides, archive, ebook, comic, font, subtitle, folder, other
+//        or "*" for everything. "each": true runs the command once per file.
+// In "command" you can use {file}, {files} (all of them, quoted), {folder}, {name}, {stem}, {ext}.
+// Lines starting with // are ignored.
+[
+  {
+    "name": "Open in Paint",
+    "for": ["image"],
+    "command": "mspaint.exe \\"{file}\\"",
+    "each": true
+  },
+  {
+    "name": "Notepad",
+    "for": ["document", "subtitle", "other"],
+    "command": "notepad.exe \\"{file}\\"",
+    "each": true
+  }
+]
+"""
+
+
+def load_my_slices() -> list:
+    f = my_slices_file()
+    try:
+        text = f.read_text(encoding="utf-8-sig")
+    except OSError:
+        return []
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
+    try:
+        data = json.loads(text)
+        return [d for d in data if isinstance(d, dict) and d.get("name") and d.get("command")]
+    except ValueError as e:
+        winsys.log(f"my-slices.json: {e}")
+        return []
+
+
+def run_my_slice(spec, paths):
+    import shlex  # noqa: F401  (quoting is done by hand for Windows)
+    import subprocess
+
+    def fill(cmd, files):
+        f = Path(files[0])
+        return (cmd.replace("{files}", " ".join(f'"{x}"' for x in files)).replace("{file}", str(f))
+                .replace("{folder}", str(f.parent)).replace("{name}", f.name).replace("{stem}", f.stem)
+                .replace("{ext}", f.suffix.lstrip(".")))
+    groups = [[p] for p in paths] if spec.get("each", True) else [paths]
+    for g in groups:
+        cmd = fill(spec["command"], g)
+        winsys.log(f"my slice '{spec['name']}': {cmd}")
+        subprocess.Popen(cmd, cwd=str(Path(g[0]).parent), shell=True)
+
+
+def wheel_layout() -> dict:
+    return _jload("wheel_layout", {})
+
+
+def apply_wheel_layout(mode, category, ops):
+    """Your order and hidden slices for this wheel and file type."""
+    lay = wheel_layout().get(f"{mode}/{category}")
+    if not lay:
+        return ops
+    hidden = set(lay.get("hidden", []))
+    order = {k: i for i, k in enumerate(lay.get("order", []))}
+    kept = [o for o in ops if o.id not in hidden] or ops[:1]
+    return sorted(kept, key=lambda o: order.get(o.id, 10_000 + ops.index(o)))
+
+
+def custom_ops_for(mode, paths) -> list:
+    """Your presets, chains and own commands that fit these files."""
+    cat = engine.category_of(paths)
+    out = []
+    for spec in custom_slices():
+        wheel = "tool" if spec.get("kind") == "chain" else "convert"
+        if wheel != mode or spec.get("for", spec.get("kind")) not in (cat, "*"):
+            continue
+        try:
+            op = engine.custom_op(spec, wheel)
+            op.spec = spec
+            out.append(op)
+        except Exception as e:
+            winsys.log(f"custom slice: {e}")
+    if mode == "action":
+        for i, spec in enumerate(load_my_slices()):
+            fors = spec.get("for") or ["*"]
+            fors = [fors] if isinstance(fors, str) else fors
+            if "*" in fors or cat in fors:
+                out.append(engine.Op(f"mine:{i}", "✎ " + spec["name"], lambda ps, p, s=spec: run_my_slice(s, ps),
+                                     group="action", multi=True))
+    return out
+
+
+class WheelLayoutDialog(QDialog):
+    """Pick which slices show on a wheel for a file type, and their order (drag to reorder)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QListWidget, QAbstractItemView
+        self.setWindowTitle(f"{APP} — " + tr("Wheel slices"))
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.resize(460, 560)
+        lay = QVBoxLayout(self)
+        row = QHBoxLayout()
+        self.mode = QComboBox()
+        for k, label in WHEEL_MODES:
+            self.mode.addItem(tr(label), k)
+        self.kind = QComboBox()
+        for k, label in WHEEL_TYPES:
+            self.kind.addItem(tr(label), k)
+        row.addWidget(QLabel(tr("Wheel")))
+        row.addWidget(self.mode, 1)
+        row.addWidget(QLabel(tr("For")))
+        row.addWidget(self.kind, 1)
+        lay.addLayout(row)
+        self.list = QListWidget()
+        self.list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list.setDefaultDropAction(Qt.MoveAction)
+        lay.addWidget(self.list, 1)
+        hint = QLabel(tr("Untick a slice to hide it. Drag to change the order — the first ones go at the top of the wheel."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        lay.addWidget(hint)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.Reset)
+        bb.button(QDialogButtonBox.Ok).setText(tr("Save"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.button(QDialogButtonBox.Reset).setText(tr("Reset this wheel"))
+        bb.accepted.connect(self._save_and_close)
+        bb.rejected.connect(self.reject)
+        bb.button(QDialogButtonBox.Reset).clicked.connect(self._reset)
+        lay.addWidget(bb)
+        self.layouts = wheel_layout()
+        self._key = None
+        self.mode.currentIndexChanged.connect(self._load)
+        self.kind.currentIndexChanged.connect(self._load)
+        self._load()
+
+    def _ops(self, mode, cat):
+        paths = [engine._fake_path(cat)] if cat not in ("folder",) else ["C:/example/folder"]
+        if mode == "convert":
+            ops = engine.conversions(paths)
+        elif mode == "tool":
+            ops = engine.tools(paths)
+        else:
+            ops = _APP.actions.ops(paths) if _APP is not None else []
+        if _APP is not None:
+            ops = ops + [o for o in custom_ops_for(mode, paths) if not o.id.startswith("mine:")]
+        return ops
+
+    def _store(self):
+        if self._key is None:
+            return
+        order, hidden = [], []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            order.append(it.data(Qt.UserRole))
+            if it.checkState() != Qt.Checked:
+                hidden.append(it.data(Qt.UserRole))
+        self.layouts[self._key] = {"order": order, "hidden": hidden}
+
+    def _load(self):
+        from PySide6.QtWidgets import QListWidgetItem
+        self._store()
+        mode, cat = self.mode.currentData(), self.kind.currentData()
+        self._key = f"{mode}/{cat}"
+        lay = self.layouts.get(self._key, {})
+        hidden = set(lay.get("hidden", []))
+        order = {k: i for i, k in enumerate(lay.get("order", []))}
+        ops = self._ops(mode, cat)
+        ops = sorted(ops, key=lambda o: order.get(o.id, 10_000 + ops.index(o)))
+        self.list.clear()
+        for o in ops:
+            it = QListWidgetItem(tr(o.label) + (f"   ·  {tr(o.hint)}" if o.hint else ""))
+            it.setData(Qt.UserRole, o.id)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            it.setCheckState(Qt.Unchecked if o.id in hidden else Qt.Checked)
+            self.list.addItem(it)
+
+    def _reset(self):
+        self.layouts.pop(self._key, None)
+        self._key = None
+        self._load()
+
+    def _save_and_close(self):
+        self._store()
+        settings().setValue("wheel_layout", json.dumps({k: v for k, v in self.layouts.items() if v.get("hidden") or v.get("order")}))
+        self.accept()
+
+
+class PresetDialog(QDialog):
+    """Make or edit an image or video preset (one slice in the Convert wheel)."""
+
+    def __init__(self, kind, spec=None, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QSlider, QSpinBox
+        self.kind = kind
+        spec = dict(spec or {})
+        self.setWindowTitle(f"{APP} — " + (tr("Image preset") if kind == "image" else tr("Video preset")))
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        form = QFormLayout(self)
+        self.name = QLineEdit(spec.get("name", ""))
+        self.name.setPlaceholderText(tr("e.g. For the web"))
+        form.addRow(tr("Name"), self.name)
+        self.fmt = QComboBox()
+        for f in (engine.PRESET_IMAGE_FORMATS if kind == "image" else engine.PRESET_VIDEO_FORMATS):
+            self.fmt.addItem(f.upper(), f)
+        self.fmt.setCurrentIndex(max(0, self.fmt.findData(spec.get("format"))))
+        form.addRow(tr("Format"), self.fmt)
+        self.q = QSlider(Qt.Horizontal)
+        self.q.setRange(10, 100)
+        self.q.setValue(int(spec.get("quality", 80 if kind == "image" else 70)))
+        ql = QLabel(str(self.q.value()))
+        self.q.valueChanged.connect(lambda v: ql.setText(str(v)))
+        qrow = QHBoxLayout()
+        qrow.addWidget(self.q, 1)
+        qrow.addWidget(ql)
+        form.addRow(tr("Quality"), qrow)
+        if kind == "image":
+            self.size = QSpinBox()
+            self.size.setRange(0, 20000)
+            self.size.setSingleStep(100)
+            self.size.setSpecialValueText(tr("Keep the size"))
+            self.size.setSuffix(" px")
+            self.size.setValue(int(spec.get("max_side", 1920)))
+            form.addRow(tr("Longest side at most"), self.size)
+            self.strip = QCheckBox(tr("Remove photo details (location, camera…)"))
+            self.strip.setChecked(bool(spec.get("strip", True)))
+            form.addRow("", self.strip)
+        else:
+            self.height = QComboBox()
+            for h in engine.PRESET_VIDEO_HEIGHTS:
+                self.height.addItem(tr("Keep the size") if h == 0 else f"{h}p", h)
+            self.height.setCurrentIndex(max(0, self.height.findData(int(spec.get("max_height", 1080)))))
+            form.addRow(tr("Picture size at most"), self.height)
+            self.mute = QCheckBox(tr("Remove the sound"))
+            self.mute.setChecked(bool(spec.get("mute", False)))
+            form.addRow("", self.mute)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(tr("Save"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+        self.uid = spec.get("uid")
+
+    def spec(self):
+        import uuid
+        s = {"uid": self.uid or uuid.uuid4().hex[:8], "kind": self.kind, "for": self.kind,
+             "name": self.name.text().strip() or tr("Preset"), "format": self.fmt.currentData(), "quality": self.q.value()}
+        if self.kind == "image":
+            s.update(max_side=self.size.value(), strip=self.strip.isChecked())
+            s["hint"] = f"{s['format'].upper()} · {s['quality']}" + (f" · ≤{s['max_side']}px" if s["max_side"] else "")
+        else:
+            s.update(max_height=self.height.currentData(), mute=self.mute.isChecked())
+            s["hint"] = f"{s['format'].upper()}" + (f" · {s['max_height']}p" if s["max_height"] else "")
+        return s
+
+
+class ChainDialog(QDialog):
+    """Make a chain: several steps that run one after another as one slice in the Tools wheel."""
+
+    def __init__(self, spec=None, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QListWidget
+        spec = dict(spec or {})
+        self.setWindowTitle(f"{APP} — " + tr("Chain"))
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.resize(520, 520)
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        self.name = QLineEdit(spec.get("name", ""))
+        self.name.setPlaceholderText(tr("e.g. Resize, WebP and ZIP"))
+        form.addRow(tr("Name"), self.name)
+        self.kind = QComboBox()
+        for k, label in WHEEL_TYPES:
+            if k not in ("folder", "other"):
+                self.kind.addItem(tr(label), k)
+        self.kind.setCurrentIndex(max(0, self.kind.findData(spec.get("for", "image"))))
+        form.addRow(tr("For"), self.kind)
+        lay.addLayout(form)
+        lay.addWidget(QLabel("<b>" + tr("Steps") + "</b>"))
+        self.steps_view = QListWidget()
+        lay.addWidget(self.steps_view, 1)
+        add = QHBoxLayout()
+        self.next_op = QComboBox()
+        add.addWidget(self.next_op, 1)
+        self.params_box = QWidget()
+        self.params_lay = QFormLayout(self.params_box)
+        self.params_lay.setContentsMargins(0, 0, 0, 0)
+        b_add = QPushButton(tr("Add step"))
+        b_add.clicked.connect(self._add)
+        add.addWidget(b_add)
+        lay.addLayout(add)
+        lay.addWidget(self.params_box)
+        row = QHBoxLayout()
+        b_del = QPushButton(tr("Remove last step"))
+        b_del.clicked.connect(self._remove_last)
+        row.addWidget(b_del)
+        row.addStretch(1)
+        lay.addLayout(row)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(tr("Save"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.uid = spec.get("uid")
+        self.steps = list(spec.get("steps") or [])
+        self.kind.currentIndexChanged.connect(lambda _i: (self.steps.clear(), self._refresh()))
+        self.next_op.currentIndexChanged.connect(self._show_params)
+        self._refresh()
+
+    def _ext_now(self):
+        ext = engine._fake_path(self.kind.currentData()).rsplit(".", 1)[1]
+        for st in self.steps:
+            op = next((o for o in engine.chain_step_ops(ext) if o.id == st["id"] and o.group == st["group"]), None)
+            if op is not None:
+                ext = engine._step_ext(ext, op)
+        return ext
+
+    def _refresh(self):
+        self.steps_view.clear()
+        for i, st in enumerate(self.steps, 1):
+            extra = ", ".join(f"{tr(k)}: {tr(v)}" for k, v in (st.get("params") or {}).items())
+            self.steps_view.addItem(f"{i}.  {tr(st['label'])}" + (f"  ({extra})" if extra else ""))
+        self.ops_now = engine.chain_step_ops(self._ext_now())
+        self.next_op.blockSignals(True)
+        self.next_op.clear()
+        for o in self.ops_now:
+            self.next_op.addItem((tr("Convert to {fmt}", fmt=tr(o.label)) if o.group == "convert" else tr(o.label)), o.id + "|" + o.group)
+        self.next_op.blockSignals(False)
+        self._show_params()
+
+    def _show_params(self, *_):
+        while self.params_lay.rowCount():
+            self.params_lay.removeRow(0)
+        self.param_edits = {}
+        op = self._current()
+        if op is None:
+            return
+        for name, default in op.ask:
+            if isinstance(default, (list, tuple)):
+                w = QComboBox()
+                for opt in default:
+                    w.addItem(tr(opt), opt)
+            else:
+                w = QLineEdit(str(default))
+                if name == "Password":
+                    w.setEchoMode(QLineEdit.Password)
+            self.params_lay.addRow(tr(name), w)
+            self.param_edits[name] = w
+
+    def _current(self):
+        key = self.next_op.currentData()
+        if not key:
+            return None
+        oid, grp = key.split("|")
+        return next((o for o in self.ops_now if o.id == oid and o.group == grp), None)
+
+    def _add(self):
+        op = self._current()
+        if op is None:
+            return
+        params = {k: (w.currentData() if isinstance(w, QComboBox) else w.text()) for k, w in self.param_edits.items()}
+        self.steps.append({"group": op.group, "id": op.id, "label": op.label if op.group != "convert" else
+                           f"Convert to {op.label}", "params": params})
+        self._refresh()
+
+    def _remove_last(self):
+        if self.steps:
+            self.steps.pop()
+            self._refresh()
+
+    def _ok(self):
+        if len(self.steps) < 2:
+            QMessageBox.information(self, APP, tr("A chain needs at least two steps."))
+            return
+        self.accept()
+
+    def spec(self):
+        import uuid
+        return {"uid": self.uid or uuid.uuid4().hex[:8], "kind": "chain", "for": self.kind.currentData(),
+                "name": self.name.text().strip() or tr("Chain"), "steps": self.steps,
+                "hint": " → ".join(tr(s["label"]).replace("…", "") for s in self.steps)[:60]}
+
+
+def export_settings(path):
+    s = settings()
+    data = {"app": APP, "version": VERSION, "settings": {k: s.value(k) for k in s.allKeys()
+                                                        if not k.startswith(("float_resume", "last_update", "geometry"))}}
+    try:
+        data["my_slices"] = my_slices_file().read_text(encoding="utf-8")
+    except OSError:
+        pass
+    Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+
+
+def import_settings(path) -> int:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if data.get("app") != APP or "settings" not in data:
+        raise ValueError(tr("This isn't a DragWheel settings file."))
+    s = settings()
+    for k, v in data["settings"].items():
+        s.setValue(k, v)
+    if data.get("my_slices"):
+        my_slices_file().parent.mkdir(parents=True, exist_ok=True)
+        my_slices_file().write_text(data["my_slices"], encoding="utf-8")
+    s.sync()
+    return len(data["settings"])
+
+
 class SettingsDialog(QDialog):
     """Changing the language applies immediately (the window rebuilds itself in the new
     language, keeping unsaved edits). Cancel switches the language back."""
@@ -4858,6 +5302,7 @@ class SettingsDialog(QDialog):
             "detect": self.detect.currentIndex(),
             "scroll": self.scroll.isChecked(),
             "out": self.out.text(),
+            "out_mode": self.out_mode.currentData(),
             "startup": self.startup.isChecked(),
             "menu": self.menu.isChecked(),
             "hotkey": self.hotkey.isChecked(),
@@ -4874,6 +5319,7 @@ class SettingsDialog(QDialog):
             "detect": int(s.value("detect_any", 0)),
             "scroll": s.value("scroll", "true") == "true",
             "out": s.value("output_dir", ""),
+            "out_mode": s.value("output_mode", "folder" if s.value("output_dir", "") else "next"),
             "startup": winsys.startup_enabled(),
             "menu": winsys.context_menu_enabled(),
             "hotkey": s.value("hotkey", "true") == "true",
@@ -4928,6 +5374,7 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(self._settings_tab(st), tr("Settings"))
+        self.tabs.addTab(self._mine_tab(), tr("Make it yours"))
         self.tabs.addTab(self._about_tab(st), tr("About"))
         self.tabs.setCurrentIndex(keep_tab)
         root.addWidget(self.tabs)
@@ -4986,14 +5433,25 @@ class SettingsDialog(QDialog):
 
         g2 = QGroupBox(tr("Output"))
         f2 = QFormLayout(g2)
+        self.out_mode = QComboBox()
+        for key, label in (("next", tr("Next to the original file")), ("folder", tr("In this folder")),
+                           ("replace", tr("Replace the original (asks first)")), ("clipboard", tr("Copy to the clipboard"))):
+            self.out_mode.addItem(label, key)
+        self.out_mode.setCurrentIndex(max(0, self.out_mode.findData(st.get("out_mode", "next"))))
+        f2.addRow(tr("Results go"), self.out_mode)
         row = QHBoxLayout()
         self.out = QLineEdit(st["out"])
-        self.out.setPlaceholderText(tr("Next to the original file"))
+        self.out.setPlaceholderText(tr("Pick a folder"))
         b = QPushButton(tr("Browse…"))
         b.clicked.connect(lambda: self.out.setText(QFileDialog.getExistingDirectory(self, tr("Output folder")) or self.out.text()))
         row.addWidget(self.out, 1)
         row.addWidget(b)
-        f2.addRow(tr("Save to"), row)
+        self.out_row = QWidget()
+        self.out_row.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        f2.addRow("", self.out_row)
+        self.out_row.setVisible(self.out_mode.currentData() == "folder")
+        self.out_mode.currentIndexChanged.connect(lambda _i: self.out_row.setVisible(self.out_mode.currentData() == "folder"))
         lay.addWidget(g2)
 
         gf = QGroupBox(tr("Float"))
@@ -5130,6 +5588,140 @@ class SettingsDialog(QDialog):
         lay.addStretch(1)
         return page
 
+    # ---- Make it yours tab (changes here are saved straight away)
+    def _mine_tab(self):
+        from PySide6.QtWidgets import QListWidget
+        page = QWidget()
+        page.setObjectName("page")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(2, 6, 2, 2)
+        g = QGroupBox(tr("Wheel slices"))
+        v = QVBoxLayout(g)
+        lbl = QLabel(tr("Choose which slices each wheel shows and in what order."))
+        lbl.setWordWrap(True)
+        v.addWidget(lbl)
+        b = QPushButton(tr("Choose slices…"))
+        b.clicked.connect(lambda: WheelLayoutDialog(self).exec())
+        v.addWidget(b, 0, Qt.AlignLeft)
+        lay.addWidget(g)
+
+        g = QGroupBox(tr("Presets and chains"))
+        v = QVBoxLayout(g)
+        lbl = QLabel(tr("A preset is your favourite settings as one slice in Convert (e.g. WebP · quality 80 · max 1920 px). "
+                        "A chain runs several steps as one slice in Tools (e.g. resize → WebP → ZIP)."))
+        lbl.setWordWrap(True)
+        v.addWidget(lbl)
+        self.custom_list = QListWidget()
+        self.custom_list.setMinimumHeight(110)
+        self.custom_list.itemDoubleClicked.connect(lambda _it: self._edit_custom())
+        v.addWidget(self.custom_list)
+        row = QHBoxLayout()
+        for label, fn in ((tr("New image preset"), lambda: self._new_custom("image")),
+                          (tr("New video preset"), lambda: self._new_custom("video")),
+                          (tr("New chain"), lambda: self._new_custom("chain")),
+                          (tr("Edit"), self._edit_custom), (tr("Delete"), self._delete_custom)):
+            bt = QPushButton(label)
+            bt.clicked.connect(fn)
+            row.addWidget(bt)
+        v.addLayout(row)
+        lay.addWidget(g)
+        self._fill_custom()
+
+        g = QGroupBox(tr("Your own slices"))
+        v = QVBoxLayout(g)
+        lbl = QLabel(tr("Add your own commands to the Actions wheel (e.g. open in another app) in a simple settings file."))
+        lbl.setWordWrap(True)
+        v.addWidget(lbl)
+        row = QHBoxLayout()
+        b = QPushButton(tr("Edit my slices…"))
+        b.clicked.connect(self._edit_my_slices)
+        row.addWidget(b)
+        row.addStretch(1)
+        v.addLayout(row)
+        lay.addWidget(g)
+
+        g = QGroupBox(tr("Move your setup to another PC"))
+        row = QHBoxLayout(g)
+        b = QPushButton(tr("Export settings…"))
+        b.clicked.connect(self._export)
+        row.addWidget(b)
+        b = QPushButton(tr("Import settings…"))
+        b.clicked.connect(self._import)
+        row.addWidget(b)
+        row.addStretch(1)
+        lay.addWidget(g)
+        lay.addStretch(1)
+        return page
+
+    def _fill_custom(self):
+        from PySide6.QtWidgets import QListWidgetItem
+        self.custom_list.clear()
+        kinds = {"image": tr("Image preset"), "video": tr("Video preset"), "chain": tr("Chain")}
+        for spec in custom_slices():
+            it = QListWidgetItem(f"★ {spec.get('name')}   —   {kinds.get(spec.get('kind'), '')}"
+                                 + (f"  ·  {spec.get('hint')}" if spec.get("hint") else ""))
+            it.setData(Qt.UserRole, spec.get("uid"))
+            self.custom_list.addItem(it)
+
+    def _new_custom(self, kind, spec=None):
+        dlg = ChainDialog(spec, self) if kind == "chain" else PresetDialog(kind, spec, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        new = dlg.spec()
+        lst = [x for x in custom_slices() if x.get("uid") != new["uid"]]
+        if spec:
+            idx = next((i for i, x in enumerate(custom_slices()) if x.get("uid") == new["uid"]), len(lst))
+            lst.insert(idx, new)
+        else:
+            lst.append(new)
+        save_custom_slices(lst)
+        self._fill_custom()
+
+    def _edit_custom(self):
+        it = self.custom_list.currentItem()
+        if it is None:
+            return
+        spec = next((x for x in custom_slices() if x.get("uid") == it.data(Qt.UserRole)), None)
+        if spec:
+            self._new_custom(spec.get("kind"), spec)
+
+    def _delete_custom(self):
+        it = self.custom_list.currentItem()
+        if it is None:
+            return
+        save_custom_slices([x for x in custom_slices() if x.get("uid") != it.data(Qt.UserRole)])
+        self._fill_custom()
+
+    def _edit_my_slices(self):
+        f = my_slices_file()
+        if not f.exists():
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(MY_SLICES_TEMPLATE, encoding="utf-8")
+        import subprocess
+        subprocess.Popen(["notepad.exe", str(f)])
+
+    def _export(self):
+        f, _ = QFileDialog.getSaveFileName(self, tr("Export settings…"), str(Path.home() / "DragWheel settings.json"),
+                                           "JSON (*.json)")
+        if f:
+            export_settings(f)
+            QMessageBox.information(self, APP, tr("Settings saved to {file}", file=f))
+
+    def _import(self):
+        f, _ = QFileDialog.getOpenFileName(self, tr("Import settings…"), str(Path.home()), "JSON (*.json)")
+        if not f:
+            return
+        try:
+            n = import_settings(f)
+        except Exception as e:
+            QMessageBox.warning(self, APP, str(e))
+            return
+        QMessageBox.information(self, APP, tr("Imported {n} settings. Some take effect after DragWheel restarts.", n=n))
+        self.app.apply_language()
+        self.app.apply_theme()
+        self.app.watcher.refresh_settings()
+        QDialog.reject(self)                       # close without undoing the imported language/theme
+
     def save(self):
         keys = {m: cb.currentData() for m, cb in self.key_boxes.items()}
         if len(set(keys.values())) < 3:
@@ -5139,7 +5731,9 @@ class SettingsDialog(QDialog):
         for m, k in keys.items():
             s.setValue(f"keys/{m}", k)
         s.setValue("detect_any", self.detect.currentIndex())
-        s.setValue("output_dir", self.out.text().strip())
+        mode = self.out_mode.currentData()
+        s.setValue("output_mode", mode)
+        s.setValue("output_dir", self.out.text().strip() if mode == "folder" else "")
         s.setValue("hotkey", "true" if self.hotkey.isChecked() else "false")
         s.setValue("scroll", "true" if self.scroll.isChecked() else "false")
         s.setValue("check_updates", "true" if self.auto_update.isChecked() else "false")
@@ -5147,7 +5741,7 @@ class SettingsDialog(QDialog):
         s.setValue("float_on_top", "true" if self.on_top.isChecked() else "false")
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
         self.app.watcher.refresh_settings()
-        engine.OUTPUT_DIR = self.out.text().strip() or None
+        engine.OUTPUT_DIR = (self.out.text().strip() or None) if mode == "folder" else None
         s.setValue("language", self.lang.currentData())
         s.setValue("theme", self.theme_box.currentData())
         try:
@@ -5283,7 +5877,8 @@ class DragWheelApp(QObject):
         self.wheel = Wheel(self)
         self.toast = ToastManager()
         self.running = set()
-        engine.OUTPUT_DIR = settings().value("output_dir", "") or None
+        engine.OUTPUT_DIR = (settings().value("output_dir", "") or None) \
+            if settings().value("output_mode", "folder") == "folder" else None
 
         self.watcher = DragWatcher()
         self.watcher.tapped.connect(self.on_tap)
@@ -5408,11 +6003,19 @@ class DragWheelApp(QObject):
     def ops_for(self, mode, paths):
         if mode == "convert":
             ops = engine.conversions(paths)
-            return ops or [engine.Op("none", "No conversions", lambda *a: None, hint="try Tools or Actions")]
-        if mode == "tool":
-            return engine.tools(paths) or [engine.Op("none", "No tools", lambda *a: None,
-                                                     hint="try Convert or Actions")]
-        return self.actions.ops(paths)
+        elif mode == "tool":
+            ops = engine.tools(paths)
+        else:
+            ops = self.actions.ops(paths)
+        try:
+            ops = ops + custom_ops_for(mode, paths)                     # your presets, chains and commands
+            ops = apply_wheel_layout(mode, engine.category_of(paths), ops)
+        except Exception as e:
+            winsys.log(f"wheel layout: {e}")
+        if not ops:
+            return [engine.Op("none", "No conversions" if mode == "convert" else "No tools", lambda *a: None,
+                              hint="try Tools or Actions" if mode == "convert" else "try Convert or Actions")]
+        return ops
 
     # ---- triggers
     def on_tap(self, mode):
@@ -5509,6 +6112,8 @@ class DragWheelApp(QObject):
         if op.id == "none":
             return
         params = {}
+        if getattr(op, "spec", None):
+            params["_spec"] = op.spec
         if op.ui == "crop":
             from editor import CropResizeDialog
             for p in paths[:5]:           # one editor per image
@@ -5804,7 +6409,74 @@ class DragWheelApp(QObject):
             except Exception as e:
                 target.show_msg(tr("Couldn't do that"), str(e), "err", 6000)
         else:
+            outs = self._place_results(worker, outs)
+            if outs is None:
+                if card is not None:
+                    card.close_card()
+                return
             target.show_result(tr("Done") if op.group == "tool" else tr("Converted to {fmt}", fmt=tr(op.label)), outs)
+
+    def _place_results(self, worker, outs):
+        """Where results go (Settings → Output): replace the original (asks first) or copy to the clipboard.
+        Returns the final paths, or None when the clipboard took them."""
+        mode = settings().value("output_mode", "next")
+        outs = [Path(o) for o in outs if o]
+        if not outs or mode not in ("replace", "clipboard"):
+            return outs
+        if mode == "clipboard":
+            import tempfile
+            dest = Path(tempfile.gettempdir()) / "DragWheel clipboard"
+            dest.mkdir(exist_ok=True)
+            moved = []
+            for o in outs:
+                t = engine.unique_path(dest / o.name)
+                shutil.move(str(o), str(t))
+                moved.append(t)
+            md = QMimeData()
+            md.setUrls([QUrl.fromLocalFile(str(m)) for m in moved])
+            if len(moved) == 1 and engine.EXT_CATEGORY.get(engine.ext_of(str(moved[0]))) == "image":
+                img = QImage(str(moved[0]))
+                if not img.isNull():
+                    md.setImageData(img)                      # paste works in chat apps and editors too
+            QGuiApplication.clipboard().setMimeData(md)
+            self.toast.show_msg(tr("Copied to clipboard"), moved[0].name if len(moved) == 1 else
+                                tr("{n} files", n=len(moved)), "ok", 4000)
+            return None
+        # replace: only when each result clearly belongs to one original
+        src = [Path(p) for p in worker.paths]
+        if worker.op.multi or len(src) != len(outs) or any(o.is_dir() for o in outs):
+            return outs
+        if settings().value("replace_no_ask", "false") != "true":
+            box = QMessageBox()
+            box.setWindowTitle(f"{APP} — " + tr("Replace the original"))
+            box.setWindowIcon(app_icon())
+            box.setStyleSheet(i18n.css(DIALOG_CSS))
+            box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            pairs = "<br>".join(f"{a.name} → {b.name}" for a, b in list(zip(src, outs))[:6])
+            box.setText(tr("Replace the original file(s) with the new one(s)? The originals go to the Recycle Bin.")
+                        + "<br><br>" + pairs)
+            again = QCheckBox(tr("Don't ask again"))
+            box.setCheckBox(again)
+            yes = box.addButton(tr("Replace"), QMessageBox.AcceptRole)
+            box.addButton(tr("Keep both"), QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is not yes:
+                return outs
+            if again.isChecked():
+                settings().setValue("replace_no_ask", "true")
+        final = []
+        for a, b in zip(src, outs):
+            try:
+                winsys.recycle(str(a))
+                target = a.with_suffix(b.suffix) if a.suffix.lower() != b.suffix.lower() else a
+                if target.exists():
+                    target = engine.unique_path(target)
+                shutil.move(str(b), str(target))
+                final.append(target)
+            except Exception as e:
+                winsys.log(f"replace failed for {a}: {e}")
+                final.append(b)
+        return final
 
     # ---- updates
     def _auto_update_check(self):

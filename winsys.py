@@ -724,3 +724,23 @@ def invoke_shell_verb(paths, *names) -> bool:
                 break
     return started
 
+
+def recycle(path: str) -> None:
+    """Move a file or folder to the Recycle Bin (can be restored)."""
+    if not IS_WIN:
+        os.remove(path)
+        return
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
+    op = SHFILEOPSTRUCTW()
+    op.wFunc = 3                                           # FO_DELETE
+    op.pFrom = os.path.abspath(path) + "\0"
+    op.fFlags = 0x0040 | 0x0010 | 0x0004 | 0x0400          # ALLOWUNDO, NOCONFIRMATION, SILENT, NOERRORUI
+    r = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if r != 0:
+        raise OSError(f"Recycle Bin: error {r}")
+

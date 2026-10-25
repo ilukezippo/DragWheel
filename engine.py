@@ -3317,6 +3317,148 @@ def tools(paths: list[str]) -> list[Op]:
     return ops
 
 
+# ============================================================================
+# Make it yours: presets and chains (defined by the user in Settings, carried to the job as a spec)
+# ============================================================================
+PRESET_IMAGE_FORMATS = ["webp", "jpg", "png", "avif", "heic"]
+PRESET_VIDEO_FORMATS = ["mp4", "webm", "mkv"]
+PRESET_VIDEO_HEIGHTS = [0, 2160, 1440, 1080, 720, 480, 360]
+
+
+def image_preset(src, p):
+    """One image preset: format, quality, longest side, keep or remove photo details."""
+    spec = p.get("_spec") or {}
+    Image, _ = _pil()
+    img = open_image(src)
+    try:
+        from PIL import ImageOps
+        img = ImageOps.exif_transpose(img)
+    except Exception:
+        pass
+    side = int(spec.get("max_side") or 0)
+    if side and max(img.size) > side:
+        img.thumbnail((side, side), Image.LANCZOS)
+    fmt = spec.get("format", "webp")
+    q = int(spec.get("quality") or 85)
+    over = {}
+    if fmt in ("jpg", "webp", "avif", "heic"):
+        over["quality"] = q
+    if spec.get("strip", True):
+        img.info.pop("exif", None)
+        img.info.pop("icc_profile", None) if spec.get("strip_icc") else None
+    else:
+        exif = img.info.get("exif")
+        if exif and fmt in ("jpg", "webp", "png", "heic", "avif"):
+            over["exif"] = exif
+    tag = re.sub(r'[<>:"/\\|?*]', "", spec.get("name", "preset"))[:30]
+    return save_image(img, out_for(src, fmt, tag), fmt, **over)
+
+
+def video_preset(src, p):
+    """One video preset: format, highest picture size, quality (smaller file ↔ better picture), sound on or off."""
+    spec = p.get("_spec") or {}
+    fmt = spec.get("format", "mp4")
+    h = int(spec.get("max_height") or 0)
+    q = int(spec.get("quality") or 70)                      # 0..100 -> CRF
+    vf = [f"scale=-2:'min({h},ih)'"] if h else []
+    args = []
+    if fmt == "webm":
+        crf = round(50 - q * 0.3)                           # 20 (best) .. 50
+        args += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(crf), "-deadline", "good", "-cpu-used", "5", "-row-mt", "1"]
+        audio = ["-c:a", "libopus", "-b:a", "128k"]
+    else:
+        crf = round(35 - q * 0.17)                          # 18 (best) .. 35
+        args += ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p"]
+        audio = ["-c:a", "aac", "-b:a", "160k"]
+        if fmt == "mp4":
+            args += ["-movflags", "+faststart"]
+    if vf:
+        args = ["-vf", ",".join(vf)] + args
+    args += ["-an"] if spec.get("mute") else audio
+    tag = re.sub(r'[<>:"/\\|?*]', "", spec.get("name", "preset"))[:30]
+    return ff(src, out_for(src, fmt, tag), *args)
+
+
+def _fake_path(category: str, ext: str = "") -> str:
+    """A pretend file name for a type, to ask which slices exist for it."""
+    ext = ext or {"image": "jpg", "video": "mp4", "audio": "mp3", "pdf": "pdf", "document": "docx", "slides": "pptx",
+                  "spreadsheet": "xlsx", "archive": "zip", "ebook": "epub", "comic": "cbz", "font": "ttf",
+                  "subtitle": "srt", "other": "bin"}.get(category, "bin")
+    return f"C:/example/file.{ext}"
+
+
+def chain_step_ops(ext: str) -> list[Op]:
+    """Steps a chain can use on a file with this extension: conversions and tools that need no picking on screen."""
+    p = [_fake_path("", ext)]
+    ops = [o for o in conversions(p) + tools(p)
+           if not o.ui and not any(str(d).startswith("@") for _, d in o.ask) and o.id not in ("none", "count", "unlock")]
+    return ops
+
+
+def _step_ext(ext: str, op: Op) -> str:
+    """The file type after a step (a conversion changes it; most tools keep it; zipping gives a zip)."""
+    if op.group == "convert" and op.id.startswith("to_"):
+        return op.id[3:]
+    if op.id in ("zip", "protect_zip"):
+        return "zip"
+    if op.id in ("removebg",):
+        return "png"
+    return ext
+
+
+def run_chain(paths, p):
+    """Run the steps one after another; each step works on what the previous one made. In-between files are
+    removed, only the last step's results are kept."""
+    spec = p.get("_spec") or {}
+    steps = spec.get("steps") or []
+    if not steps:
+        raise ConversionError("This chain has no steps")
+    paths = paths if isinstance(paths, (list, tuple)) else [paths]
+    current = [str(x) for x in paths]
+    made = []                                               # in-between results, removed at the end
+    for n, step in enumerate(steps):
+        check_cancel()
+        ops = conversions(current) if step.get("group") == "convert" else tools(current)
+        op = next((o for o in ops if o.id == step.get("id")), None)
+        if op is None:
+            raise ConversionError(f"Step {n + 1} can't be used on these files")
+        params = dict(step.get("params") or {})
+        span = (n / len(steps), (n + 1) / len(steps))
+        outs = []
+        if op.multi:
+            outs = op.fn(current, params)
+        else:
+            for f in current:
+                check_cancel()
+                outs.append(op.fn(f, params))
+        flat = []
+        for o in outs if isinstance(outs, (list, tuple)) else [outs]:
+            flat.extend(o if isinstance(o, (list, tuple)) else [o])
+        report_progress(span[1])
+        if n < len(steps) - 1:
+            made += [str(x) for x in flat if x]
+        current = [str(x) for x in flat if x]
+    final = set(current)
+    for f in made:
+        if f not in final:
+            try:
+                Path(f).unlink() if Path(f).is_file() else shutil.rmtree(f, ignore_errors=True)
+            except OSError:
+                pass
+    return [Path(x) for x in current]
+
+
+def custom_op(spec: dict, group: str) -> Op:
+    """Build the slice for a preset or chain the user made."""
+    kind = spec.get("kind")
+    name = spec.get("name") or "Preset"
+    fn = {"image": image_preset, "video": video_preset, "chain": run_chain}.get(kind)
+    if fn is None:
+        raise ConversionError("Unknown custom slice")
+    return Op(f"custom:{spec.get('uid', name)}", "★ " + name, fn, group=group, multi=(kind == "chain"),
+              hint=spec.get("hint", ""))
+
+
 def run_op(op: Op, paths: list[str], params: dict | None = None,
            token: CancelToken | None = None) -> list[Path]:
     params = params or {}
