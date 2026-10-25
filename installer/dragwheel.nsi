@@ -224,6 +224,9 @@ Section "$(SecMenuName)" SecMenu
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink" "MUIVerb" "$(PlayLink)"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink" "Icon" "imageres.dll,-1004"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink\command" "" '"$INSTDIR\${EXE}" --play-link'
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zzfloat" "MUIVerb" "$(OpenFloat)"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zzfloat" "Icon" "$INSTDIR\${EXE},0"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zzfloat\command" "" '"$INSTDIR\${EXE}" --open-float'
   SetShellVarContext current           ; Send To is per user
   Delete "$SENDTO\${APPNAME}.lnk"
   Delete "$SENDTO\Send to Phone using ${APPNAME}.lnk"
@@ -275,6 +278,21 @@ Function .onInit
     StrCpy $WelcomeHead "$(UpdateTitle)"
     StrCpy $WelcomeBody "$(UpdateText)"
   ${EndIf}
+
+  ; the same version is already installed: reinstall it, or uninstall it?
+  ${If} $OldVersion == "${APPVERSION}"
+  ${AndIfNot} ${Silent}
+    MessageBox MB_YESNOCANCEL|MB_ICONQUESTION "$(SameVersion)" IDYES same_reinstall IDNO same_uninstall
+    Quit
+    same_uninstall:
+      ${If} ${FileExists} "$INSTDIR\Uninstall.exe"
+        Exec '"$INSTDIR\Uninstall.exe"'
+      ${EndIf}
+      Quit
+    same_reinstall:
+      StrCpy $WelcomeHead "$(ReinstallTitle)"
+      StrCpy $WelcomeBody "$(ReinstallText)"
+  ${EndIf}
 FunctionEnd
 
 ; ---------------------------------------------------------------------------
@@ -320,6 +338,8 @@ LangString WelcomeText    ${LANG_ENGLISH} "Drag a file, tap a key, drop it on th
 LangString WelcomeText    ${LANG_ARABIC}  "اسحب ملفًا، اضغط مفتاحًا، ثم أفلته على العجلة.$\r$\n$\r$\nاضغط Shift للتحويل، وCtrl لأدوات الملفات (ضغط، قص، تقطيع…)، وAlt لإجراءات الملفات.$\r$\n$\r$\nكل شيء يعمل على جهازك — لا يتم رفع أي ملف.$\r$\n$\r$\nسيتم تثبيت ${APPNAME} لجميع المستخدمين في مجلد Program Files.$\r$\n$\r$\nاضغط التالي للمتابعة."
 LangString PasteHere      ${LANG_ENGLISH} "Save clipboard image here"
 LangString PasteHere      ${LANG_ARABIC}  "حفظ صورة الحافظة هنا"
+LangString OpenFloat      ${LANG_ENGLISH} "Open Float"
+LangString OpenFloat      ${LANG_ARABIC}  "فتح نافذة عائمة"
 LangString PlayLink       ${LANG_ENGLISH} "Play copied link in Float"
 LangString PlayLink       ${LANG_ARABIC}  "تشغيل الرابط المنسوخ في نافذة عائمة"
 LangString UpdateNotNow   ${LANG_ENGLISH} "The update was cancelled so your running jobs can finish. Run setup again when they're done."
@@ -328,6 +348,12 @@ LangString UpdateTitle    ${LANG_ENGLISH} "Update ${APPNAME}"
 LangString UpdateTitle    ${LANG_ARABIC}  "تحديث ${APPNAME}"
 LangString UpdateText     ${LANG_ENGLISH} "${APPNAME} $OldVersion is installed on this PC.$\r$\n$\r$\nSetup will close it, remove the old version and install ${APPNAME} ${APPVERSION}. Your settings are kept.$\r$\n$\r$\nClick Next to continue."
 LangString UpdateText     ${LANG_ARABIC}  "الإصدار $OldVersion من ${APPNAME} مثبّت على هذا الجهاز.$\r$\n$\r$\nسيغلقه برنامج الإعداد ويزيل الإصدار القديم ثم يثبّت ${APPNAME} ${APPVERSION}. ستبقى إعداداتك كما هي.$\r$\n$\r$\nاضغط التالي للمتابعة."
+LangString SameVersion    ${LANG_ENGLISH} "${APPNAME} ${APPVERSION} is already installed on this PC.$\r$\n$\r$\nYes — reinstall it (your settings are kept)$\r$\nNo — uninstall it$\r$\nCancel — close Setup"
+LangString SameVersion    ${LANG_ARABIC}  "الإصدار ${APPVERSION} من ${APPNAME} مثبّت على هذا الجهاز بالفعل.$\r$\n$\r$\nنعم — إعادة تثبيته (ستبقى إعداداتك)$\r$\nلا — إلغاء تثبيته$\r$\nإلغاء الأمر — إغلاق برنامج الإعداد"
+LangString ReinstallTitle ${LANG_ENGLISH} "Reinstall ${APPNAME} ${APPVERSION}"
+LangString ReinstallTitle ${LANG_ARABIC}  "إعادة تثبيت ${APPNAME} ${APPVERSION}"
+LangString ReinstallText  ${LANG_ENGLISH} "Setup will close ${APPNAME} and install ${APPVERSION} again. Your settings are kept.$\r$\n$\r$\nClick Next to continue."
+LangString ReinstallText  ${LANG_ARABIC}  "سيغلق برنامج الإعداد ${APPNAME} ويثبّت الإصدار ${APPVERSION} من جديد. ستبقى إعداداتك كما هي.$\r$\n$\r$\nاضغط التالي للمتابعة."
 LangString RemovingOld    ${LANG_ENGLISH} "Removing ${APPNAME} $OldVersion…"
 LangString RemovingOld    ${LANG_ARABIC}  "جارٍ إزالة ${APPNAME} $OldVersion…"
 LangString RunNow         ${LANG_ENGLISH} "Start ${APPNAME} now"

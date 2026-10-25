@@ -688,6 +688,10 @@ TEMP_HOSTS = [("litterbox.catbox.moe", _host_litterbox, 1000, 72 * 60),
               ("uguu.se", _host_uguu, 128, 3 * 60)]
 
 
+BLOCKED_UPLOAD_EXT = {".exe", ".msi", ".msix", ".appx", ".bat", ".cmd", ".com", ".scr", ".dll", ".sys", ".cpl", ".jar",
+                      ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".lnk", ".reg", ".apk", ".xapk", ".ipa"}
+
+
 def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: False) -> tuple[str, str]:
     """Upload to a free temporary host; returns (download link, host). Several hosts are tried in turn, because a
     network, country or security app may block one of them. Short times (under an hour) prefer hosts that delete soon."""
@@ -741,6 +745,8 @@ class InternetShare(QDialog):
         lay.setSizeConstraint(QLayout.SetFixedSize)
         what = self.paths[0].name if len(self.paths) == 1 and self.paths[0].is_file() else \
             tr("{n} files (as one ZIP)", n=len(self.paths)) if len(self.paths) > 1 else self.paths[0].name + ".zip"
+        if len(self.paths) == 1 and self.paths[0].is_file() and self.paths[0].suffix.lower() in BLOCKED_UPLOAD_EXT:
+            what = self.paths[0].name + ".zip — " + tr("programs are sent inside a ZIP, because file services refuse them")
         head = QLabel(f"<b>{tr('Internet link')}</b><br><span style='color:{theme.hexc('dim')}'>{what}</span>")
         head.setWordWrap(True)
         head.setFixedWidth(360)
@@ -803,12 +809,14 @@ class InternetShare(QDialog):
         def work():
             try:
                 src = self.paths[0]
-                if len(self.paths) > 1 or src.is_dir():
+                # free file services refuse programs and scripts (.exe, .msi…): those travel inside a ZIP
+                blocked = src.is_file() and src.suffix.lower() in BLOCKED_UPLOAD_EXT
+                if len(self.paths) > 1 or src.is_dir() or blocked:
                     import tempfile
                     import zipfile
                     tmp = Path(tempfile.mkdtemp(prefix="dragwheel-share-"))
                     src = tmp / ((self.paths[0].name if len(self.paths) == 1 else "DragWheel") + ".zip")
-                    with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as z:
+                    with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED if blocked else zipfile.ZIP_DEFLATED) as z:
                         for it in self.paths:
                             for f in ([it] if it.is_file() else [x for x in it.rglob("*") if x.is_file()]):
                                 z.write(f, str(f.relative_to(it.parent)))
@@ -873,11 +881,10 @@ class SendChooser(QDialog):
                              f"<span style='color:{theme.hexc('dim')}'>{what}</span>"))
         self.choice = None
         last = settings().value("share_way", "quick")
+        last = "internet" if last == "iphone" else last
         for key, title, desc in (
                 ("quick", tr("Quick Share"), tr("Google's Quick Share sends straight to a nearby Android phone. No network setup.")),
                 ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network and any phone, iPhone too. Deleted after 5 minutes to 72 hours.")),
-                ("iphone", tr("iPhone (instead of AirDrop)"), tr("AirDrop only works between Apple devices, so Windows can't use it. "
-                                                                  "This makes an internet link instead: scan the code with the iPhone camera.")),
                 ("bluetooth", tr("Bluetooth"), tr("Slower, but needs no network. Works with phones paired to this PC (Android; iPhones can't receive files over Bluetooth).")),
                 ("wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Nothing leaves your home, but routers and firewalls can block it."))):
             b = QPushButton(f"{title}\n{desc}")
@@ -1299,12 +1306,18 @@ class ModelDownload(QRunnable):
 # ============================================================================
 # The wheel
 # ============================================================================
-WHEEL_ANIMS = [("circle", "Circle"), ("fade", "Fade"), ("spin", "Spin"), ("none", "None")]
+WHEEL_ANIMS = [("bloom", "Bloom"), ("circle", "Circle"), ("fade", "Fade"), ("spin", "Spin"), ("none", "None")]
 
 
 def wheel_anim() -> str:
-    v = settings().value("wheel_anim", "circle")
-    return v if v in dict(WHEEL_ANIMS) else "circle"
+    v = settings().value("wheel_anim", "bloom")
+    return v if v in dict(WHEEL_ANIMS) else "bloom"
+
+
+def _ease_back(k):
+    """0..1 with a small overshoot, like something popping open."""
+    k = max(0.0, min(1.0, k)) - 1
+    return 1 + 2.2 * k ** 3 + 1.2 * k ** 2
 
 
 class Wheel(QWidget):
@@ -1348,7 +1361,10 @@ class Wheel(QWidget):
         self.t_anim.stop()
         opening = to > self._t
         fast = self._style == "fade"
-        self.t_anim.setDuration((130 if fast else 190) if opening else (110 if fast else 140))
+        if self._style == "bloom":
+            self.t_anim.setDuration(460 if opening else 200)
+        else:
+            self.t_anim.setDuration((130 if fast else 190) if opening else (110 if fast else 140))
         self.t_anim.setEasingCurve(QEasingCurve.OutCubic if opening else QEasingCurve.InCubic)
         self.t_anim.setStartValue(self._t)
         self.t_anim.setEndValue(float(to))
@@ -1446,7 +1462,17 @@ class Wheel(QWidget):
         if click_mode:
             self.activateWindow()
             self.setFocus()
-        if self._style != "none":
+        if self._style != "none" and click_mode:
+            self._animate(1.0)
+        elif self._style != "none":
+            QTimer.singleShot(400, self.begin_anim)         # safety net if nobody starts it
+        # while dragging, the app first asks Explorer which files are held (that can take a moment);
+        # the animation starts once that's done, so it never jumps straight to the end
+
+    def begin_anim(self):
+        """Start opening (drag mode), once the slices are in place and the app is idle again."""
+        if self.isVisible() and not self._closing and self._style != "none" and self._t < 1.0 \
+                and self.t_anim.state() != QVariantAnimation.Running:
             self._animate(1.0)
 
     def dismiss(self):
@@ -1646,6 +1672,8 @@ class Wheel(QWidget):
                 clip.addEllipse(c, 30 + t * reach, 30 + t * reach)
                 p.setClipPath(clip)
                 p.setOpacity(min(1.0, 0.35 + t))
+            elif self._style == "bloom":
+                pass                                  # drawn piece by piece below
             elif self._style == "spin":
                 sc = 0.9 + 0.1 * t
                 p.translate(c)
@@ -1658,6 +1686,9 @@ class Wheel(QWidget):
         rings = self._rings()
         outer = rings[-1][1]
 
+        bloom = self._style == "bloom" and t < 1.0
+        if bloom:                                     # the disc fills in last, under the petals
+            p.setOpacity(max(0.0, min(1.0, (t - 0.6) / 0.4)))
         # soft shadow
         g = QRadialGradient(c + QPointF(0, 6), outer + 16)
         g.setColorAt(0.86, C("shadow"))
@@ -1685,6 +1716,16 @@ class Wheel(QWidget):
                 gi = offset + i
                 a_mid = i * step                      # degrees clockwise from top
                 hovered = gi == self.hover
+                if bloom:                             # petals open one after another, clockwise from the top
+                    k = (t - (0.18 + 0.55 * i / n)) / 0.27
+                    if k <= 0:
+                        continue
+                    p.save()
+                    p.setOpacity(min(1.0, k * 1.5))
+                    sc = 0.5 + 0.5 * _ease_back(k)
+                    p.translate(c)
+                    p.scale(sc, sc)
+                    p.translate(-c)
                 if n == 1:                            # a single slice is the whole ring, no seam
                     path = QPainterPath()
                     path.setFillRule(Qt.OddEvenFill)
@@ -1692,6 +1733,10 @@ class Wheel(QWidget):
                     path.addEllipse(c, r0 + 3, r0 + 3)
                 else:
                     path = self._wedge(c, r0 + 3, r1 - 3, a_mid - step / 2 + 0.9, step - 1.8)
+                if bloom:
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(C("panel"))
+                    p.drawPath(self._wedge(c, r0 - 4, r1, a_mid - step / 2, step) if n > 1 else path)
                 if hovered:
                     grad = QRadialGradient(c, r1)
                     grad.setColorAt(0.25, ACCENT_2)
@@ -1706,13 +1751,25 @@ class Wheel(QWidget):
                 rm = r0 + (r1 - r0) * (0.6 if n > 10 else 0.5)   # wider part of the slice when crowded
                 pt = QPointF(c.x() + rm * math.sin(rad), c.y() - rm * math.cos(rad))
                 self._label(p, pt, op, hovered, (r1 - r0), step * math.pi / 180 * rm)
+                if bloom:
+                    p.restore()
             offset += n
 
         # center
+        if bloom:                                     # the middle pops first
+            p.save()
+            p.setOpacity(min(1.0, t / 0.12))
+            sc = max(0.05, _ease_back(t / 0.22))
+            p.translate(c)
+            p.scale(sc, sc)
+            p.translate(-c)
         p.setPen(Qt.NoPen)
         p.setBrush(C("ring_hover") if self.hover == -2 else C("ring"))
         p.drawEllipse(c, self.R_IN - 4, self.R_IN - 4)
         self._center_text(p, c)
+        if bloom:
+            p.restore()
+            p.setOpacity(max(0.0, min(1.0, (t - 0.65) / 0.3)))
 
         # mode pills
         keys = mode_keys()
@@ -1821,12 +1878,17 @@ class Wheel(QWidget):
 # ============================================================================
 def play_finish_sound(kind="ok"):
     """Windows' own notification sound when a job finishes (Settings → Sounds)."""
-    if settings().value("finish_sound", "false") != "true" or not winsys.IS_WIN:
+    if settings().value("finish_sound", "true") != "true" or not winsys.IS_WIN:
         return
     try:
         import winsound
-        alias = "SystemHand" if kind == "err" else "Notification.Default"
-        winsound.PlaySound(alias, winsound.SND_ALIAS | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        media = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Media"
+        wav = media / ("Windows Notify Messaging.wav" if kind == "err" else "Windows Notify Calendar.wav")
+        if wav.exists():
+            winsound.PlaySound(str(wav), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        else:
+            alias = "SystemHand" if kind == "err" else "Notification.Default"
+            winsound.PlaySound(alias, winsound.SND_ALIAS | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
     except Exception:
         try:
             import winsound
@@ -1885,7 +1947,11 @@ class Toast(QWidget):
         self.cancel_btn.setCursor(Qt.PointingHandCursor)
         self.cancel_btn.clicked.connect(self._cancel)
         lay.addWidget(self.cancel_btn)
-        self.timer = QTimer(self, singleShot=True, timeout=self.close_card)
+        self.timer = QTimer(self, singleShot=True, timeout=self._fade_out)
+        self._fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade.finished.connect(self._faded)
+        self._fading = False
+        self._auto_ms = 0
         self.target = None
         self.on_cancel = None
         self.spin = 0
@@ -1909,6 +1975,35 @@ class Toast(QWidget):
     def _place(self):
         self.adjustSize()
         self.resized.emit()          # the manager re-stacks all cards
+
+    # like Windows' notifications: they fade away, and come back while the mouse is on them
+    def _fade_out(self):
+        if self.underMouse():
+            return
+        self._fading = True
+        self._fade.stop()
+        self._fade.setDuration(700)
+        self._fade.setStartValue(self.windowOpacity())
+        self._fade.setEndValue(0.0)
+        self._fade.start()
+
+    def _faded(self):
+        if self._fading and self.windowOpacity() < 0.05:
+            self._fading = False
+            self.close_card()
+
+    def enterEvent(self, e):
+        if self._fading:
+            self._fading = False
+            self._fade.stop()
+        self.setWindowOpacity(1.0)
+        self.timer.stop()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        if self._auto_ms and getattr(self, "wanted", False):
+            self.timer.start(3000)
+        super().leaveEvent(e)
 
     def close_card(self):
         self.wanted = False
@@ -1965,6 +2060,12 @@ class Toast(QWidget):
 
     def _show(self, title, body, kind, show_btn=False, cancel=None, ms=None):
         self.timer.stop()
+        self._fade.stop()
+        self._fading = False
+        self.setWindowOpacity(1.0)
+        if ms:
+            ms = max(5000, int(ms * 1.6))           # long enough to read; hovering keeps it
+        self._auto_ms = ms or 0
         self.restyle()
         self.title.setText(title)
         self.body.setText(body)
@@ -1988,9 +2089,9 @@ class Toast(QWidget):
             anim.start(QVariantAnimation.DeleteWhenStopped)
         else:
             self._ok_t = 1.0
-        if kind in ("ok", "err") and getattr(self, "_sound_for_this", False):
-            self._sound_for_this = False
-            play_finish_sound(kind)
+        if kind == "err" or (kind == "ok" and getattr(self, "_sound_for_this", False)):
+            play_finish_sound(kind)                  # every error; "done" only when a job finished
+        self._sound_for_this = False
         self._set_icon(kind)
         self.setAccessibleName(f"{title}. {QTextDocumentFragment.fromHtml(body).toPlainText()}")
         try:
@@ -2470,6 +2571,25 @@ class LiveRelay:
             pass
 
 
+def saved_links() -> list:
+    """Links played in Float, newest first: [{"url", "title"}]."""
+    try:
+        v = json.loads(settings().value("float_links", "[]") or "[]")
+        return [x for x in v if isinstance(x, dict) and x.get("url")]
+    except (TypeError, ValueError):
+        return []
+
+
+def remember_link(url, title):
+    links = [x for x in saved_links() if x["url"] != url]
+    links.insert(0, {"url": url, "title": title or url})
+    settings().setValue("float_links", json.dumps(links[:40], ensure_ascii=False))
+
+
+def forget_link(url):
+    settings().setValue("float_links", json.dumps([x for x in saved_links() if x["url"] != url], ensure_ascii=False))
+
+
 def _float_pins() -> list:
     """Floats that reopen when Windows starts: [{"id", "src", "link", "x", "y", "w", "on_top"}]."""
     try:
@@ -2495,11 +2615,11 @@ class MediaOSD(QWidget):
         return s.value("media_osd_when", "unfocused") == "always" or not focused
 
     @classmethod
-    def flash(cls, kind, near=None, level=None):
+    def flash(cls, kind, near=None, level=None, hold=750):
         if cls._one is None:
             cls._one = MediaOSD()
         cls._one.level = level
-        cls._one._show(kind, near)
+        cls._one._show(kind, near, hold)
 
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
@@ -2513,7 +2633,7 @@ class MediaOSD(QWidget):
         self._anim = QPropertyAnimation(self, b"windowOpacity", self)
         self._anim.finished.connect(self._done)
 
-    def _show(self, kind, near):
+    def _show(self, kind, near, hold=750):
         self.kind = kind
         scr = (near.screen() if near is not None else None) or QGuiApplication.screenAt(QCursor.pos()) \
             or QGuiApplication.primaryScreen()
@@ -2524,7 +2644,7 @@ class MediaOSD(QWidget):
         self.show()
         self.raise_()
         self.update()
-        self._hold.start(750)
+        self._hold.start(hold)
 
     def _fade(self):
         self._anim.setDuration(250)
@@ -2694,6 +2814,11 @@ class FloatWindow(QWidget):
                 self.aspect = img.width / max(1, img.height)
             except Exception:
                 self.src = None
+        elif not path and not link:                   # an empty float: drop a file, paste a link, or pick a saved one
+            self.kind = "empty"
+            self.aspect = 16 / 9
+            self.src = QPixmap(2, 2)
+            self.src.fill(Qt.transparent)
         elif link and link.get("pending"):           # reopening: the window shows now, the video when it's fetched
             self.kind = "video"
             self.aspect = 16 / 9
@@ -2718,6 +2843,8 @@ class FloatWindow(QWidget):
             w = 420
         elif self.art:
             w = 280
+        elif self.kind == "empty":
+            w = 360
         else:
             w = 200
         if self.isVisible() and self.kind == prev_kind and self.kind != "other":
@@ -3456,6 +3583,19 @@ class FloatWindow(QWidget):
                 fr = QSizeF(self.frame.size()).scaled(QSizeF(self.size()), Qt.KeepAspectRatio)
                 p.drawImage(QRectF((self.width() - fr.width()) / 2, (self.height() - fr.height()) / 2,
                                    fr.width(), fr.height()), self.frame)
+        elif self.kind == "empty":
+            box = r.adjusted(10, 10, -10, -10)
+            pen = QPen(ACCENT if self._drop_hover else C("line"), 1.6, Qt.DashLine)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(box, 10, 10)
+            p.setPen(C("text"))
+            p.setFont(QFont(i18n.ui_font(), 11, QFont.DemiBold))
+            p.drawText(box.adjusted(12, 0, -12, -box.height() / 2 + 6), Qt.AlignHCenter | Qt.AlignBottom, tr("Drop a file here"))
+            p.setPen(C("dim"))
+            p.setFont(QFont(i18n.ui_font(), 9))
+            p.drawText(box.adjusted(14, box.height() / 2 + 8, -14, -8), Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap,
+                       tr("or press Ctrl+V to play a copied link · right-click for saved links"))
         else:                                               # icon, centred; highlights on hover
             ir = self._icon_rect()
             if self.hover == "icon":
@@ -3792,6 +3932,22 @@ class FloatWindow(QWidget):
                 a.triggered.connect(lambda _=False, q=q: self._set_quality(q))
         if _APP is not None:
             m.addAction(tr("Play copied link"), lambda: _APP.play_link(target=self))
+            saved = saved_links()
+            sm = m.addMenu(tr("Saved links"))
+            if not saved:
+                a = sm.addAction(tr("Links you play in Float show up here"))
+                a.setEnabled(False)
+            for it in saved:
+                title = it.get("title") or it["url"]
+                title = title if len(title) <= 60 else title[:57] + "…"
+                a = sm.addAction(title, lambda u=it["url"]: _APP.play_link(target=self, url=u))
+                a.setToolTip(it["url"])
+            if saved:
+                sm.addSeparator()
+                if self.link and any(x["url"] == self.link.get("page") for x in saved):
+                    sm.addAction(tr("Remove this link from the list"), lambda: forget_link(self.link.get("page")))
+                sm.addAction(tr("Clear the list"), lambda: settings().setValue("float_links", "[]"))
+            sm.setToolTipsVisible(True)
         m.addSeparator()
         top = m.addAction(tr("Always on top"))
         top.setCheckable(True)
@@ -5948,6 +6104,10 @@ class SettingsDialog(QDialog):
             "media_osd": self.media_osd.isChecked(),
             "anim": self.anim.currentData(),
             "shake": self.shake.isChecked(),
+            "tour_start": self.tour_start.isChecked(),
+            "cursor_busy": self.cursor_busy.isChecked(),
+            "job_mode": self.job_mode.currentData(),
+            "link_stops": self.link_stops.isChecked(),
             "peek": self.peek.isChecked(),
             "finish_anim": self.finish_anim.isChecked(),
             "finish_sound": self.finish_sound.isChecked(),
@@ -5973,9 +6133,13 @@ class SettingsDialog(QDialog):
             "media_osd": s.value("media_osd", "true") == "true",
             "anim": wheel_anim(),
             "shake": s.value("shake", "true") == "true",
+            "tour_start": s.value("tour_at_start", "true") == "true",
+            "cursor_busy": s.value("cursor_busy", "true") == "true",
+            "job_mode": s.value("job_mode", "queue"),
+            "link_stops": s.value("float_link_stops", "true") == "true",
             "peek": s.value("peek", "true") == "true",
             "finish_anim": s.value("finish_anim", "true") == "true",
-            "finish_sound": s.value("finish_sound", "false") == "true",
+            "finish_sound": s.value("finish_sound", "true") == "true",
             "full_menu": winsys.full_menu_enabled(),
             "media_osd_when": s.value("media_osd_when", "unfocused"),
         }
@@ -6086,7 +6250,7 @@ class SettingsDialog(QDialog):
         for k, label in WHEEL_ANIMS:
             self.anim.addItem(tr(label), k)
         self.anim.setCurrentIndex(max(0, self.anim.findData(st["anim"])))
-        f1.addRow(tr("Opening and closing"), self.anim)
+        f1.addRow(tr("Animations"), self.anim)
         lay.addWidget(g1)
 
         g2 = QGroupBox(tr("Output"))
@@ -6123,6 +6287,9 @@ class SettingsDialog(QDialog):
         self.ctrl_open = QCheckBox(tr("Hold Ctrl and double-click a file, or press Ctrl+Enter, to open it in Float"))
         self.ctrl_open.setChecked(st["ctrl_open"])
         vf.addWidget(self.ctrl_open)
+        self.link_stops = QCheckBox(tr("When a float plays a new link, stop what it was playing until the link is ready"))
+        self.link_stops.setChecked(st["link_stops"])
+        vf.addWidget(self.link_stops)
         self.media_osd = QCheckBox(tr("Show a big sign on screen (play, pause, next, volume…) when the keyboard's media keys control a float"))
         self.media_osd.setChecked(st["media_osd"])
         vf.addWidget(self.media_osd)
@@ -6176,9 +6343,24 @@ class SettingsDialog(QDialog):
         self.finish_anim = QCheckBox(tr("Animate the tick on the notification"))
         self.finish_anim.setChecked(st["finish_anim"])
         v.addWidget(self.finish_anim)
-        self.finish_sound = QCheckBox(tr("Play a sound"))
+        self.finish_sound = QCheckBox(tr("Play a sound (Windows' Calendar sound when done, Messaging sound on errors)"))
         self.finish_sound.setChecked(st["finish_sound"])
         v.addWidget(self.finish_sound)
+        lay.addWidget(g)
+
+        g = QGroupBox(tr("While DragWheel is working"))
+        v = QVBoxLayout(g)
+        self.cursor_busy = QCheckBox(tr("Show a small spinning circle next to the mouse pointer"))
+        self.cursor_busy.setChecked(st["cursor_busy"])
+        v.addWidget(self.cursor_busy)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("Several jobs")))
+        self.job_mode = QComboBox()
+        self.job_mode.addItem(tr("One after another (a queue)"), "queue")
+        self.job_mode.addItem(tr("All at the same time"), "parallel")
+        self.job_mode.setCurrentIndex(max(0, self.job_mode.findData(st["job_mode"])))
+        row.addWidget(self.job_mode, 1)
+        v.addLayout(row)
         lay.addWidget(g)
 
         g = QGroupBox(tr("Watch folders"))
@@ -6218,10 +6400,13 @@ class SettingsDialog(QDialog):
 
         g = QGroupBox(tr("Help"))
         v = QHBoxLayout(g)
+        self.tour_start = QCheckBox(tr("Show the welcome tour every time DragWheel starts"))
+        self.tour_start.setChecked(st["tour_start"])
+        v.addWidget(self.tour_start)
+        v.addStretch(1)
         b = QPushButton(tr("Show the quick tour again"))
         b.clicked.connect(lambda: self.app.show_tour())
         v.addWidget(b)
-        v.addStretch(1)
         lay.addWidget(g)
         lay.addStretch(1)
         return page
@@ -6509,8 +6694,10 @@ class SettingsDialog(QDialog):
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
         s.setValue("wheel_anim", self.anim.currentData())
+        s.setValue("job_mode", self.job_mode.currentData())
         for key, box in (("shake", self.shake), ("peek", self.peek), ("finish_anim", self.finish_anim),
-                         ("finish_sound", self.finish_sound)):
+                         ("finish_sound", self.finish_sound), ("tour_at_start", self.tour_start),
+                         ("cursor_busy", self.cursor_busy), ("float_link_stops", self.link_stops)):
             s.setValue(key, "true" if box.isChecked() else "false")
         if self.full_menu is not None and self.full_menu.isChecked() != winsys.full_menu_enabled():
             try:
@@ -6525,7 +6712,8 @@ class SettingsDialog(QDialog):
         s.setValue("theme", self.theme_box.currentData())
         try:
             winsys.set_startup(self.startup.isChecked())
-            winsys.set_context_menu(self.menu.isChecked(), paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"))
+            winsys.set_context_menu(self.menu.isChecked(), paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"),
+                                    float_label=tr("Open Float"))
         except Exception as e:
             QMessageBox.warning(self, APP, tr("Couldn't update Windows integration:") + f"\n{e}")
         self.accept()
@@ -6534,6 +6722,49 @@ class SettingsDialog(QDialog):
 # ============================================================================
 # Drag watcher — polls input state (no hooks, nothing injected)
 # ============================================================================
+class CursorBusy(QWidget):
+    """A small spinning circle next to the mouse pointer while DragWheel is working (Settings → Everyday)."""
+
+    def __init__(self):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+                         | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setFixedSize(22, 22)
+        self.angle = 0
+        self.timer = QTimer(self, interval=30, timeout=self._tick)
+
+    def set_busy(self, busy):
+        if busy and not self.isVisible():
+            self._tick()
+            self.show()
+            self.timer.start()
+        elif not busy and self.isVisible():
+            self.timer.stop()
+            self.hide()
+
+    def _tick(self):
+        pos = QCursor.pos()
+        self.move(pos.x() + 16, pos.y() + 18)
+        self.angle = (self.angle + 14) % 360
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(3, 3, 16, 16)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 110))
+        p.drawEllipse(r.adjusted(-2, -2, 2, 2))
+        p.setPen(QPen(QColor(255, 255, 255, 90), 2.6))
+        p.drawEllipse(r)
+        pen = QPen(ACCENT, 2.6)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawArc(r, -self.angle * 16, 110 * 16)
+        p.end()
+
+
 class PeekSignals(QObject):
     ready = Signal(object, object)      # path, QImage
 
@@ -6840,6 +7071,10 @@ class TourDialog(QDialog):
         more.setStyleSheet(f"color:{theme.hexc('dim')}")
         lay.addWidget(more)
         bb = QHBoxLayout()
+        self.never = QCheckBox(tr("Don't show this again"))
+        self.never.setChecked(settings().value("tour_at_start", "true") != "true")
+        self.never.toggled.connect(lambda on: settings().setValue("tour_at_start", "false" if on else "true"))
+        bb.addWidget(self.never)
         b = QPushButton(tr("More help"))
         b.clicked.connect(lambda: (self.accept(), app.show_help()))
         bb.addWidget(b)
@@ -6872,6 +7107,7 @@ class DragWatcher(QObject):
     cancelled = Signal()     # Esc pressed during a drag
     ctrl_open = Signal(int)  # Ctrl + double-click on a file in Explorer (window handle), from the hook thread
     peek = Signal()          # Space tapped while dragging (Quick preview)
+    volume_key = Signal(int)  # a volume key or knob step (from the hook thread)
     shaken = Signal()        # the mouse was shaken while dragging
 
     def __init__(self):
@@ -6890,6 +7126,7 @@ class DragWatcher(QObject):
         self.hook = winsys.WheelHook(self._on_wheel, self._swallow_wheel,
                                      on_ctrl_double=lambda hwnd: self.ctrl_open.emit(int(hwnd)),
                                      ctrl_double_enabled=lambda: getattr(self, "ctrl_float", False))
+        self.hook.on_volume_key = lambda vk: self.volume_key.emit(vk)
 
     def refresh_settings(self):
         s = settings()
@@ -7020,6 +7257,7 @@ class DragWheelApp(QObject):
         self.wheel = Wheel(self)
         self.toast = ToastManager()
         self.running = set()
+        self.waiting = []                # jobs in line (Settings → one at a time)
         engine.OUTPUT_DIR = (settings().value("output_dir", "") or None) \
             if settings().value("output_mode", "folder") == "folder" else None
 
@@ -7032,11 +7270,15 @@ class DragWheelApp(QObject):
         self.watcher.ctrl_open.connect(self.on_ctrl_open)
         self.watcher.cancelled.connect(self.on_drag_cancel)
         self.watcher.peek.connect(self.on_peek)
+        self.watcher.volume_key.connect(self.on_volume_key, Qt.QueuedConnection)
         self.watcher.shaken.connect(lambda: self.on_tap("convert") if not self.wheel.is_open() else None)
         self.watcher.released.connect(self._close_peek)
         self.watcher.start()
         self._peek = None
         self.watch = FolderWatch(self)
+        self.cursor_busy = CursorBusy()
+        self._busy_timer = QTimer(self, interval=250, timeout=self._update_cursor_busy)
+        self._busy_timer.start()
 
         self.pending: list[str] = []
         self.pending_timer = QTimer(self, singleShot=True, interval=350, timeout=self._flush_pending)
@@ -7110,7 +7352,7 @@ class DragWheelApp(QObject):
             menu.removeAction(act)
             act.deleteLater()
         self._cancel_actions = []
-        jobs = self._active_jobs()
+        jobs = self._active_jobs() + [w for w in self.waiting if not w.cancel_requested]
         if not jobs:
             return
         before = self._first_action
@@ -7126,7 +7368,7 @@ class DragWheelApp(QObject):
             self._cancel_actions.append(act)
         if len(jobs) > 1:
             act = QAction(tr("Cancel all ({n})", n=len(jobs)), menu)
-            act.triggered.connect(lambda: [self._cancel_job(w) for w in self._active_jobs()])
+            act.triggered.connect(lambda: [self._cancel_job(w) for w in list(self.waiting) + self._active_jobs()])
             menu.insertAction(before, act)
             self._cancel_actions.append(act)
         sep = menu.insertSeparator(before)
@@ -7177,6 +7419,7 @@ class DragWheelApp(QObject):
             return
         self.wheel.popup(mode, click_mode=False)
         self._fill_from_explorer()
+        QTimer.singleShot(0, self.wheel.begin_anim)
 
     def on_peek(self):
         """Space while dragging: show (or hide) a quick preview of the file being dragged."""
@@ -7211,6 +7454,7 @@ class DragWheelApp(QObject):
         if not w.is_open():
             w.popup("convert", click_mode=False)
             self._fill_from_explorer()
+            QTimer.singleShot(0, w.begin_anim)
             return
         if not w.click_mode:
             w.scroll_step(1 if delta < 0 else -1)
@@ -7375,29 +7619,62 @@ class DragWheelApp(QObject):
                 self.actions.float(paths[:1], {})
         QTimer.singleShot(120, go)
 
-    def play_link(self, target=None):
-        """Play the link on the clipboard (YouTube and other sites, or a direct media link) in a float."""
-        url = QGuiApplication.clipboard().text().strip()
+    def open_empty_float(self):
+        """Right-click on the desktop → Open Float: an empty float to drop a file on or paste a link into."""
+        w = FloatWindow("")
+        self.floats.append(w)
+        w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
+        w.show()
+        w.come_forward()
+        w.activateWindow()
+        w.setFocus()
+
+    def play_link(self, target=None, url=None):
+        """Play the link on the clipboard (YouTube and other sites, or a direct media link) in a float.
+        The float opens straight away with the loading circle and plays when the link is ready."""
+        url = url or QGuiApplication.clipboard().text().strip()
         if not engine.is_link(url):
             self.toast.show_msg(tr("No link on the clipboard"), tr("Copy a link to a video or song first."), "info", 4000)
             return
         from urllib.parse import urlparse
         direct = urlparse(url).path.lower().endswith(engine.MEDIA_LINK_EXT)
-        if direct or engine.model_ready("yt-dlp"):
-            self._resolve_and_play(url, target)
-        else:
-            self._ensure_model("yt-dlp", tr("Play copied link"), lambda: self._resolve_and_play(url, target))
 
-    def _resolve_and_play(self, url, target, pin=None, quiet=False, quality=None):
+        def go():
+            t = target if target is not None and target in self.floats else None
+            title = next((x.get("title") for x in saved_links() if x["url"] == url), None) or url
+            pending = {"page": url, "title": title, "pending": True}
+            restore = None
+            if t is None:                                      # a new float, loading right away
+                t = FloatWindow("", pending)
+                self.floats.append(t)
+                t.closed.connect(lambda w=t: self.floats.remove(w) if w in self.floats else None)
+                t.show()
+                t.come_forward()
+            elif settings().value("float_link_stops", "true") == "true" or t.kind == "empty":
+                if t.kind != "empty":
+                    restore = (t.path, t.link)                 # put back if the link doesn't open
+                t._load("", pending)                           # stop what's playing, show the loading circle
+            t._play_now = True
+            self._resolve_and_play(url, t, show_card=False, restore=restore, new=target is None)
+        if direct or engine.model_ready("yt-dlp"):
+            go()
+        else:
+            self._ensure_model("yt-dlp", tr("Play copied link"), go)
+
+    def _resolve_and_play(self, url, target, pin=None, quiet=False, quality=None, show_card=True, restore=None, new=False):
         job = LinkResolve(url, quality)
         job.setAutoDelete(False)
         self._update_jobs.add(job)
-        card = None if (pin or quiet) else self.toast.show_busy(tr("Opening link…"), url[:70])
+        self.busy_links = getattr(self, "busy_links", 0) + 1
+        card = None if (pin or quiet or not show_card) else self.toast.show_busy(tr("Opening link…"), url[:70])
 
         def done(info, err, job=job):
             self._update_jobs.discard(job)
+            self.busy_links = max(0, getattr(self, "busy_links", 1) - 1)
             if card is not None and card in self.toast.cards:
                 card.close_card()
+            if not err and info and not pin and not quiet:
+                remember_link(info.get("page") or url, info.get("title"))
             if err and pin is not None and pin.get("_tries", 0) < 4:     # at sign-in the network may not be up yet
                 pin["_tries"] = pin.get("_tries", 0) + 1
                 QTimer.singleShot(15000, lambda: self._resolve_and_play(url, None, pin=pin))
@@ -7405,6 +7682,14 @@ class DragWheelApp(QObject):
             if err:
                 winsys.log(f"link failed: {url}: {err}")
                 self.toast.show_msg(tr("Couldn't open this link"), tr(err), "err", 8000)
+                if target is not None and target in self.floats and (target.link or {}).get("pending") and not quiet:
+                    if new:
+                        target.close()                         # the float made just for this link
+                    elif restore and (restore[0] or restore[1]):
+                        target._play_now = False
+                        target._load(*restore)                 # back to what it showed before
+                    else:
+                        target._load("")
                 return
             if target is not None and target in self.floats:
                 if quiet:                                  # live stream reconnect: keep size and controls as they are
@@ -7466,23 +7751,24 @@ class DragWheelApp(QObject):
                 if shown and MediaOSD.wanted(focused):
                     MediaOSD.flash(shown, target)
             self._media_down[vk] = down
-        # volume and mute keys: Windows changes the volume; show it big while a float is playing
-        import time
-        vol_keys = [vk for vk in (0xAD, 0xAE, 0xAF) if winsys.key_down(vk)]
-        playing = [f for f in floats if f._playing()]
-        if vol_keys and playing and time.monotonic() >= getattr(self, "_vol_next", 0):
-            fresh = any(not self._media_down.get(vk) for vk in vol_keys)
-            self._vol_next = time.monotonic() + (0.1 if fresh else 0.15)
-            target = FloatWindow.last_used if FloatWindow.last_used in playing else playing[-1]
-            if MediaOSD.wanted(target.isActiveWindow()):
-                QTimer.singleShot(70, lambda t=target: self._show_volume(t))
-        for vk in (0xAD, 0xAE, 0xAF):
-            self._media_down[vk] = vk in vol_keys
+    def _update_cursor_busy(self):
+        busy = bool(self._active_jobs() or getattr(self, "busy_links", 0))
+        self.cursor_busy.set_busy(busy and settings().value("cursor_busy", "true") == "true")
+
+    def on_volume_key(self, vk):
+        """Volume keys or a volume knob: Windows changes the volume; show it big while a float is playing.
+        Every step refreshes the sign; it goes away 2 seconds after the last one."""
+        playing = [f for f in self.floats if getattr(f, "player", None) and f._playing()]
+        if not playing:
+            return
+        target = FloatWindow.last_used if FloatWindow.last_used in playing else playing[-1]
+        if MediaOSD.wanted(target.isActiveWindow()):
+            QTimer.singleShot(40, lambda t=target: self._show_volume(t))
 
     def _show_volume(self, target):
         v = winsys.system_volume()
         if v is not None:
-            MediaOSD.flash("mute" if v[1] else "volume", target, level=v[0])
+            MediaOSD.flash("mute" if v[1] else "volume", target, level=v[0], hold=2000)
 
     def _start(self, op, paths, params):
         name = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
@@ -7494,11 +7780,31 @@ class DragWheelApp(QObject):
         else:
             w.card = self.toast.show_busy(tr(op.label).rstrip("…") + "…", name, cancel)
         w.setAutoDelete(False)
-        self.running.add(w)                       # keep Python refs alive until done
         w.sig.done.connect(self._done, Qt.QueuedConnection)
         w.sig.progress.connect(lambda wk, f, name=name: self._job_progress(wk, f, name), Qt.QueuedConnection)
         w.sig.count.connect(self._job_count, Qt.QueuedConnection)
+        if settings().value("job_mode", "queue") == "queue" and self._active_jobs():
+            self.waiting.append(w)                # one job at a time: wait for the ones before it
+            w.card.body.setText(name + " — " + tr("waiting ({n} in line)", n=len(self.waiting)))
+            return
+        self._launch(w)
+
+    def _launch(self, w):
+        self.running.add(w)                       # keep Python refs alive until done
         self.pool.start(w)
+
+    def _next_in_line(self):
+        while self.waiting and not self._active_jobs():
+            w = self.waiting.pop(0)
+            if w.cancel_requested:
+                continue
+            if w.card is not None and w.card in self.toast.cards:
+                w.card.body.setText(Path(w.paths[0]).name if len(w.paths) == 1 else tr("{n} files", n=len(w.paths)))
+            self._launch(w)
+        for i, w in enumerate(self.waiting):
+            if w.card is not None and w.card in self.toast.cards:
+                name = Path(w.paths[0]).name if len(w.paths) == 1 else tr("{n} files", n=len(w.paths))
+                w.card.body.setText(name + " — " + tr("waiting ({n} in line)", n=i + 1))
 
     def _job_count(self, worker, done, total):
         worker.count = (done, total)
@@ -7572,19 +7878,27 @@ class DragWheelApp(QObject):
     def _cancel_job(self, worker):
         if worker.cancel_requested:
             return
+        if worker in self.waiting:                 # not started yet: just take it out of the line
+            self.waiting.remove(worker)
+            worker.cancel()
+            if worker.card is not None and worker.card in self.toast.cards:
+                worker.card.show_msg(tr("Cancelled"), tr("Nothing was saved."), "info", 3000)
+            self._next_in_line()
+            return
         worker.cancel()
         if worker.card is not None and worker.card in self.toast.cards:
             worker.card.show_busy(tr("Cancelling…"), Path(worker.paths[0]).name)
 
     def _done(self, worker, outs, err):
         self.running.discard(worker)
+        QTimer.singleShot(0, self._next_in_line)
         op = worker.op
         card = worker.card if worker.card is not None and worker.card in self.toast.cards else None
         target = card or self.toast
         if card is not None and err != CANCELLED:
             card._sound_for_this = True            # finish sound (when turned on)
-        elif card is None and err != CANCELLED:
-            play_finish_sound("err" if err else "ok")
+        elif card is None and err != CANCELLED and not err:
+            play_finish_sound("ok")
         if err == CANCELLED:
             target.show_msg(tr("Cancelled"), tr("Nothing was saved."), "info", 3000)
         elif err:
@@ -8038,7 +8352,8 @@ def main():
 
     try:
         if winsys.context_menu_enabled():
-            winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"))
+            winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"),
+                                    float_label=tr("Open Float"))
     except Exception as e:
         winsys.log(f"context menu refresh failed: {e}")
 
@@ -8064,6 +8379,9 @@ def main():
                 if ok:
                     QTimer.singleShot(100, app.quit_for_update)
                 return
+            if "--open-float" in msg.get("flags", []):
+                app.open_empty_float()
+                return
             if "--play-link" in msg.get("flags", []):
                 app.play_link()
                 return
@@ -8084,12 +8402,18 @@ def main():
         settings().setValue("first_run_done", "true")
         if settings().value("installer", "") != "1":   # the installer already applied the user's choice
             try:
-                winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"))
+                winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"),
+                                    float_label=tr("Open Float"))
             except Exception:
                 pass
-        QTimer.singleShot(500, app.show_tour)
+        pass
+    if (first_run or settings().value("tour_at_start", "true") == "true") and not paths and not (
+            flags & {"--send-phone", "--play-link", "--paste-here", "--open-float"}):
+        QTimer.singleShot(600, app.show_tour)         # until "Don't show this again" is ticked
     if "--send-phone" in flags and paths:
         QTimer.singleShot(300, lambda: app.actions.phone(paths, {}))
+    elif "--open-float" in flags:
+        QTimer.singleShot(300, app.open_empty_float)
     elif "--play-link" in flags:
         QTimer.singleShot(400, app.play_link)
     elif "--paste-here" in flags:

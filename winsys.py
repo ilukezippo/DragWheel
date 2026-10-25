@@ -402,7 +402,7 @@ BG_MENU = r"Software\Classes\Directory\Background\shell\DragWheel"   # right-cli
 
 
 def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image here",
-                     link_label: str = "Play copied link in Float") -> None:
+                     link_label: str = "Play copied link in Float", float_label: str = "Open Float") -> None:
     if not IS_WIN:
         return
     import winreg
@@ -423,6 +423,11 @@ def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image her
             winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, "imageres.dll,-1004")
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zlink\command") as k:
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _quote(app_command()) + " --play-link")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zzfloat") as k:   # an empty float
+            winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, float_label)
+            winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_path())
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zzfloat\command") as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _quote(app_command()) + " --open-float")
     else:
         _delete_tree(winreg.HKEY_CURRENT_USER, BG_MENU)
     for key in MENU_TARGETS:
@@ -611,6 +616,7 @@ class WheelHook:
         self.on_ctrl_double = on_ctrl_double          # Ctrl + double-click on a file in Explorer -> Float
         self.ctrl_double_enabled = ctrl_double_enabled
         self._first = None                            # (time, x, y) of the first Ctrl-click
+        self.on_volume_key = None                     # called (on the hook thread) for every volume key press
         self._eat_up = False
         self._thread = None
         self._tid = 0
@@ -723,6 +729,13 @@ class WheelHook:
             return fg
 
         def kproc(n_code, w_param, l_param):
+            if n_code == 0 and w_param in (WM_KEYDOWN, 0x0104) and self.on_volume_key is not None:
+                try:
+                    vk = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents.vkCode
+                    if vk in (0xAD, 0xAE, 0xAF):          # mute, volume down, volume up (keys or a volume knob)
+                        self.on_volume_key(int(vk))
+                except Exception:
+                    pass
             if n_code == 0 and w_param in (WM_KEYDOWN, WM_KEYUP) and self.on_ctrl_double is not None:
                 try:
                     info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents

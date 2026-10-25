@@ -781,6 +781,12 @@ for _code, _vals in _e12.T.items():
     assert len(_vals) == len(_e12.KEYS), _code
     T[_code].update(dict(zip(_e12.KEYS, _vals)))
 
+from locales import round12 as _r12  # noqa: E402
+
+for _code, _vals in _r12.T.items():
+    assert len(_vals) == len(_r12.KEYS), _code
+    T[_code].update(dict(zip(_r12.KEYS, _vals)))
+
 for _code, _live in {"ar": "مباشر", "fr": "EN DIRECT", "es": "EN DIRECTO", "tr": "CANLI", "de": "LIVE", "ru": "ПРЯМОЙ ЭФИР",
                      "zh": "直播", "ja": "ライブ", "pt": "AO VIVO", "it": "IN DIRETTA", "hi": "लाइव", "fa": "زنده",
                      "ur": "براہ راست"}.items():
