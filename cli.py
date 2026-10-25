@@ -33,10 +33,16 @@ def _attach_console():
     try:
         import ctypes
         if ctypes.windll.kernel32.AttachConsole(-1):          # ATTACH_PARENT_PROCESS
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)    # UTF-8, so names in any language show
             sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
             sys.stderr = sys.stdout
     except Exception:
         pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
 
 
 def _expand(args):
@@ -87,7 +93,7 @@ def _run(engine, op, files, sets, out):
         return 2
     failed = 0
     for f in files:
-        print(f"{Path(f).name} → {op.label}")
+        print(f"{Path(f).name} -> {op.label}")
         token = engine.CancelToken()
         token.on_path = lambda kind, val: _progress(float(val)) if kind == "progress" else None
         try:
