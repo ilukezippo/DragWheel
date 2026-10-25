@@ -639,14 +639,17 @@ class _Upload:
         self.f.close()
 
 
-def upload_temporary(path, hours, progress=lambda f: None, cancelled=lambda: False) -> tuple[str, str]:
-    """Upload to a free temporary host; returns (download link, host). Litterbox (up to 1 GB, 1-72 h),
-    else tmpfiles.org (up to 100 MB, up to 48 h)."""
+def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: False) -> tuple[str, str]:
+    """Upload to a free temporary host; returns (download link, host). Litterbox for 1/12/24/72 hours (up to 1 GB);
+    tmpfiles.org for shorter times (5-59 minutes) or as the fallback (up to 100 MB, up to 48 h)."""
+    hours = minutes // 60
     import json as _json
     import urllib.request
     size = Path(path).stat().st_size
     errors = []
-    if size <= 1000 * 1024 * 1024:
+    if minutes < 60 and size > 100 * 1024 * 1024:
+        raise OSError(tr("Links shorter than an hour work for files up to 100 MB. Choose 1 hour or more."))
+    if minutes >= 60 and size <= 1000 * 1024 * 1024:
         body = _Upload(path, "fileToUpload", {"reqtype": "fileupload", "time": f"{hours}h"}, progress, cancelled)
         try:
             req = urllib.request.Request("https://litterbox.catbox.moe/resources/internals/api.php", data=body,
@@ -664,7 +667,7 @@ def upload_temporary(path, hours, progress=lambda f: None, cancelled=lambda: Fal
         finally:
             body.close()
     if size <= 100 * 1024 * 1024:
-        body = _Upload(path, "file", {"expire": str(min(48, hours) * 3600)}, progress, cancelled)
+        body = _Upload(path, "file", {"expire": str(min(48 * 60, minutes) * 60)}, progress, cancelled)
         try:
             req = urllib.request.Request("https://tmpfiles.org/api/v1/upload", data=body,
                                          headers={"Content-Type": f"multipart/form-data; boundary={body.boundary}",
@@ -686,7 +689,7 @@ def upload_temporary(path, hours, progress=lambda f: None, cancelled=lambda: Fal
 
 class InternetShare(QDialog):
     """Send to phone through a temporary internet link: upload, then a QR code to open it on any phone."""
-    HOURS = [1, 12, 24, 72]
+    MINUTES = [5, 10, 15, 30, 60, 12 * 60, 24 * 60, 72 * 60]
 
     def __init__(self, paths):
         super().__init__(None, Qt.WindowStaysOnTopHint)
@@ -707,13 +710,14 @@ class InternetShare(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("Keep the link for")))
         self.hours = QComboBox()
-        for h in self.HOURS:
-            self.hours.addItem(tr("{n} hour(s)", n=h), h)
-        self.hours.setCurrentIndex(max(0, self.hours.findData(int(settings().value("share_hours", 1)))))
+        for m in self.MINUTES:
+            self.hours.addItem(tr("{n} minutes", n=m) if m < 60 else tr("{n} hour(s)", n=m // 60), m)
+        self.hours.setCurrentIndex(max(0, self.hours.findData(int(settings().value("share_minutes", 60)))))
         row.addWidget(self.hours, 1)
         lay.addLayout(row)
         note = QLabel(tr("The file is uploaded to a free temporary file service (litterbox.catbox.moe, or tmpfiles.org) and "
-                         "deleted automatically after that time. Anyone with the link can download it until then. Up to 1 GB."))
+                         "deleted automatically after that time. Anyone with the link can download it until then. Up to 1 GB "
+                         "(100 MB for links shorter than an hour)."))
         note.setWordWrap(True)
         note.setFixedWidth(360)
         note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
@@ -752,7 +756,7 @@ class InternetShare(QDialog):
         self._poll = QTimer(self, interval=150, timeout=self._update)
 
     def _start(self):
-        settings().setValue("share_hours", self.hours.currentData())
+        settings().setValue("share_minutes", self.hours.currentData())
         self.go.setEnabled(False)
         self.hours.setEnabled(False)
         self.bar.show()
@@ -834,7 +838,8 @@ class SendChooser(QDialog):
         last = settings().value("share_way", "quick")
         for key, title, desc in (
                 ("quick", tr("Quick Share"), tr("Google's Quick Share sends straight to a nearby Android phone. No network setup.")),
-                ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network. Deleted after 1–72 hours.")),
+                ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network and any phone, iPhone too. Deleted after 5 minutes to 72 hours.")),
+                ("bluetooth", tr("Bluetooth"), tr("Slower, but needs no network. Works with phones paired to this PC (Android; iPhones can't receive files over Bluetooth).")),
                 ("wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Nothing leaves your home, but routers and firewalls can block it."))):
             b = QPushButton(f"{title}\n{desc}")
             b.setObjectName("way")
@@ -951,6 +956,9 @@ class Actions:
         if chooser.choice == "quick":
             self.quick_share(paths)
             return
+        if chooser.choice == "bluetooth":
+            self.bluetooth(paths)
+            return
         w = PhoneShare(paths) if chooser.choice == "wifi" else InternetShare(paths)
         self.app._phone_windows = getattr(self.app, "_phone_windows", [])
         self.app._phone_windows.append(w)
@@ -958,15 +966,20 @@ class Actions:
         w.raise_()
 
     def quick_share(self, paths):
-        try:
-            ok = winsys.invoke_shell_verb(paths, "Quick Share", "Nearby Share")
-        except Exception as e:
-            winsys.log(f"quick share: {e}")
-            ok = False
+        exe = winsys.quick_share_installed()
+        ok = False
+        if exe:
+            try:                                          # the same call Quick Share's own right-click entry makes
+                import subprocess
+                subprocess.Popen([exe, "--files-from=context-menu", *[str(Path(p)) for p in paths]],
+                                 creationflags=engine.NO_WINDOW)
+                winsys.log(f"quick share: started with {len(paths)} item(s)")
+                ok = True
+            except Exception as e:
+                winsys.log(f"quick share: {e}")
         if ok:
             self.app.toast.show_msg(tr("Quick Share"), tr("Pick your phone in the Quick Share window, then tap Accept on the phone."), "info", 6000)
             return
-        exe = winsys.quick_share_installed()
         box = QMessageBox()
         box.setWindowTitle(f"{APP} — " + tr("Quick Share"))
         box.setWindowIcon(app_icon())
@@ -986,6 +999,21 @@ class Actions:
         box.exec()
         if box.clickedButton() is get:
             QDesktopServices.openUrl(QUrl(QUICK_SHARE_URL))
+
+    def bluetooth(self, paths):
+        """Windows' own Bluetooth file sender, with the files already chosen (what Send To → Bluetooth does)."""
+        exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "fsquirt.exe"
+        files = [str(Path(p)) for p in paths if Path(p).is_file()]
+        if not exe.exists():
+            self.app.toast.show_msg(tr("Bluetooth"), tr("This PC has no Bluetooth file sending."), "err", 6000)
+            return
+        if not files:
+            self.app.toast.show_msg(tr("Bluetooth"), tr("Pick files, not folders"), "err", 5000)
+            return
+        import subprocess
+        subprocess.Popen([str(exe), *files])
+        self.app.toast.show_msg(tr("Bluetooth"), tr("Choose your phone in the Bluetooth window, then accept the files on the phone. "
+                                                    "The phone must be paired with this PC first."), "info", 8000)
 
     def shred(self, paths, p):
         box = QMessageBox()
