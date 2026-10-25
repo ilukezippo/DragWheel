@@ -15,12 +15,17 @@ from pathlib import Path
 
 USAGE = """DragWheel command line
 
-  dragwheel convert <files…> --to <format> [--out <folder>]
-  dragwheel tool <tool> <files…> [--out <folder>] [--set "Name=value"]…
-  dragwheel list <file>             what a file can be converted to, and its tools
+  dragwheel convert <files...> --to <format> [--out <folder>]
+  dragwheel tool <tool> <files...> [--out <folder>] [--set "Name=value"]
+  dragwheel list <file>        shows what a file can become, and its tools
 
-Examples
-  dragwheel convert IMG_0001.heic IMG_0002.heic --to jpg
+Results are saved next to the original file (or in --out <folder>).
+Put quotes around names with spaces: "My photo.heic"
+
+Try it (in the folder where your files are):
+  dragwheel list "My photo.heic"
+  dragwheel convert "My photo.heic" --to jpg
+  dragwheel convert *.png --to webp
   dragwheel convert *.png --to webp --out D:\\web
   dragwheel tool compress clip.mp4
 """

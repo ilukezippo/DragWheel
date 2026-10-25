@@ -1876,25 +1876,39 @@ class Wheel(QWidget):
 # ============================================================================
 # Toast
 # ============================================================================
+_SOUND_CACHE = {}
+
+
+def _media_sound(words) -> str | None:
+    """A Windows sound file by name, e.g. ("notify", "calendar") -> C:\\Windows\\Media\\Windows Notify Calendar.wav."""
+    if words in _SOUND_CACHE:
+        return _SOUND_CACHE[words]
+    found = None
+    media = Path(os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows") / "Media"
+    try:
+        for f in sorted(media.glob("*.wav")):
+            n = f.stem.lower()
+            if all(w in n for w in words):
+                found = str(f)
+                break
+    except OSError:
+        pass
+    _SOUND_CACHE[words] = found
+    return found
+
+
 def play_finish_sound(kind="ok"):
-    """Windows' own notification sound when a job finishes (Settings → Sounds)."""
+    """Windows' "Notify Calendar" sound when a job finishes, "Notify Messaging" for an error (Settings → Everyday)."""
     if settings().value("finish_sound", "true") != "true" or not winsys.IS_WIN:
         return
+    wav = _media_sound(("notify", "messaging") if kind == "err" else ("notify", "calendar"))
     try:
         import winsound
-        media = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Media"
-        wav = media / ("Windows Notify Messaging.wav" if kind == "err" else "Windows Notify Calendar.wav")
-        if wav.exists():
-            winsound.PlaySound(str(wav), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
-        else:
-            alias = "SystemHand" if kind == "err" else "Notification.Default"
-            winsound.PlaySound(alias, winsound.SND_ALIAS | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
-    except Exception:
-        try:
-            import winsound
-            winsound.MessageBeep()
-        except Exception:
-            pass
+        if wav:
+            winsound.PlaySound(wav, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        winsys.log(f"sound ({kind}): {Path(wav).name if wav else 'not found in Windows Media folder'}")
+    except Exception as e:
+        winsys.log(f"sound ({kind}) failed: {e}")
 
 
 class Toast(QWidget):
@@ -1982,7 +1996,7 @@ class Toast(QWidget):
             return
         self._fading = True
         self._fade.stop()
-        self._fade.setDuration(700)
+        self._fade.setDuration(2200)                 # a slow, gentle fade
         self._fade.setStartValue(self.windowOpacity())
         self._fade.setEndValue(0.0)
         self._fade.start()
@@ -2002,7 +2016,7 @@ class Toast(QWidget):
 
     def leaveEvent(self, e):
         if self._auto_ms and getattr(self, "wanted", False):
-            self.timer.start(3000)
+            self.timer.start(4000)
         super().leaveEvent(e)
 
     def close_card(self):
@@ -2064,7 +2078,7 @@ class Toast(QWidget):
         self._fading = False
         self.setWindowOpacity(1.0)
         if ms:
-            ms = max(5000, int(ms * 1.6))           # long enough to read; hovering keeps it
+            ms = max(7000, int(ms * 2))             # long enough to read; hovering keeps it
         self._auto_ms = ms or 0
         self.restyle()
         self.title.setText(title)
@@ -2766,6 +2780,7 @@ class FloatWindow(QWidget):
         self._pin_timer = QTimer(self, singleShot=True, interval=500, timeout=self._save_pin)
         self.companion = None
         self._relay = None
+        self.repeat = settings().value("float_repeat", "off")     # off | one | all
         self._play_now = play
         self._load(path, link)
         self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
@@ -3108,9 +3123,25 @@ class FloatWindow(QWidget):
             if time.monotonic() - getattr(self, "_live_fixing", 0) >= 8:
                 QTimer.singleShot(50, self._live_continue)
             return
-        if status == QMediaPlayer.EndOfMedia and settings().value("float_autoplay", "true") == "true":
+        if status == QMediaPlayer.EndOfMedia and self.repeat == "one":
+            self.player.setPosition(0)                       # repeat this one
+            self.player.play()
+            return
+        if status == QMediaPlayer.EndOfMedia and (self.repeat == "all" or settings().value("float_autoplay", "true") == "true"):
             if self._neighbour(1):
                 QTimer.singleShot(300, lambda: self._step(1))
+            elif self.repeat == "all":                       # end of the folder: back to the first one
+                files = self._siblings() if not self.link else []
+                if len(files) > 1:
+                    QTimer.singleShot(300, lambda f=files[0]: (setattr(self, "_play_now", True), self._load(f)))
+                else:
+                    self.player.setPosition(0)
+                    self.player.play()
+
+    def set_repeat(self, mode):
+        self.repeat = mode
+        settings().setValue("float_repeat", mode)
+        self.update()
 
     def _on_frame(self, frame):
         img = frame.toImage()
@@ -3640,6 +3671,8 @@ class FloatWindow(QWidget):
                     p.drawEllipse(QPointF(vr.left() + vr.width() * vol, vr.center().y()), 6, 6)
                     left = 130
                 t = ("● " + tr("LIVE")) if self._live() else f"{_fmt_time(self.player.position())} / {_fmt_time(self.player.duration())}"
+                if not self._live() and self.repeat in ("one", "all"):
+                    t += "   ↻" + ("1" if self.repeat == "one" or self.link else "")
                 p.setPen(fg)
                 tw = QFontMetrics(f).horizontalAdvance(t) + 12
                 p.drawText(QRectF(left, self.height() - 38, tw, 28), Qt.AlignVCenter | Qt.AlignLeft, t)
@@ -3896,6 +3929,9 @@ class FloatWindow(QWidget):
             self.close_by_user()
         elif e.key() == Qt.Key_Space and self.player:
             self._toggle_play()
+        elif e.key() == Qt.Key_R and self.player:                             # R: repeat off → this one → all
+            order = ["off", "one"] if self.link else ["off", "one", "all"]
+            self.set_repeat(order[(order.index(self.repeat) + 1) % len(order)] if self.repeat in order else "off")
         elif e.key() in (Qt.Key_PageUp, Qt.Key_PageDown) and self.player:     # media keys: DragWheelApp._media_tick
             self._step(-1 if e.key() == Qt.Key_PageUp else 1)
         elif e.key() in (Qt.Key_Left, Qt.Key_Right) and self.player:
@@ -3914,6 +3950,17 @@ class FloatWindow(QWidget):
         m = QMenu(self)
         if self.kind == "video" and self.player:
             self._add_track_menus(m)
+        if self.player and not self._live():
+            rm = m.addMenu(tr("Repeat"))
+            for key, label in (("off", tr("Off")), ("one", tr("Repeat this one")),
+                               ("all", tr("Loop all (the whole folder)") if not self.link else tr("Loop"))):
+                if self.link and key == "all":
+                    continue
+                a = rm.addAction(label)
+                a.setCheckable(True)
+                a.setChecked(self.repeat == key or (self.link and key == "one" and self.repeat == "all"))
+                a.triggered.connect(lambda _=False, k=key: self.set_repeat(k))
+        if self.player:
             m.addSeparator()
         m.addAction(tr("Open"), self._open_original)
         if self.link:
@@ -6398,6 +6445,18 @@ class SettingsDialog(QDialog):
         else:
             self.full_menu = None
 
+        g = QGroupBox(tr("Command line"))
+        v = QVBoxLayout(g)
+        lbl = QLabel(tr("Use DragWheel in Command Prompt or in your own scripts, e.g. "
+                        "<b>dragwheel convert photo.heic --to jpg</b>. The button opens a Command Prompt in Downloads "
+                        "with the list of commands."))
+        lbl.setWordWrap(True)
+        v.addWidget(lbl)
+        b = QPushButton(tr("Open a Command Prompt"))
+        b.clicked.connect(winsys.open_cli_window)
+        v.addWidget(b, 0, Qt.AlignLeft)
+        lay.addWidget(g)
+
         g = QGroupBox(tr("Help"))
         v = QHBoxLayout(g)
         self.tour_start = QCheckBox(tr("Show the welcome tour every time DragWheel starts"))
@@ -8350,6 +8409,10 @@ def main():
     except Exception as e:
         winsys.log(f"Satsuma cleanup failed: {e}")
 
+    try:
+        winsys.ensure_cli_command()
+    except Exception as e:
+        winsys.log(f"cli command: {e}")
     try:
         if winsys.context_menu_enabled():
             winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"),

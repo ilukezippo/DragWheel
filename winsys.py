@@ -348,6 +348,34 @@ def app_command() -> list[str]:
     return [str(pyw if pyw.exists() else exe), str(script)]
 
 
+def cli_command_file() -> Path:
+    return Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "dragwheel.cmd"
+
+
+def ensure_cli_command() -> None:
+    """The `dragwheel` command for Command Prompt / PowerShell (this folder is on PATH in Windows 10 and 11)."""
+    if not IS_WIN or not getattr(sys, "frozen", False):
+        return
+    f = cli_command_file()
+    text = ("@echo off\r\nrem DragWheel from the command line: dragwheel help\r\n"
+            f'start "" /wait "{sys.executable}" --cli %*\r\nexit /b %errorlevel%\r\n')
+    try:
+        if not f.exists() or f.read_text(encoding="utf-8", errors="replace") != text:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(text, encoding="utf-8", newline="")
+    except OSError as e:
+        log(f"dragwheel command: {e}")
+
+
+def open_cli_window() -> None:
+    """A Command Prompt in Downloads that already shows `dragwheel help`."""
+    import subprocess
+    ensure_cli_command()
+    home = Path(os.environ.get("USERPROFILE", str(Path.home())))
+    folder = home / "Downloads" if (home / "Downloads").is_dir() else home
+    subprocess.Popen(["cmd.exe", "/k", "dragwheel help"], cwd=str(folder), creationflags=0x00000010)   # new console
+
+
 def _quote(parts: list[str]) -> str:
     return " ".join(f'"{p}"' for p in parts)
 
