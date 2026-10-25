@@ -23,6 +23,26 @@ LIGHT = {
     "danger": "#e0352b", "ok": "#28a745", "link": "#c25e00",
 }
 
+# high contrast: pure black and white, strong outlines (also used when Windows' high contrast is on)
+CONTRAST = {
+    "bg": "#000000", "surface": "#000000", "border": "#ffffff", "button": "#000000", "hover": "#1f1f1f",
+    "text": "#ffffff", "dim": "#ffffff", "faint": "#d0d0d0", "side": "#000000",
+    "canvas": "#000000", "check_a": "#202020", "check_b": "#000000",
+    "accent": "#ff8a00", "accent2": "#ffb347", "on_accent": "#000000",
+    "danger": "#ff5a50", "ok": "#3ee06a", "link": "#ffd60a",
+}
+CONTRAST_RGBA = {
+    "panel": (0, 0, 0, 255),
+    "ring": (0, 0, 0, 255),
+    "ring_hover": (40, 40, 40, 255),
+    "wedge": (0, 0, 0, 0),
+    "line": (255, 255, 255, 255),
+    "shadow": (0, 0, 0, 0),
+    "grip": (255, 255, 255, 90),
+    "close": (0, 0, 0, 220),
+    "busy_track": (255, 255, 255, 90),
+}
+
 # translucent colours for painted surfaces (r, g, b, a)
 DARK_RGBA = {
     "panel": (28, 28, 30, 238),        # wheel disc, toast, float
@@ -52,7 +72,7 @@ _mode = "system"
 
 def set_mode(mode: str | None):
     global _mode
-    _mode = mode if mode in ("dark", "light") else "system"
+    _mode = mode if mode in ("dark", "light", "contrast") else "system"
 
 
 def mode() -> str:
@@ -71,8 +91,28 @@ def _windows_prefers_dark() -> bool | None:
         return None
 
 
+def windows_high_contrast() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        class HC(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwFlags", ctypes.c_uint), ("lpszDefaultScheme", ctypes.c_wchar_p)]
+        hc = HC()
+        hc.cbSize = ctypes.sizeof(HC)
+        ctypes.windll.user32.SystemParametersInfoW(0x0042, hc.cbSize, ctypes.byref(hc), 0)   # SPI_GETHIGHCONTRAST
+        return bool(hc.dwFlags & 1)
+    except Exception:
+        return False
+
+
+def is_contrast() -> bool:
+    return _mode == "contrast" or (_mode == "system" and windows_high_contrast())
+
+
 def is_dark() -> bool:
-    if _mode == "dark":
+    if _mode in ("dark", "contrast"):
         return True
     if _mode == "light":
         return False
@@ -88,6 +128,8 @@ def is_dark() -> bool:
 
 
 def pal() -> dict:
+    if is_contrast():
+        return CONTRAST
     return DARK if is_dark() else LIGHT
 
 
@@ -98,7 +140,7 @@ def hexc(name: str) -> str:
 def color(name: str):
     """QColor for a palette entry (hex or translucent)."""
     from PySide6.QtGui import QColor
-    rgba = (DARK_RGBA if is_dark() else LIGHT_RGBA).get(name)
+    rgba = (CONTRAST_RGBA if is_contrast() else DARK_RGBA if is_dark() else LIGHT_RGBA).get(name)
     if rgba:
         return QColor(*rgba)
     return QColor(pal()[name])

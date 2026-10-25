@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PySide6.QtCore import (QEasingCurve, QObject, QPointF, QPropertyAnimation, QRectF, QRunnable, QSizeF, QVariantAnimation,
                             QRect, QSettings, QSize, Qt, QThreadPool, QTimer, QUrl, Signal, QMimeData, QPoint)
-from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QDesktopServices, QDrag, QFont, QFontMetrics,
+from PySide6.QtGui import (QTextDocumentFragment, QAction, QBrush, QColor, QCursor, QDesktopServices, QDrag, QFont, QFontMetrics,
                            QGuiApplication, QIcon, QImage, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                            QPolygonF, QRadialGradient)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -1156,6 +1156,7 @@ class Actions:
             self.app.floats.append(w)
             w.closed.connect(lambda w=w: self.app.floats.remove(w) if w in self.app.floats else None)
             w.show()
+            w.come_forward()
 
     def reveal(self, paths, p):
         winsys.reveal(paths[0])
@@ -1173,6 +1174,7 @@ CANCELLED = "__cancelled__"
 class WorkerSignals(QObject):
     done = Signal(object, object, object)   # worker, outputs, error
     progress = Signal(object, float)         # worker, 0..1
+    count = Signal(object, int, int)         # worker, files done, files in the batch
 
 
 class Worker(QRunnable):
@@ -1182,6 +1184,8 @@ class Worker(QRunnable):
         self.sig = WorkerSignals()
         self.cancel_requested = False
         self.card = None
+        self.failed = []
+        self.count = (0, len(paths))
 
     def cancel(self):
         self.cancel_requested = True
@@ -1192,8 +1196,10 @@ class Worker(QRunnable):
             import jobproc
             job = jobproc.JobProcess(self.op.group, self.op.id, self.paths, self.params,
                                      getattr(self, "output_dir", None) or engine.OUTPUT_DIR,
-                                     on_progress=lambda f: self.sig.progress.emit(self, f))
+                                     on_progress=lambda f: self.sig.progress.emit(self, f),
+                                     on_count=lambda a, b: self.sig.count.emit(self, a, b))
             kind, val = job.run(lambda: self.cancel_requested)
+            self.failed = list(job.failed)
             if kind == "done":
                 self.sig.done.emit(self, [Path(v) for v in val], None)
             elif kind == "cancelled":
@@ -1524,6 +1530,7 @@ class Wheel(QWidget):
             self.hover = (self.hover + step) % n
         else:
             self.hover = 0 if step > 0 else n - 1
+        self._announce()
         self.scroll_active = True
         local = QPointF(self.mapFromGlobal(QCursor.pos()))
         self.scroll_anchor = self.hit(local)
@@ -1548,7 +1555,23 @@ class Wheel(QWidget):
         if new_hover != self.hover:
             self.hover = new_hover
             self.update()
+            self._announce()
         return kind
+
+    def _announce(self):
+        """Screen readers: say the slice under the pointer."""
+        try:
+            from PySide6.QtGui import QAccessible, QAccessibleEvent
+            if 0 <= self.hover < len(self.ops):
+                o = self.ops[self.hover]
+                text = tr(o.label) + (f", {tr(o.hint)}" if o.hint else "")
+            else:
+                text = tr(MODE_LABEL[self.mode])
+            self.setAccessibleName(f"{APP} {tr(MODE_LABEL[self.mode])}: {text}")
+            if QAccessible.isActive():
+                QAccessible.updateAccessibility(QAccessibleEvent(self, QAccessible.NameChanged))
+        except Exception:
+            pass
 
     def _pill_dwell(self):
         if self.hover_pill:
@@ -1796,6 +1819,22 @@ class Wheel(QWidget):
 # ============================================================================
 # Toast
 # ============================================================================
+def play_finish_sound(kind="ok"):
+    """Windows' own notification sound when a job finishes (Settings → Sounds)."""
+    if settings().value("finish_sound", "false") != "true" or not winsys.IS_WIN:
+        return
+    try:
+        import winsound
+        alias = "SystemHand" if kind == "err" else "Notification.Default"
+        winsound.PlaySound(alias, winsound.SND_ALIAS | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+    except Exception:
+        try:
+            import winsound
+            winsound.MessageBeep()
+        except Exception:
+            pass
+
+
 class Toast(QWidget):
     closed = Signal(object)
     resized = Signal()
@@ -1834,6 +1873,13 @@ class Toast(QWidget):
         self.btn.setCursor(Qt.PointingHandCursor)
         self.btn.clicked.connect(self._reveal)
         lay.addWidget(self.btn)
+        self.undo_btn = QPushButton()
+        self.undo_btn.setObjectName("cancel")
+        self.undo_btn.setCursor(Qt.PointingHandCursor)
+        self.undo_btn.clicked.connect(self._undo)
+        self.undo_btn.hide()
+        lay.addWidget(self.undo_btn)
+        self.on_undo = None
         self.cancel_btn = QPushButton()
         self.cancel_btn.setObjectName("cancel")
         self.cancel_btn.setCursor(Qt.PointingHandCursor)
@@ -1850,6 +1896,7 @@ class Toast(QWidget):
         """Apply the current language's font and button texts."""
         self.setStyleSheet(i18n.css(self.TOAST_CSS))
         self.btn.setText(tr("Show"))
+        self.undo_btn.setText(tr("Undo"))
         self.cancel_btn.setText(tr("Cancel"))
 
     def paintEvent(self, e):
@@ -1884,12 +1931,25 @@ class Toast(QWidget):
             p.drawArc(4, 4, 22, 22, -self.spin * 16, 100 * 16)
         else:
             col = {"ok": C("ok"), "err": C("danger"), "info": ACCENT}[kind]
+            t = getattr(self, "_ok_t", 1.0) if kind == "ok" else 1.0
+            r = 12 * min(1.0, 0.35 + t * 1.3) if t < 1.0 else 12
             p.setPen(Qt.NoPen)
             p.setBrush(col)
-            p.drawEllipse(3, 3, 24, 24)
-            p.setPen(QPen(ON_ACCENT if kind != "err" else QColor("#ffffff"), 2.6))
+            p.drawEllipse(QPointF(15, 15), r, r)
+            p.setPen(QPen(ON_ACCENT if kind != "err" else QColor("#ffffff"), 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             if kind == "ok":
-                p.drawPolyline([QPointF(9, 15.5), QPointF(13.5, 20), QPointF(21, 11)])
+                pts = [QPointF(9, 15.5), QPointF(13.5, 20), QPointF(21, 11)]
+                k = max(0.0, min(1.0, (t - 0.3) / 0.7))          # the tick draws itself after the circle
+                if k >= 1.0:
+                    p.drawPolyline(pts)
+                elif k > 0:
+                    l1 = math.dist((9, 15.5), (13.5, 20))
+                    l2 = math.dist((13.5, 20), (21, 11))
+                    d = k * (l1 + l2)
+                    if d <= l1:
+                        p.drawLine(pts[0], pts[0] + (pts[1] - pts[0]) * (d / l1))
+                    else:
+                        p.drawPolyline([pts[0], pts[1], pts[1] + (pts[2] - pts[1]) * ((d - l1) / l2)])
             elif kind == "err":
                 p.drawLine(10, 10, 20, 20)
                 p.drawLine(20, 10, 10, 20)
@@ -1909,13 +1969,36 @@ class Toast(QWidget):
         self.title.setText(title)
         self.body.setText(body)
         self.btn.setVisible(show_btn)
+        self.on_undo = None
+        self.undo_btn.hide()
         self.on_cancel = cancel
         self.cancel_btn.setVisible(cancel is not None)
         if kind == "busy":
             self.spin_timer.start()
         else:
             self.spin_timer.stop()
+        if kind == "ok" and settings().value("finish_anim", "true") == "true":
+            self._ok_t = 0.0
+            anim = QVariantAnimation(self)
+            anim.setDuration(520)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(QEasingCurve.OutCubic)
+            anim.valueChanged.connect(lambda v: (setattr(self, "_ok_t", float(v)), self._set_icon("ok")))
+            anim.start(QVariantAnimation.DeleteWhenStopped)
+        else:
+            self._ok_t = 1.0
+        if kind in ("ok", "err") and getattr(self, "_sound_for_this", False):
+            self._sound_for_this = False
+            play_finish_sound(kind)
         self._set_icon(kind)
+        self.setAccessibleName(f"{title}. {QTextDocumentFragment.fromHtml(body).toPlainText()}")
+        try:
+            from PySide6.QtGui import QAccessible, QAccessibleEvent
+            if QAccessible.isActive():
+                QAccessible.updateAccessibility(QAccessibleEvent(self, QAccessible.Alert))
+        except Exception:
+            pass
         self.wanted = True          # counts in the stack even before Windows shows it
         self._place()               # position first, so it never flashes in the middle of the screen
         self.show()
@@ -1928,12 +2011,35 @@ class Toast(QWidget):
 
     def show_msg(self, title, body, kind="info", ms=2600):
         self._show(title, body, kind, ms=ms)
+        return self
 
     def show_result(self, title, outs):
         outs = [Path(o) for o in outs if o]
         self.target = [str(o) for o in outs] if outs else None     # all of them get selected
         body = outs[0].name if len(outs) == 1 else tr("{n} items saved", n=len(outs))
         self._show(title, body, "ok", show_btn=bool(self.target), ms=5000)
+        return self
+
+    def set_undo(self, fn):
+        """An Undo button that takes back what the job just made (the files go to the Recycle Bin)."""
+        self.on_undo = fn
+        self.undo_btn.setVisible(fn is not None)
+        if fn is not None and self.timer.isActive():
+            self.timer.start(max(self.timer.remainingTime(), 9000))     # time to change your mind
+        self._place()
+
+    def _undo(self):
+        fn, self.on_undo = self.on_undo, None
+        if fn:
+            ok = fn()
+            self.btn.hide()
+            self.undo_btn.hide()
+            self.title.setText(tr("Undone") if ok else tr("Couldn't undo"))
+            self.body.setText(tr("The new file went to the Recycle Bin.") if ok else self.body.text())
+            self.target = None
+            self._set_icon("info" if ok else "err")
+            self._place()
+            self.timer.start(3000)
 
     def _cancel(self):
         cb, self.on_cancel = self.on_cancel, None
@@ -2006,6 +2112,9 @@ class ToastManager(QObject):
         t = self._new()
         t.show_result(title, outs)
         return t
+
+    def set_undo(self, fn):
+        pass
 
 
 # ============================================================================
@@ -2498,6 +2607,12 @@ class MediaOSD(QWidget):
 
 
 class FloatWindow(QWidget):
+    def come_forward(self):
+        """A float you just opened shows in front of other windows, even when it isn't set to stay on top."""
+        self.raise_()
+        if not getattr(self, "on_top", True):
+            QTimer.singleShot(60, lambda: winsys.bring_to_front(int(self.winId())))
+
     closed = Signal()
     RADIUS = 14
     EDGE = 7              # resize border
@@ -5229,6 +5344,199 @@ def custom_ops_for(mode, paths) -> list:
     return out
 
 
+def watch_folders() -> list:
+    return _jload("watch_folders", [])
+
+
+def _watch_ops(cat, path=None):
+    """What a watch folder can do with a file type: conversions, tools and your presets/chains that need
+    no window (questions are answered with their usual defaults)."""
+    if path:
+        paths = [path]
+    else:                                    # every target of the type: ask with two different examples
+        seen, out = set(), []
+        for ext in {"image": ("png", "jpg"), "video": ("mkv", "mp4"), "audio": ("wav", "mp3"),
+                    "document": ("txt", "docx"), "subtitle": ("vtt", "srt")}.get(cat, ("",)):
+            for m, o in _watch_ops(cat, engine._fake_path(cat, ext)):
+                if (m, o.id) not in seen:
+                    seen.add((m, o.id))
+                    out.append((m, o))
+        return out
+    out = []
+    for mode, ops in (("convert", engine.conversions(paths)), ("tool", engine.tools(paths))):
+        for o in ops + custom_ops_for(mode, paths):
+            if o.ui or o.id == "none":
+                continue
+            out.append((mode, o))
+    return out
+
+
+class FolderWatch(QObject):
+    """Watch folders: a file that lands in a chosen folder is converted automatically; results go to a
+    'Converted' folder inside it (so they are never picked up again)."""
+
+    def __init__(self, app):
+        super().__init__()
+        from PySide6.QtCore import QFileSystemWatcher
+        self.app = app
+        self.fs = QFileSystemWatcher(self)
+        self.fs.directoryChanged.connect(self._changed)
+        self.known = {}          # folder -> set of names seen
+        self.waiting = {}        # path -> (size, stable checks)
+        self.done = set()
+        self.timer = QTimer(self, interval=1000, timeout=self._check)
+        self.reload()
+
+    def reload(self):
+        if self.fs.directories():
+            self.fs.removePaths(self.fs.directories())
+        self.rules = [r for r in watch_folders() if r.get("on", True) and os.path.isdir(r.get("folder", ""))]
+        self.known = {}
+        for r in self.rules:
+            f = r["folder"]
+            self.known[f] = self._names(f)
+            self.fs.addPath(f)
+        if self.rules:
+            self.timer.start()                 # also catches changes the watcher misses (network drives)
+        else:
+            self.timer.stop()
+
+    @staticmethod
+    def _names(folder):
+        try:
+            return {e.name for e in os.scandir(folder) if e.is_file()}
+        except OSError:
+            return set()
+
+    def _changed(self, folder):
+        self._scan(folder)
+
+    def _scan(self, folder):
+        now = self._names(folder)
+        new = now - self.known.get(folder, set())
+        self.known[folder] = now
+        for name in new:
+            if name.lower().endswith((".part", ".crdownload", ".tmp", ".download")) or name.startswith(("~$", ".")):
+                continue
+            self.waiting[os.path.join(folder, name)] = (-1, 0)
+
+    def _check(self):
+        for r in self.rules:
+            self._scan(r["folder"])
+        for path, (size, n) in list(self.waiting.items()):
+            try:
+                now = os.path.getsize(path)
+            except OSError:
+                self.waiting.pop(path, None)
+                continue
+            if now == size and now > 0:
+                n += 1
+            else:
+                n = 0
+            if n >= 2:                         # same size for two seconds: finished copying
+                self.waiting.pop(path, None)
+                try:
+                    with open(path, "rb"):
+                        pass
+                except OSError:
+                    self.waiting[path] = (now, 0)
+                    continue
+                self._run(path)
+            else:
+                self.waiting[path] = (now, n)
+
+    def _run(self, path):
+        if path in self.done:
+            return
+        folder = os.path.dirname(path)
+        cat = engine.category_of([path])
+        for r in self.rules:
+            if os.path.normcase(r["folder"]) != os.path.normcase(folder) or r.get("cat") not in (cat, "*"):
+                continue
+            ops = {o.id: (m, o) for m, o in _watch_ops(cat, path)}
+            hit = ops.get(r.get("id"))
+            if hit is None:
+                winsys.log(f"watch folder: {r.get('label')} doesn't apply to {Path(path).name}")
+                continue
+            mode, op = hit
+            if op.model and not engine.model_ready(op.model):
+                continue
+            self.done.add(path)
+            out = Path(folder) / tr("Converted")
+            out.mkdir(exist_ok=True)
+            self.app.out_override[path] = str(out)
+            params = {f: (d[0] if isinstance(d, (list, tuple)) and d else d) for f, d in (op.ask or [])}
+            if getattr(op, "spec", None):
+                params["_spec"] = op.spec
+            winsys.log(f"watch folder: {op.id} on {Path(path).name}")
+            if op.group == "action":
+                try:
+                    op.fn([path], params)
+                except Exception as e:
+                    winsys.log(f"watch folder action: {e}")
+            else:
+                self.app._start(op, [path], params)
+
+
+class WatchRuleDialog(QDialog):
+    """Add a watch folder: which folder, which files, what to do."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"{APP} — " + tr("Watch a folder"))
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        form = QFormLayout(self)
+        row = QHBoxLayout()
+        self.folder = QLineEdit()
+        self.folder.setMinimumWidth(320)
+        row.addWidget(self.folder, 1)
+        b = QPushButton(tr("Choose…"))
+        b.clicked.connect(self._pick)
+        row.addWidget(b)
+        form.addRow(tr("Folder"), row)
+        self.kind = QComboBox()
+        for k, label in WHEEL_TYPES:
+            if k != "folder":
+                self.kind.addItem(tr(label), k)
+        form.addRow(tr("When this arrives"), self.kind)
+        self.op = QComboBox()
+        form.addRow(tr("Do this"), self.op)
+        note = QLabel(tr("Results go to a “Converted” folder inside it. Files already there are left alone."))
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        form.addRow(note)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(tr("Save"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+        self.kind.currentIndexChanged.connect(self._fill)
+        self._fill()
+        self.rule = None
+
+    def _pick(self):
+        d = QFileDialog.getExistingDirectory(self, tr("Pick a folder"), self.folder.text() or str(Path.home()))
+        if d:
+            self.folder.setText(str(Path(d)))
+
+    def _fill(self):
+        self.op.clear()
+        for mode, o in _watch_ops(self.kind.currentData()):
+            label = tr("Convert to {fmt}", fmt=tr(o.label)) if mode == "convert" and not o.id.startswith("custom:") else tr(o.label)
+            self.op.addItem(label.rstrip("…"), (mode, o.id))
+
+    def _ok(self):
+        f = self.folder.text().strip()
+        if not f or not os.path.isdir(f) or self.op.currentData() is None:
+            self.folder.setFocus()
+            return
+        mode, oid = self.op.currentData()
+        self.rule = {"folder": f, "cat": self.kind.currentData(), "mode": mode, "id": oid,
+                     "label": self.op.currentText(), "on": True}
+        self.accept()
+
+
 class WheelPreview(QLabel):
     """The wheel as it will look, drawn by the real Wheel (never shown on its own)."""
 
@@ -5639,6 +5947,11 @@ class SettingsDialog(QDialog):
             "ctrl_open": self.ctrl_open.isChecked(),
             "media_osd": self.media_osd.isChecked(),
             "anim": self.anim.currentData(),
+            "shake": self.shake.isChecked(),
+            "peek": self.peek.isChecked(),
+            "finish_anim": self.finish_anim.isChecked(),
+            "finish_sound": self.finish_sound.isChecked(),
+            "full_menu": self.full_menu.isChecked() if self.full_menu is not None else False,
             "media_osd_when": self.media_osd_when.currentData(),
         }
 
@@ -5659,6 +5972,11 @@ class SettingsDialog(QDialog):
             "ctrl_open": s.value("float_ctrl_open", "true") == "true",
             "media_osd": s.value("media_osd", "true") == "true",
             "anim": wheel_anim(),
+            "shake": s.value("shake", "true") == "true",
+            "peek": s.value("peek", "true") == "true",
+            "finish_anim": s.value("finish_anim", "true") == "true",
+            "finish_sound": s.value("finish_sound", "false") == "true",
+            "full_menu": winsys.full_menu_enabled(),
             "media_osd_when": s.value("media_osd_when", "unfocused"),
         }
 
@@ -5707,6 +6025,7 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(self._settings_tab(st), tr("Settings"))
+        self.tabs.addTab(self._everyday_tab(st), tr("Everyday"))
         self.tabs.addTab(self._mine_tab(), tr("Make it yours"))
         self.tabs.addTab(self._about_tab(st), tr("About"))
         self.tabs.setCurrentIndex(keep_tab)
@@ -5738,7 +6057,8 @@ class SettingsDialog(QDialog):
         self.lang.currentIndexChanged.connect(self._language_changed)
         f0.addRow(tr("App language"), self.lang)
         self.theme_box = QComboBox()
-        for code, label in (("system", tr("System default")), ("dark", tr("Dark")), ("light", tr("Light"))):
+        for code, label in (("system", tr("System default")), ("dark", tr("Dark")), ("light", tr("Light")),
+                            ("contrast", tr("High contrast"))):
             self.theme_box.addItem(label, code)
         self.theme_box.setCurrentIndex(max(0, self.theme_box.findData(theme.mode())))
         self.theme_box.currentIndexChanged.connect(self._theme_changed)
@@ -5834,6 +6154,101 @@ class SettingsDialog(QDialog):
         return page
 
     # ---- About tab
+    # ---- Everyday tab
+    def _everyday_tab(self, st):
+        from PySide6.QtWidgets import QListWidget
+        page = QWidget()
+        page.setObjectName("page")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(2, 6, 2, 2)
+        g = QGroupBox(tr("While dragging a file"))
+        v = QVBoxLayout(g)
+        self.shake = QCheckBox(tr("Shake the mouse to open the wheel (instead of tapping a key)"))
+        self.shake.setChecked(st["shake"])
+        v.addWidget(self.shake)
+        self.peek = QCheckBox(tr("Tap Space to peek at the file"))
+        self.peek.setChecked(st["peek"])
+        v.addWidget(self.peek)
+        lay.addWidget(g)
+
+        g = QGroupBox(tr("When a job finishes"))
+        v = QVBoxLayout(g)
+        self.finish_anim = QCheckBox(tr("Animate the tick on the notification"))
+        self.finish_anim.setChecked(st["finish_anim"])
+        v.addWidget(self.finish_anim)
+        self.finish_sound = QCheckBox(tr("Play a sound"))
+        self.finish_sound.setChecked(st["finish_sound"])
+        v.addWidget(self.finish_sound)
+        lay.addWidget(g)
+
+        g = QGroupBox(tr("Watch folders"))
+        v = QVBoxLayout(g)
+        lbl = QLabel(tr("Anything that lands in these folders is converted by itself, e.g. every HEIC photo in Downloads becomes a JPG."))
+        lbl.setWordWrap(True)
+        v.addWidget(lbl)
+        self.watch_list = QListWidget()
+        self.watch_list.setMinimumHeight(80)
+        v.addWidget(self.watch_list)
+        row = QHBoxLayout()
+        b = QPushButton(tr("Add…"))
+        b.clicked.connect(self._add_watch)
+        row.addWidget(b)
+        b = QPushButton(tr("Remove"))
+        b.clicked.connect(self._remove_watch)
+        row.addWidget(b)
+        row.addStretch(1)
+        v.addLayout(row)
+        lay.addWidget(g)
+        self._fill_watch()
+
+        if winsys.windows_11():
+            g = QGroupBox(tr("Windows right-click menu"))
+            v = QVBoxLayout(g)
+            self.full_menu = QCheckBox(tr("Show the full menu straight away (no “Show more options”)"))
+            self.full_menu.setChecked(st["full_menu"])
+            v.addWidget(self.full_menu)
+            lbl = QLabel(tr("Windows 11 hides DragWheel and other apps under “Show more options”. This turns on Windows' own "
+                            "full menu for your account (like Windows 10). Explorer restarts to apply it."))
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+            v.addWidget(lbl)
+            lay.addWidget(g)
+        else:
+            self.full_menu = None
+
+        g = QGroupBox(tr("Help"))
+        v = QHBoxLayout(g)
+        b = QPushButton(tr("Show the quick tour again"))
+        b.clicked.connect(lambda: self.app.show_tour())
+        v.addWidget(b)
+        v.addStretch(1)
+        lay.addWidget(g)
+        lay.addStretch(1)
+        return page
+
+    def _fill_watch(self):
+        self.watch_list.clear()
+        for r in watch_folders():
+            kind = dict(WHEEL_TYPES).get(r.get("cat"), r.get("cat", ""))
+            self.watch_list.addItem(f"{r.get('folder')}   ·   {tr(kind)} → {r.get('label')}")
+
+    def _add_watch(self):
+        d = WatchRuleDialog(self)
+        if d.exec() == QDialog.Accepted and d.rule:
+            rules = watch_folders() + [d.rule]
+            settings().setValue("watch_folders", json.dumps(rules, ensure_ascii=False))
+            self._fill_watch()
+            self.app.watch.reload()
+
+    def _remove_watch(self):
+        i = self.watch_list.currentRow()
+        rules = watch_folders()
+        if 0 <= i < len(rules):
+            rules.pop(i)
+            settings().setValue("watch_folders", json.dumps(rules, ensure_ascii=False))
+            self._fill_watch()
+            self.app.watch.reload()
+
     def _about_tab(self, st):
         page = QWidget()
         page.setObjectName("page")
@@ -6094,6 +6509,15 @@ class SettingsDialog(QDialog):
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
         s.setValue("wheel_anim", self.anim.currentData())
+        for key, box in (("shake", self.shake), ("peek", self.peek), ("finish_anim", self.finish_anim),
+                         ("finish_sound", self.finish_sound)):
+            s.setValue(key, "true" if box.isChecked() else "false")
+        if self.full_menu is not None and self.full_menu.isChecked() != winsys.full_menu_enabled():
+            try:
+                winsys.set_full_menu(self.full_menu.isChecked())
+                winsys.restart_explorer()
+            except Exception as e:
+                winsys.log(f"full menu: {e}")
         s.setValue("media_osd_when", self.media_osd_when.currentData())
         self.app.watcher.refresh_settings()
         engine.OUTPUT_DIR = (self.out.text().strip() or None) if mode == "folder" else None
@@ -6110,6 +6534,335 @@ class SettingsDialog(QDialog):
 # ============================================================================
 # Drag watcher — polls input state (no hooks, nothing injected)
 # ============================================================================
+class PeekSignals(QObject):
+    ready = Signal(object, object)      # path, QImage
+
+
+def _peek_image(path) -> "QImage | None":
+    """A picture of the file for Quick preview: the image itself, a PDF's first page, a video frame."""
+    p = Path(path)
+    cat = engine.EXT_CATEGORY.get(engine.ext_of(str(p)))
+    try:
+        if cat == "image":
+            img = QImage(str(p))
+            if img.isNull():
+                from PIL import Image
+                try:
+                    import pillow_heif
+                    pillow_heif.register_heif_opener()
+                except Exception:
+                    pass
+                with Image.open(p) as im:
+                    im.thumbnail((900, 900))
+                    im = im.convert("RGBA")
+                    img = QImage(im.tobytes("raw", "RGBA"), im.width, im.height, QImage.Format_RGBA8888).copy()
+            return None if img.isNull() else img.scaled(900, 900, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if cat == "pdf" or p.suffix.lower() in (".cbz", ".epub", ".xps"):
+            import fitz
+            with fitz.open(str(p)) as doc:
+                pix = doc[0].get_pixmap(dpi=90)
+                return QImage(pix.samples, pix.width, pix.height, pix.stride,
+                              QImage.Format_RGB888 if pix.n == 3 else QImage.Format_RGBA8888).copy()
+        if cat == "video":
+            import subprocess
+            import tempfile
+            out = Path(tempfile.gettempdir()) / f"dw-peek-{os.getpid()}.jpg"
+            subprocess.run([engine.ffmpeg(), "-y", "-v", "error", "-ss", "2", "-i", str(p), "-frames:v", "1",
+                            "-vf", "scale='min(900,iw)':-2", str(out)], timeout=8, stdin=subprocess.DEVNULL,
+                           capture_output=True, creationflags=engine.NO_WINDOW)
+            img = QImage(str(out))
+            try:
+                out.unlink()
+            except OSError:
+                pass
+            return None if img.isNull() else img
+    except Exception as e:
+        winsys.log(f"peek: {p.name}: {e}")
+    return None
+
+
+class PeekWindow(QWidget):
+    """Quick preview: tap Space while dragging to see what you're holding."""
+
+    def __init__(self):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+                         | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.path = None
+        self.img = None
+        self.text = ""
+        self.sig = PeekSignals()
+        self.sig.ready.connect(self._got, Qt.QueuedConnection)
+
+    def peek(self, paths):
+        self.path = paths[0]
+        p = Path(self.path)
+        self.img = None
+        self.text = ""
+        cat = engine.EXT_CATEGORY.get(engine.ext_of(str(p)))
+        if p.is_file() and (cat in ("subtitle",) or p.suffix.lower() in (".txt", ".md", ".csv", ".json", ".log", ".py",
+                                                                          ".ini", ".xml", ".html", ".srt")):
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    self.text = "".join(f.readline() for _ in range(24))[:2400]
+            except OSError:
+                pass
+        elif p.is_file():
+            threading.Thread(target=lambda path=self.path: self.sig.ready.emit(path, _peek_image(path)),
+                             daemon=True).start()
+        self.extra = tr("{n} files", n=len(paths)) if len(paths) > 1 else ""
+        self._layout()
+        self.show()
+        self.raise_()
+
+    def _got(self, path, img):
+        if path == self.path and self.isVisible() and img is not None:
+            self.img = img
+            self._layout()
+            self.update()
+
+    def _layout(self):
+        w, h = 340, 120
+        if self.img is not None:
+            sc = min(420 / self.img.width(), 380 / self.img.height(), 1.0)
+            w, h = max(240, int(self.img.width() * sc) + 24), int(self.img.height() * sc) + 74
+        elif self.text:
+            w, h = 420, 300
+        else:
+            w, h = 300, 150
+        self.resize(w, h)
+        pos = QCursor.pos()
+        scr = (QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()).availableGeometry()
+        x = pos.x() + 28 if pos.x() + 28 + w < scr.right() else pos.x() - 28 - w
+        y = max(scr.top() + 8, min(pos.y() - h // 2, scr.bottom() - h - 8))
+        self.move(x, y)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setPen(QPen(C("line"), 1))
+        p.setBrush(C("panel"))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 14, 14)
+        path = Path(self.path or "")
+        body = QRectF(12, 12, self.width() - 24, self.height() - 74)
+        if self.img is not None:
+            pm = QPixmap.fromImage(self.img)
+            if pm.width() > body.width() or pm.height() > body.height():      # shrink big pictures, never blow up small ones
+                pm = pm.scaled(body.size().toSize(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            p.drawPixmap(int(body.center().x() - pm.width() / 2), int(body.center().y() - pm.height() / 2), pm)
+        elif self.text:
+            p.setPen(C("text"))
+            p.setFont(QFont("Consolas", 8))
+            p.drawText(body, Qt.AlignLeft | Qt.AlignTop | Qt.TextWrapAnywhere, self.text)
+        else:
+            from PySide6.QtCore import QFileInfo
+            from PySide6.QtWidgets import QFileIconProvider
+            ic = QFileIconProvider().icon(QFileInfo(str(path))).pixmap(56, 56)
+            p.drawPixmap(int(body.center().x() - 28), int(body.center().y() - 28), ic)
+        p.setPen(C("text"))
+        p.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
+        fm = QFontMetrics(p.font())
+        p.drawText(QRectF(14, self.height() - 58, self.width() - 28, 22), Qt.AlignLeft | Qt.AlignVCenter,
+                   fm.elidedText(path.name, Qt.ElideMiddle, self.width() - 28))
+        p.setPen(C("dim"))
+        p.setFont(QFont("Segoe UI", 9))
+        info = " · ".join(x for x in (_human(path), self.extra, tr("Space to close")) if x)
+        p.drawText(QRectF(14, self.height() - 36, self.width() - 28, 20), Qt.AlignLeft | Qt.AlignVCenter, info)
+        p.end()
+
+
+class TourCanvas(QWidget):
+    """A looping little film: drag a file, tap the key, drop on a slice, done."""
+    LOOP = 7.2
+
+    def __init__(self, key, parent=None):
+        super().__init__(parent)
+        import time
+        self.key = key
+        self.t0 = time.monotonic()
+        self.setFixedSize(620, 330)
+        w = Wheel(_APP)
+        w._style = "none"
+        w.mode, w.paths = "convert", ["C:/example/Holiday.heic"]
+        w.ops = [engine.Op(f"to_{x.lower()}", x, lambda *a: None) for x in ("JPG", "PNG", "WEBP", "PDF", "GIF", "AVIF", "TIFF", "ICO")]
+        w.hover = -1
+        self.plain = w.grab()
+        w.hover = 1
+        self.lit = w.grab()
+        self.wheel_c = w.center()
+        self.slice_pos = None
+        from PySide6.QtCore import QFileInfo
+        from PySide6.QtWidgets import QFileIconProvider
+        self.icon = QFileIconProvider().icon(QFileInfo("x.jpg")).pixmap(48, 48)
+        if self.icon.isNull() or self.icon.toImage().allGray() and self.icon.toImage().pixelColor(24, 24).alpha() == 0:
+            self.icon = QPixmap(48, 48)                      # a plain picture-file shape
+            self.icon.fill(Qt.transparent)
+            q = QPainter(self.icon)
+            q.setRenderHint(QPainter.Antialiasing)
+            q.setPen(QPen(QColor("#9aa0a6"), 1.5))
+            q.setBrush(QColor("#ffffff"))
+            q.drawRoundedRect(QRectF(8, 3, 32, 42), 4, 4)
+            q.setPen(Qt.NoPen)
+            q.setBrush(QColor("#4a90e2"))
+            q.drawPolygon(QPolygonF([QPointF(12, 38), QPointF(22, 24), QPointF(28, 32), QPointF(32, 27), QPointF(36, 38)]))
+            q.setBrush(QColor("#f5a623"))
+            q.drawEllipse(QPointF(30, 14), 4, 4)
+            q.end()
+        self.timer = QTimer(self, interval=16, timeout=self.update)
+        self.timer.start()
+
+    def step(self):
+        import time
+        t = (time.monotonic() - self.t0) % self.LOOP
+        return 0 if t < 1.3 else 1 if t < 2.2 else 2 if t < 4.2 else 3
+
+    def paintEvent(self, _e):
+        import time
+        t = (time.monotonic() - self.t0) % self.LOOP
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setPen(QPen(C("line"), 1))
+        p.setBrush(QColor(theme.hexc("canvas")))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 14, 14)
+
+        def ease(a):
+            a = max(0.0, min(1.0, a))
+            return a * a * (3 - 2 * a)
+
+        start, center = QPointF(80, 250), QPointF(310, 150)
+        scale = 0.5
+        ang = math.radians(45)                       # the PNG slice: second of eight, 45° clockwise from the top
+        rr = (Wheel.R_IN + Wheel.R_MID + 14) / 2 * scale
+        target = center + QPointF(math.sin(ang) * rr, -math.cos(ang) * rr)
+        if t < 1.3:
+            cur = start + (center - start) * ease(t / 1.3)
+        elif t < 2.2:
+            cur = center
+        elif t < 3.4:
+            cur = center + (target - center) * ease((t - 2.2) / 1.2)
+        else:
+            cur = target
+        # the wheel
+        show = 0.0
+        if 1.45 <= t < 4.0:
+            show = ease((t - 1.45) / 0.35) if t < 3.6 else 1 - ease((t - 3.6) / 0.4)
+        if show > 0:
+            pm = self.lit if 3.0 <= t < 3.8 else self.plain
+            w, h = pm.width() / pm.devicePixelRatio() * scale, pm.height() / pm.devicePixelRatio() * scale
+            c = self.wheel_c * scale
+            p.save()
+            p.setOpacity(show)
+            p.translate(center)
+            k = 0.8 + 0.2 * show
+            p.scale(k, k)
+            p.drawPixmap(QRectF(-c.x(), -c.y(), w, h), pm, QRectF(pm.rect()))
+            p.restore()
+        # the file being dragged (and the pointer)
+        if t < 3.7:
+            p.setOpacity(1.0 if t < 3.5 else 1 - (t - 3.5) / 0.2)
+            p.drawPixmap(int(cur.x() - 10), int(cur.y() - 6), self.icon)
+            p.setOpacity(1.0)
+        arrow = QPolygonF([QPointF(0, 0), QPointF(0, 17), QPointF(4.5, 13), QPointF(8, 20), QPointF(10.5, 19),
+                           QPointF(7, 12), QPointF(13, 12)])
+        p.save()
+        p.translate(cur)
+        p.setPen(QPen(QColor("#000000"), 1.2))
+        p.setBrush(QColor("#ffffff"))
+        p.drawPolygon(arrow)
+        p.restore()
+        # the key
+        pressed = 1.25 <= t < 1.6
+        key = QRectF(30, 26, 92, 40)
+        p.setPen(QPen(ACCENT if pressed else C("line"), 2))
+        p.setBrush(ACCENT if pressed else C("panel"))
+        p.drawRoundedRect(key.translated(0, 3 if pressed else 0), 8, 8)
+        p.setPen(ON_ACCENT if pressed else C("text"))
+        p.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
+        p.drawText(key.translated(0, 3 if pressed else 0), Qt.AlignCenter, self.key)
+        # the finished notification
+        if 4.1 <= t < 6.8:
+            a = ease((t - 4.1) / 0.3) if t < 6.4 else 1 - ease((t - 6.4) / 0.4)
+            r = QRectF(self.width() - 250, self.height() - 74 + (1 - a) * 20, 232, 56)
+            p.setOpacity(a)
+            p.setPen(QPen(C("line"), 1))
+            p.setBrush(C("panel"))
+            p.drawRoundedRect(r, 12, 12)
+            p.setPen(Qt.NoPen)
+            p.setBrush(C("ok"))
+            p.drawEllipse(QPointF(r.x() + 26, r.center().y()), 12, 12)
+            p.setPen(QPen(ON_ACCENT, 2.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            x0, y0 = r.x() + 26, r.center().y()
+            p.drawPolyline([QPointF(x0 - 6, y0), QPointF(x0 - 1.5, y0 + 4.5), QPointF(x0 + 6, y0 - 4)])
+            p.setPen(C("text"))
+            p.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
+            p.drawText(QRectF(r.x() + 48, r.y() + 8, 180, 20), Qt.AlignLeft | Qt.AlignVCenter,
+                       tr("Converted to {fmt}", fmt="PNG"))
+            p.setPen(C("dim"))
+            p.setFont(QFont("Segoe UI", 9))
+            p.drawText(QRectF(r.x() + 48, r.y() + 28, 180, 18), Qt.AlignLeft | Qt.AlignVCenter, "Holiday.png")
+        p.end()
+
+
+class TourDialog(QDialog):
+    """First launch: how DragWheel works in three steps, shown as a short looping animation."""
+
+    def __init__(self, app):
+        super().__init__(None, Qt.WindowStaysOnTopHint)
+        self.app = app
+        key = tr(mode_keys()["convert"])
+        self.setWindowTitle(tr("Welcome to {app}", app=APP))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS) + f"QLabel#step{{padding:8px 10px;border-radius:10px;color:{theme.hexc('dim')}}}"
+                           f"QLabel#step[on=true]{{background:{theme.hexc('surface')};color:{theme.hexc('text')}}}")
+        lay = QVBoxLayout(self)
+        head = QLabel(f"<b style='font-size:13pt'>{tr('Welcome to {app}', app=APP)}</b><br>"
+                      f"<span style='color:{theme.hexc('dim')}'>{tr('Convert any file without opening an app, in three moves:')}</span>")
+        lay.addWidget(head)
+        self.canvas = TourCanvas(key)
+        lay.addWidget(self.canvas, 0, Qt.AlignHCenter)
+        row = QHBoxLayout()
+        self.steps = []
+        for i, text in enumerate((tr("Drag a file (keep holding the mouse)"),
+                                  tr("Tap {key} — the wheel opens", key=key),
+                                  tr("Drop it on a slice. Done!"))):
+            lbl = QLabel(f"<b>{i + 1}</b>&nbsp;&nbsp;{text}")
+            lbl.setObjectName("step")
+            lbl.setWordWrap(True)
+            row.addWidget(lbl, 1)
+            self.steps.append(lbl)
+        lay.addLayout(row)
+        more = QLabel(tr("{tools} opens Tools and {actions} opens Actions. Prefer clicking? Right-click a file → DragWheel.",
+                         tools=tr(mode_keys()["tool"]), actions=tr(mode_keys()["action"])))
+        more.setWordWrap(True)
+        more.setStyleSheet(f"color:{theme.hexc('dim')}")
+        lay.addWidget(more)
+        bb = QHBoxLayout()
+        b = QPushButton(tr("More help"))
+        b.clicked.connect(lambda: (self.accept(), app.show_help()))
+        bb.addWidget(b)
+        bb.addStretch(1)
+        ok = QPushButton(tr("Got it"))
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        bb.addWidget(ok)
+        lay.addLayout(bb)
+        self._last = -1
+        self._t = QTimer(self, interval=100, timeout=self._mark)
+        self._t.start()
+
+    def _mark(self):
+        s = min(self.canvas.step(), 2)
+        if s != self._last:
+            self._last = s
+            for i, lbl in enumerate(self.steps):
+                lbl.setProperty("on", i == s)
+                lbl.style().unpolish(lbl)
+                lbl.style().polish(lbl)
+
+
 class DragWatcher(QObject):
     tapped = Signal(str)     # mode
     released = Signal()
@@ -6118,6 +6871,8 @@ class DragWatcher(QObject):
     scrolled = Signal(int)   # wheel delta while dragging (from the hook thread, delivered queued)
     cancelled = Signal()     # Esc pressed during a drag
     ctrl_open = Signal(int)  # Ctrl + double-click on a file in Explorer (window handle), from the hook thread
+    peek = Signal()          # Space tapped while dragging (Quick preview)
+    shaken = Signal()        # the mouse was shaken while dragging
 
     def __init__(self):
         super().__init__()
@@ -6128,6 +6883,9 @@ class DragWatcher(QObject):
         self.hotkey_latch = False
         self.source_hwnd = 0     # top-level window the drag started in
         self.esc_prev = False
+        self.space_prev = False
+        self.trail = []          # (time, x) while dragging, to notice a shake
+        self.shook = False
         self.refresh_settings()
         self.hook = winsys.WheelHook(self._on_wheel, self._swallow_wheel,
                                      on_ctrl_double=lambda hwnd: self.ctrl_open.emit(int(hwnd)),
@@ -6138,6 +6896,8 @@ class DragWatcher(QObject):
         self.scroll_enabled = s.value("scroll", "true") == "true"
         self.any_drag = int(s.value("detect_any", 0)) == 1
         self.ctrl_float = s.value("float_ctrl_open", "true") == "true"
+        self.shake_enabled = s.value("shake", "true") == "true"
+        self.peek_enabled = s.value("peek", "true") == "true"
 
     # called on the hook thread — keep it tiny
     def _drag_qualifies(self):
@@ -6185,6 +6945,14 @@ class DragWatcher(QObject):
                 if esc and not self.esc_prev:
                     self.cancelled.emit()
                 self.esc_prev = esc
+                space = winsys.key_down(winsys.VK_SPACE) and not winsys.key_down(0x11) and not winsys.key_down(0x12)
+                if space and not self.space_prev and self.peek_enabled and winsys.file_drag_active():
+                    self.peek.emit()
+                self.space_prev = space
+                if self.shake_enabled and not self.shook and self._shake(pos):
+                    self.shook = True
+                    if winsys.file_drag_active() or int(settings().value("detect_any", 0)) == 1:
+                        self.shaken.emit()
                 any_drag = int(settings().value("detect_any", 0)) == 1
                 for m, name in keys.items():
                     if held[name] and not self.prev.get(name):
@@ -6195,7 +6963,27 @@ class DragWatcher(QObject):
                 self.released.emit()
             self.down_at = None
             self.dragging = False
+            self.trail = []
+            self.shook = False
+            self.space_prev = False
         self.prev = held
+
+    def _shake(self, pos) -> bool:
+        """Three or more quick left-right turns of at least 40 px within 0.8 s."""
+        import time
+        now = time.monotonic()
+        self.trail = [(t, x) for t, x in self.trail if now - t < 0.8] + [(now, pos[0])]
+        turns, direction, anchor = 0, 0, self.trail[0][1]
+        for _t, x in self.trail[1:]:
+            d = x - anchor
+            if abs(d) >= 40:
+                sign = 1 if d > 0 else -1
+                if direction and sign != direction:
+                    turns += 1
+                direction, anchor = sign, x
+            elif direction and (x - anchor) * direction > 0:
+                anchor = x                             # still going the same way: follow the far end
+        return turns >= 3
 
 
 # ============================================================================
@@ -6243,7 +7031,12 @@ class DragWheelApp(QObject):
         self.watcher.scrolled.connect(self.on_scroll)
         self.watcher.ctrl_open.connect(self.on_ctrl_open)
         self.watcher.cancelled.connect(self.on_drag_cancel)
+        self.watcher.peek.connect(self.on_peek)
+        self.watcher.shaken.connect(lambda: self.on_tap("convert") if not self.wheel.is_open() else None)
+        self.watcher.released.connect(self._close_peek)
         self.watcher.start()
+        self._peek = None
+        self.watch = FolderWatch(self)
 
         self.pending: list[str] = []
         self.pending_timer = QTimer(self, singleShot=True, interval=350, timeout=self._flush_pending)
@@ -6290,6 +7083,8 @@ class DragWheelApp(QObject):
         self._first_action = menu.addAction(tr("Convert files…"), self.pick_files)
         menu.addAction(tr("Save image from clipboard"), self.save_clipboard_image)
         menu.addAction(tr("Play copied link in Float"), self.play_link)
+        recent = menu.addMenu(tr("Recent results"))
+        recent.aboutToShow.connect(lambda m=recent: self._fill_recent(m))
         menu.addSeparator()
         menu.addAction(tr("How it works"), self.show_help)
         menu.addAction(tr("Settings…"), self.show_settings)
@@ -6382,6 +7177,25 @@ class DragWheelApp(QObject):
             return
         self.wheel.popup(mode, click_mode=False)
         self._fill_from_explorer()
+
+    def on_peek(self):
+        """Space while dragging: show (or hide) a quick preview of the file being dragged."""
+        if self._peek is not None and self._peek.isVisible():
+            self._peek.hide()
+            return
+        paths = self.wheel.paths if self.wheel.is_open() and self.wheel.paths else []
+        if not paths:
+            hwnd = self.watcher.source_hwnd
+            paths = [p for p in winsys.explorer_selection(hwnd) if p and os.path.exists(p)]
+        if not paths:
+            return
+        if self._peek is None:
+            self._peek = PeekWindow()
+        self._peek.peek(paths)
+
+    def _close_peek(self):
+        if self._peek is not None:
+            self._peek.hide()
 
     def _fill_from_explorer(self):
         """Ask Explorer which files are being dragged, so the wheel works even if
@@ -6604,6 +7418,8 @@ class DragWheelApp(QObject):
             self.floats.append(w)
             w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
             w.show()
+            if not pin:
+                w.come_forward()
         job.sig.done.connect(done, Qt.QueuedConnection)
         self.pool.start(job)
 
@@ -6681,12 +7497,20 @@ class DragWheelApp(QObject):
         self.running.add(w)                       # keep Python refs alive until done
         w.sig.done.connect(self._done, Qt.QueuedConnection)
         w.sig.progress.connect(lambda wk, f, name=name: self._job_progress(wk, f, name), Qt.QueuedConnection)
+        w.sig.count.connect(self._job_count, Qt.QueuedConnection)
         self.pool.start(w)
+
+    def _job_count(self, worker, done, total):
+        worker.count = (done, total)
 
     def _job_progress(self, worker, frac, name):
         card = worker.card
         if card is not None and card in self.toast.cards and not worker.cancel_requested:
-            card.body.setText(f"{name} — {int(frac * 100)}%")
+            done, total = worker.count
+            if total > 1:                      # a batch: "12 of 40 done — 31%"
+                card.body.setText(tr("{a} of {b} done", a=done, b=total) + f" — {int(frac * 100)}%")
+            else:
+                card.body.setText(f"{name} — {int(frac * 100)}%")
 
     # ---- updating: warn about running jobs, keep the open floats
     def _ask_jobs_before_update(self, installer_waiting):
@@ -6757,6 +7581,10 @@ class DragWheelApp(QObject):
         op = worker.op
         card = worker.card if worker.card is not None and worker.card in self.toast.cards else None
         target = card or self.toast
+        if card is not None and err != CANCELLED:
+            card._sound_for_this = True            # finish sound (when turned on)
+        elif card is None and err != CANCELLED:
+            play_finish_sound("err" if err else "ok")
         if err == CANCELLED:
             target.show_msg(tr("Cancelled"), tr("Nothing was saved."), "info", 3000)
         elif err:
@@ -6789,13 +7617,101 @@ class DragWheelApp(QObject):
                 if card is not None:
                     card.close_card()
                 return
-            target.show_result(tr("Done") if op.group == "tool" else tr("Converted to {fmt}", fmt=tr(op.label)), outs)
+            title = tr("Done") if op.group == "tool" else tr("Converted to {fmt}", fmt=tr(op.label))
+            if worker.failed:
+                names = ", ".join(n for n, _e in worker.failed[:3]) + ("…" if len(worker.failed) > 3 else "")
+                winsys.log(f"batch: {len(worker.failed)} failed: " + " | ".join(f"{n}: {e}" for n, e in worker.failed[:10]))
+                c = target.show_msg(title, tr("{a} of {b} done. These couldn't be done: {names}",
+                                              a=len(worker.paths) - len(worker.failed), b=len(worker.paths), names=names),
+                                    "err", 12000) or target
+                c.target = [str(o) for o in outs]
+                c.btn.setVisible(bool(outs))
+                c.set_undo(self._undo_for(outs, worker))
+            else:
+                c = target.show_result(title, outs) or target
+                c.set_undo(self._undo_for(outs, worker))
+            self._remember(outs, worker)
+
+    def _undo_for(self, outs, worker):
+        """Undo for files a job just made — not when they replaced the originals or went to the clipboard."""
+        outs = [Path(o) for o in outs or [] if o]
+        if not outs or settings().value("output_mode", "next") in ("replace", "clipboard"):
+            return None
+        srcs = {str(Path(p)).lower() for p in worker.paths}
+        if any(str(o).lower() in srcs for o in outs):            # edited in place: nothing to take back safely
+            return None
+
+        def undo():
+            ok = True
+            for o in outs:
+                try:
+                    if o.exists():
+                        winsys.recycle(str(o))
+                except Exception as e:
+                    winsys.log(f"undo: {o}: {e}")
+                    ok = False
+            self._forget(outs)
+            winsys.log(f"undo: {len(outs)} result(s) to the Recycle Bin")
+            return ok
+        return undo
+
+    # ---- recent results (tray menu)
+    def _remember(self, outs, worker):
+        try:
+            recent = json.loads(settings().value("recent_results", "[]") or "[]")
+        except (TypeError, ValueError):
+            recent = []
+        what = tr("Converted to {fmt}", fmt=tr(worker.op.label)) if worker.op.group == "convert" else tr(worker.op.label).rstrip("…")
+        for o in outs or []:
+            o = str(o)
+            if not o or o.startswith("info:"):
+                continue
+            recent = [r for r in recent if r.get("path") != o]
+            recent.insert(0, {"path": o, "what": what})
+        settings().setValue("recent_results", json.dumps(recent[:10], ensure_ascii=False))
+
+    def _forget(self, outs):
+        try:
+            recent = json.loads(settings().value("recent_results", "[]") or "[]")
+        except (TypeError, ValueError):
+            return
+        gone = {str(o) for o in outs}
+        settings().setValue("recent_results", json.dumps([r for r in recent if r.get("path") not in gone], ensure_ascii=False))
+
+    def _fill_recent(self, sub):
+        sub.clear()
+        try:
+            recent = json.loads(settings().value("recent_results", "[]") or "[]")
+        except (TypeError, ValueError):
+            recent = []
+        recent = [r for r in recent if os.path.exists(r.get("path", ""))]
+        if not recent:
+            a = sub.addAction(tr("Nothing yet"))
+            a.setEnabled(False)
+            return
+        from PySide6.QtCore import QFileInfo
+        from PySide6.QtWidgets import QFileIconProvider
+        prov = QFileIconProvider()
+        for r in recent:
+            p = Path(r["path"])
+            name = p.name if len(p.name) <= 46 else p.name[:43] + "…"
+            m = sub.addMenu(prov.icon(QFileInfo(str(p))), name)
+            m.setToolTipsVisible(True)
+            m.addAction(tr("Open"), lambda p=p: os.startfile(str(p)) if hasattr(os, "startfile") else None)
+            m.addAction(tr("Show in folder"), lambda p=p: winsys.reveal([str(p)]))
+            m.addAction(tr("Open in Float"), lambda p=p: self.actions.float([str(p)], {}))
+            info = m.addAction(r.get("what", ""))
+            info.setEnabled(False)
+        sub.addSeparator()
+        sub.addAction(tr("Clear this list"), lambda: settings().setValue("recent_results", "[]"))
 
     def _place_results(self, worker, outs):
         """Where results go (Settings → Output): replace the original (asks first) or copy to the clipboard.
         Returns the final paths, or None when the clipboard took them."""
         mode = settings().value("output_mode", "next")
         outs = [Path(o) for o in outs if o]
+        if worker.paths and worker.paths[0] in self.watch.done:
+            return outs                                  # watch folders keep results in their own folder
         if not outs or mode not in ("replace", "clipboard"):
             return outs
         if mode == "clipboard":
@@ -6979,6 +7895,13 @@ class DragWheelApp(QObject):
     def show_settings(self):
         SettingsDialog(self).exec()
 
+    def show_tour(self):
+        d = TourDialog(self)
+        d.show()
+        d.raise_()
+        d.activateWindow()
+        self._tour = d
+
     def show_help(self):
         k = {m: tr(v) for m, v in mode_keys().items()}
         message(tr("{app} — How it works", app=APP), tr("HELP_HTML", app=APP, convert=k["convert"],
@@ -7068,6 +7991,12 @@ def selftest() -> int:
 def main():
     import multiprocessing
     multiprocessing.freeze_support()      # worker processes of the frozen exe start here and exit
+    args = sys.argv[1:]
+    if args and args[0] == "--cli":                  # dragwheel.cmd
+        args = args[1:] or ["help"]
+    if args and args[0].lower() in ("convert", "tool", "list", "help", "/?", "-h"):
+        import cli
+        return cli.main(args)
     if sys.platform == "win32":
         try:
             import ctypes
@@ -7158,7 +8087,7 @@ def main():
                 winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"))
             except Exception:
                 pass
-        QTimer.singleShot(500, app.show_help)
+        QTimer.singleShot(500, app.show_tour)
     if "--send-phone" in flags and paths:
         QTimer.singleShot(300, lambda: app.actions.phone(paths, {}))
     elif "--play-link" in flags:

@@ -96,9 +96,11 @@ def _remove(path: str):
 
 
 class JobProcess:
-    def __init__(self, group, op_id, paths, params, output_dir, on_progress=None):
+    def __init__(self, group, op_id, paths, params, output_dir, on_progress=None, on_count=None):
         self.args = (group, op_id, list(paths), dict(params or {}), output_dir)
         self.on_progress = on_progress
+        self.on_count = on_count           # (done, total) for batches
+        self.failed: list[tuple[str, str]] = []
         self.outputs: list[str] = []     # planned output paths
         self.temps: list[str] = []
 
@@ -165,6 +167,19 @@ class JobProcess:
                     self.on_progress(float(val))
                 except Exception:
                     pass
+        elif kind == "count":
+            if self.on_count:
+                try:
+                    a, b = val.split("/")
+                    self.on_count(int(a), int(b))
+                except Exception:
+                    pass
+        elif kind == "failed":
+            try:
+                import json
+                self.failed.append(tuple(json.loads(val)))
+            except Exception:
+                pass
         elif kind == "out":
             self.outputs.append(val)
         elif kind == "tmp":

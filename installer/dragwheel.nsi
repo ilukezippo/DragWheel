@@ -166,6 +166,12 @@ Section "!$(SecCoreName)" SecCore
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
+  ; "dragwheel" command for scripts (this folder is on every user's PATH in Windows 10 and 11)
+  CreateDirectory "$LOCALAPPDATA\Microsoft\WindowsApps"
+  FileOpen $0 "$LOCALAPPDATA\Microsoft\WindowsApps\dragwheel.cmd" w
+  FileWrite $0 '@echo off$\r$\nrem DragWheel from the command line: dragwheel help$\r$\nstart "" /wait "$INSTDIR\${EXE}" --cli %*$\r$\nexit /b %errorlevel%$\r$\n'
+  FileClose $0
+
   ; Start Menu
   CreateDirectory "$SMPROGRAMS\${APPNAME}"
   CreateShortcut "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0
@@ -280,6 +286,7 @@ Function un.onInit
 FunctionEnd
 
 Section "Uninstall"
+  Delete "$LOCALAPPDATA\Microsoft\WindowsApps\dragwheel.cmd"
   !insertmacro StopDragWheel
   nsExec::Exec 'netsh advfirewall firewall delete rule name="DragWheel (Send to phone)"'
   Pop $0

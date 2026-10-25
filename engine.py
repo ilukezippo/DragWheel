@@ -111,6 +111,7 @@ class CancelToken:
         self.procs: list[subprocess.Popen] = []
         self.paths: list[Path] = []        # every output path handed out for this job
         self.on_path = None                # callback(kind, path) — lets a parent process clean up
+        self.batch = (0, 1)                # (file index, file count) while a batch runs one file at a time
         self._lock = threading.Lock()
 
     def cancel(self):
@@ -195,6 +196,8 @@ def report_progress(frac: float, token=None) -> None:
     """Tell the app how far the current job is (0..1); shown as a percentage on its notification."""
     t = token or _token()
     if t is not None and t.on_path:
+        i, n = getattr(t, "batch", (0, 1))
+        frac = (i + max(0.0, min(1.0, frac))) / max(1, n)      # a batch counts as one bar
         try:
             t.on_path("progress", f"{max(0.0, min(1.0, frac)):.4f}")
         except Exception:
@@ -3487,10 +3490,28 @@ def run_op(op: Op, paths: list[str], params: dict | None = None,
         if op.multi:
             outs = [op.fn(paths, params)]
         else:
-            outs = []
-            for p in paths:
+            outs, failed = [], []
+            n = len(paths)
+            for i, p in enumerate(paths):
                 check_cancel()
-                outs.append(op.fn(p, params))
+                if token is not None:
+                    token.batch = (i, n)
+                    if n > 1 and token.on_path:
+                        token.on_path("count", f"{i}/{n}")
+                try:
+                    outs.append(op.fn(p, params))
+                except (Cancelled, KeyboardInterrupt):
+                    raise
+                except Exception as e:                 # in a batch, one bad file doesn't stop the rest
+                    if n == 1 or (token is not None and token.cancelled):
+                        raise
+                    failed.append((Path(p).name, str(e) or e.__class__.__name__))
+                    if token is not None and token.on_path:
+                        token.on_path("failed", json.dumps([Path(p).name, str(e) or e.__class__.__name__]))
+            if n > 1 and token is not None and token.on_path:
+                token.on_path("count", f"{n}/{n}")
+            if failed and not outs:
+                raise ConversionError(failed[0][1])
         check_cancel()            # cancelled while a non-interruptible step was finishing
         flat = []                 # a tool may save several files (e.g. one .srt per language)
         for o in outs:

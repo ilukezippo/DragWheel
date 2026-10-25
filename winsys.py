@@ -132,6 +132,62 @@ def window_class(hwnd: int) -> str:
 # ----------------------------------------------------------------------------
 # Explorer selection
 # ----------------------------------------------------------------------------
+_FULL_MENU_KEY = r"Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
+
+
+def full_menu_enabled() -> bool:
+    """Windows 11: is the full right-click menu (the Windows 10 one, no 'Show more options') turned on?"""
+    if not IS_WIN:
+        return False
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _FULL_MENU_KEY):
+            return True
+    except OSError:
+        return False
+
+
+def set_full_menu(enabled: bool) -> None:
+    """Windows' own switch for the full right-click menu, for this user only. Explorer must restart to see it."""
+    import winreg
+    if enabled:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _FULL_MENU_KEY) as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "")
+    else:
+        for sub in (_FULL_MENU_KEY, _FULL_MENU_KEY.rsplit("\\", 1)[0]):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
+            except OSError:
+                pass
+    log(f"full right-click menu: {enabled}")
+
+
+def restart_explorer() -> None:
+    import subprocess
+    subprocess.run(["taskkill", "/f", "/im", "explorer.exe"], capture_output=True, creationflags=0x08000000)
+    subprocess.Popen([os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "explorer.exe")])
+
+
+def windows_11() -> bool:
+    import sys
+    return IS_WIN and sys.getwindowsversion().build >= 22000
+
+
+def bring_to_front(hwnd: int) -> None:
+    """Put a window above the others once (so it is seen), without making it stay on top."""
+    if not IS_WIN or not hwnd:
+        return
+    try:
+        flags = 0x0001 | 0x0002 | 0x0040          # NOSIZE | NOMOVE | SHOWWINDOW
+        sw = user32.SetWindowPos
+        sw.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        sw(hwnd, wintypes.HWND(-1), 0, 0, 0, 0, flags)      # HWND_TOPMOST …
+        sw(hwnd, wintypes.HWND(-2), 0, 0, 0, 0, flags)      # … then back to normal: it stays in front for now
+        user32.SetForegroundWindow(hwnd)
+    except Exception as e:
+        log(f"bring to front: {e}")
+
+
 def root_window_at(x: int, y: int) -> int:
     """Top-level window under a screen point."""
     if not IS_WIN:
