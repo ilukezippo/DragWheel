@@ -769,6 +769,12 @@ for _code, _vals in _m12.T.items():
     assert len(_vals) == len(_m12.KEYS), _code
     T[_code].update(dict(zip(_m12.KEYS, _vals)))
 
+from locales import ux12 as _x12  # noqa: E402
+
+for _code, _vals in _x12.T.items():
+    assert len(_vals) == len(_x12.KEYS), _code
+    T[_code].update(dict(zip(_x12.KEYS, _vals)))
+
 for _code, _live in {"ar": "مباشر", "fr": "EN DIRECT", "es": "EN DIRECTO", "tr": "CANLI", "de": "LIVE", "ru": "ПРЯМОЙ ЭФИР",
                      "zh": "直播", "ja": "ライブ", "pt": "AO VIVO", "it": "IN DIRETTA", "hi": "लाइव", "fa": "زنده",
                      "ur": "براہ راست"}.items():

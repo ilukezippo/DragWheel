@@ -30,6 +30,52 @@ if IS_WIN:
         _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
+def _guid(text):
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", ctypes.c_uint32), ("b", ctypes.c_uint16), ("c", ctypes.c_uint16), ("d", ctypes.c_ubyte * 8)]
+    g = GUID()
+    ctypes.oledll.ole32.CLSIDFromString(ctypes.c_wchar_p(text), ctypes.byref(g))
+    return g
+
+
+def _vcall(ptr, index, *args, argtypes=()):
+    """Call method number `index` of a COM interface pointer."""
+    vtbl = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    fn = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, *argtypes)(vtbl[index])
+    return fn(ptr, *args)
+
+
+def system_volume():
+    """Windows' speaker volume as (0..1, muted), or None. Core Audio IAudioEndpointVolume through plain ctypes."""
+    if not IS_WIN:
+        return None
+    ole32 = ctypes.oledll.ole32
+    try:
+        ole32.CoInitialize(None)
+    except OSError:
+        pass
+    enum, dev, vol = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+    try:
+        ole32.CoCreateInstance(ctypes.byref(_guid("{BCDE0395-E52F-467C-8E3D-C4579291692E}")), None, 23,
+                               ctypes.byref(_guid("{A95664D2-9614-4F35-A746-DE8DB63617E6}")), ctypes.byref(enum))
+        _vcall(enum, 4, 0, 1, ctypes.byref(dev),                                  # GetDefaultAudioEndpoint(render, multimedia)
+               argtypes=(ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)))
+        iid = _guid("{5CDF2C82-841E-4546-9722-0CF74078229A}")
+        _vcall(dev, 3, ctypes.byref(iid), 23, None, ctypes.byref(vol),           # Activate(IAudioEndpointVolume)
+               argtypes=(ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)))
+        level, muted = ctypes.c_float(), ctypes.c_int()
+        _vcall(vol, 9, ctypes.byref(level), argtypes=(ctypes.POINTER(ctypes.c_float),))   # GetMasterVolumeLevelScalar
+        _vcall(vol, 15, ctypes.byref(muted), argtypes=(ctypes.POINTER(ctypes.c_int),))     # GetMute
+        return max(0.0, min(1.0, level.value)), bool(muted.value)
+    except Exception as e:
+        log(f"system volume: {e}")
+        return None
+    finally:
+        for p in (vol, dev, enum):
+            if p.value:
+                _vcall(p, 2)                                                       # Release
+
+
 def key_down(vk: int) -> bool:
     if not IS_WIN:
         return False
@@ -677,10 +723,60 @@ def quick_share_installed() -> str | None:
         for sub in ("Google\\NearbyShare", "Google\\QuickShare", "Google\\Quick Share", "Google\\Nearby Share"):
             d = Path(root) / sub
             if d.is_dir():
-                for exe in d.rglob("*.exe"):
-                    n = exe.name.lower()
-                    if ("nearby" in n or "quick" in n) and "uninstall" not in n and "update" not in n:
-                        return str(exe)
+                for name in ("nearby_share.exe", "quick_share.exe", "QuickShare.exe"):    # the app itself, not its helpers
+                    hit = next(d.rglob(name), None)
+                    if hit:
+                        return str(hit)
+    return None
+
+
+def drop_files_on(target, paths) -> bool:
+    """Drop files on `target` (a shortcut, program or folder) exactly as Explorer's drag-and-drop or Send To does."""
+    if not IS_WIN or not paths:
+        return False
+    import pythoncom
+    from win32com.shell import shell
+    try:
+        pythoncom.OleInitialize()
+    except Exception:
+        pass
+    desktop = shell.SHGetDesktopFolder()
+
+    def split(path):
+        pidl, _attrs = shell.SHParseDisplayName(str(path), 0)
+        parent = pidl[:-1]
+        folder = desktop.BindToObject(parent, None, shell.IID_IShellFolder) if parent else desktop
+        return folder, pidl[-1:]
+
+    tfolder, tchild = split(target)
+    drop = tfolder.GetUIObjectOf(0, [tchild], pythoncom.IID_IDropTarget, 0)[1]
+    groups = {}
+    for p in paths:
+        groups.setdefault(str(Path(p).parent), []).append(Path(p))
+    done = False
+    for _parent, items in groups.items():
+        folder, _c = split(items[0])
+        kids = [split(x)[1] for x in items]
+        data = folder.GetUIObjectOf(0, kids, pythoncom.IID_IDataObject, 0)[1]
+        effect = drop.DragEnter(data, 1, (0, 0), 1)            # left button, copy
+        if not effect:
+            drop.DragLeave()
+            continue
+        drop.Drop(data, 1, (0, 0), 1)
+        done = True
+    log(f"dropped {len(paths)} item(s) on {Path(target).name}: {done}")
+    return done
+
+
+def sendto_entry(*words) -> Path | None:
+    """A shortcut in the user's Send To folder whose name contains one of `words`."""
+    folder = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "SendTo"
+    try:
+        for f in folder.iterdir():
+            if any(w.lower() in f.name.lower() for w in words):
+                return f
+    except OSError:
+        pass
     return None
 
 

@@ -715,6 +715,20 @@ def _link_log(msg):
         pass
 
 
+# YouTube live: some players' streams get "403 Forbidden" on segments after a few seconds (they need a token
+# DragWheel doesn't have). Players that did that are remembered for the session and skipped next time.
+LIVE_BAD_CLIENTS = set()
+_LIVE_CLIENT_RANK = {"TVHTML5": 0, "TVHTML5_SIMPLY_EMBEDDED_PLAYER": 0, "IOS": 1, "ANDROID_VR": 2, "ANDROID": 2,
+                     "WEB_SAFARI": 3, "MWEB": 4, "WEB": 5}
+
+
+def yt_client(url) -> str:
+    """Which YouTube player a stream link was made for ("TVHTML5", "WEB", ...), or ""."""
+    import re as _re
+    m = _re.search(r"[/?&]c[/=]([A-Z0-9_]+)", url or "")
+    return m.group(1) if m else ""
+
+
 def _pick_formats(info, max_h=1080, live=False) -> dict:
     """Choose what the float plays, up to max_h lines:
     live -> the HLS stream (DragWheel's relay follows it);
@@ -736,7 +750,12 @@ def _pick_formats(info, max_h=1080, live=False) -> dict:
     both = [f for f in fmts if has_v(f) and has_a(f)]
     out = None
     if live:
-        f = pick([x for x in both if is_hls(x)]) or pick(both)
+        hls = [x for x in both if is_hls(x)]
+        good = [x for x in hls if yt_client(x["url"]) not in LIVE_BAD_CLIENTS] or hls
+        if good:                                       # the most reliable player first, then the best picture
+            best = min(_LIVE_CLIENT_RANK.get(yt_client(x["url"]), 3) for x in good)
+            good = [x for x in good if _LIVE_CLIENT_RANK.get(yt_client(x["url"]), 3) == best]
+        f = pick(good) or pick(both)
         if f:
             out = {"url": f["url"], "headers": f.get("http_headers") or {}, "height": h(f)}
     else:
@@ -805,10 +824,11 @@ def resolve_link(url, quality=None, _updated=False) -> dict:
     out = dict(choice, title=info.get("title") or url, page=info.get("webpage_url") or url)
     out["headers"] = {k: v for k, v in (out.get("headers") or {}).items()
                       if k.lower() in ("user-agent", "referer", "origin", "cookie", "accept-language")}
+    out["client"] = yt_client(out.get("url"))
     if live:
         out["live"] = True
     _link_log(f"link opened in {_t.monotonic() - t0:.1f}s: {out.get('height')}p"
-              + (" live" if live else "") + (" (picture + sound apart)" if out.get("audio") else ""))
+              + (f" live via {out['client'] or '?'}" if live else "") + (" (picture + sound apart)" if out.get("audio") else ""))
     return out
 
 

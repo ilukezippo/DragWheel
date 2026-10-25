@@ -594,7 +594,6 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
 
 
 QUICK_SHARE_URL = "https://www.android.com/better-together/quick-share-app/"
-TEMP_HOSTS = ("litterbox.catbox.moe", "tmpfiles.org")
 
 
 class _Upload:
@@ -640,51 +639,89 @@ class _Upload:
         self.f.close()
 
 
-def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: False) -> tuple[str, str]:
-    """Upload to a free temporary host; returns (download link, host). Litterbox for 1/12/24/72 hours (up to 1 GB);
-    tmpfiles.org for shorter times (5-59 minutes) or as the fallback (up to 100 MB, up to 48 h)."""
-    hours = minutes // 60
-    import json as _json
+def _post_upload(url, path, field, fields, progress, cancelled, timeout=180):
     import urllib.request
+    body = _Upload(path, field, fields, progress, cancelled)
+    try:
+        req = urllib.request.Request(url, data=body, headers={
+            "Content-Type": f"multipart/form-data; boundary={body.boundary}", "Content-Length": str(body.total),
+            "User-Agent": f"DragWheel/{VERSION} (Windows)", "Accept": "*/*"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace").strip()
+    finally:
+        body.close()
+
+
+def _host_litterbox(path, minutes, progress, cancelled):
+    hours = min((h for h in (1, 12, 24, 72) if h * 60 >= minutes), default=72)
+    link = _post_upload("https://litterbox.catbox.moe/resources/internals/api.php", path, "fileToUpload",
+                        {"reqtype": "fileupload", "time": f"{hours}h"}, progress, cancelled)
+    if not link.startswith("https://"):
+        raise OSError(link[:120])
+    return link
+
+
+def _host_0x0(path, minutes, progress, cancelled):
+    link = _post_upload("https://0x0.st", path, "file", {"expires": str(max(1, -(-minutes // 60)))}, progress, cancelled)
+    if not link.startswith("https://"):
+        raise OSError(link[:120])
+    return link
+
+
+def _host_tmpfiles(path, minutes, progress, cancelled):
+    import json as _json
+    data = _json.loads(_post_upload("https://tmpfiles.org/api/v1/upload", path, "file",
+                                    {"expire": str(min(48 * 60, minutes) * 60)}, progress, cancelled))
+    return data["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/", 1)
+
+
+def _host_uguu(path, minutes, progress, cancelled):
+    import json as _json
+    data = _json.loads(_post_upload("https://uguu.se/upload", path, "files[]", {}, progress, cancelled))
+    return data["files"][0]["url"]
+
+
+# name, function, size limit in MB, longest it keeps a file (minutes)
+TEMP_HOSTS = [("litterbox.catbox.moe", _host_litterbox, 1000, 72 * 60),
+              ("0x0.st", _host_0x0, 512, 365 * 24 * 60),
+              ("tmpfiles.org", _host_tmpfiles, 100, 48 * 60),
+              ("uguu.se", _host_uguu, 128, 3 * 60)]
+
+
+def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: False) -> tuple[str, str]:
+    """Upload to a free temporary host; returns (download link, host). Several hosts are tried in turn, because a
+    network, country or security app may block one of them. Short times (under an hour) prefer hosts that delete soon."""
     size = Path(path).stat().st_size
+    mb = size / (1024 * 1024)
+    order = ["litterbox.catbox.moe", "0x0.st", "tmpfiles.org", "uguu.se"] if minutes >= 60 else \
+        ["tmpfiles.org", "uguu.se", "0x0.st", "litterbox.catbox.moe"]
+    hosts = {h[0]: h for h in TEMP_HOSTS}
     errors = []
-    if minutes < 60 and size > 100 * 1024 * 1024:
-        raise OSError(tr("Links shorter than an hour work for files up to 100 MB. Choose 1 hour or more."))
-    if minutes >= 60 and size <= 1000 * 1024 * 1024:
-        body = _Upload(path, "fileToUpload", {"reqtype": "fileupload", "time": f"{hours}h"}, progress, cancelled)
-        try:
-            req = urllib.request.Request("https://litterbox.catbox.moe/resources/internals/api.php", data=body,
-                                         headers={"Content-Type": f"multipart/form-data; boundary={body.boundary}",
-                                                  "Content-Length": str(body.total), "User-Agent": f"DragWheel/{VERSION}"})
-            with urllib.request.urlopen(req, timeout=120) as r:
-                link = r.read().decode("utf-8", "replace").strip()
-            if link.startswith("https://"):
-                return link, TEMP_HOSTS[0]
-            errors.append(f"litterbox: {link[:120]}")
-        except Exception as e:
+    for name in order:
+        _n, fn, limit, _keep = hosts[name]
+        if mb > limit:
+            continue
+        for attempt in (1, 2):
             if cancelled():
-                raise
-            errors.append(f"litterbox: {e}")
-        finally:
-            body.close()
-    if size <= 100 * 1024 * 1024:
-        body = _Upload(path, "file", {"expire": str(min(48 * 60, minutes) * 60)}, progress, cancelled)
-        try:
-            req = urllib.request.Request("https://tmpfiles.org/api/v1/upload", data=body,
-                                         headers={"Content-Type": f"multipart/form-data; boundary={body.boundary}",
-                                                  "Content-Length": str(body.total), "User-Agent": f"DragWheel/{VERSION}"})
-            with urllib.request.urlopen(req, timeout=120) as r:
-                url = _json.loads(r.read().decode("utf-8", "replace"))["data"]["url"]
-            return url.replace("tmpfiles.org/", "tmpfiles.org/dl/", 1), TEMP_HOSTS[1]
-        except Exception as e:
-            if cancelled():
-                raise
-            errors.append(f"tmpfiles: {e}")
-        finally:
-            body.close()
-    winsys.log("temporary upload failed: " + " | ".join(errors))
-    if size > 1000 * 1024 * 1024:
+                raise OSError("cancelled")
+            try:
+                progress(0.0)
+                link = fn(path, minutes, progress, cancelled)
+                winsys.log(f"temporary upload: {name} ok ({mb:.1f} MB, {minutes} min)" +
+                           (f" after: {' | '.join(errors)}" if errors else ""))
+                return link, name
+            except Exception as e:
+                if cancelled():
+                    raise
+                errors.append(f"{name}#{attempt}: {type(e).__name__}: {e}")
+                if "EOF occurred" not in str(e) and "timed out" not in str(e) and "reset" not in str(e).lower():
+                    break                                  # only retry dropped connections
+    winsys.log(f"temporary upload failed ({mb:.1f} MB, {minutes} min): " + " | ".join(errors))
+    if mb > 1000:
         raise OSError(tr("Too big for an internet link (the limit is 1 GB)."))
+    if errors and all("EOF occurred" in e or "CERTIFICATE" in e.upper() or "SSL" in e.upper() for e in errors):
+        raise OSError(tr("The upload was cut off by something on this PC or network, often an antivirus that checks "
+                         "secure connections (like ESET). Let DragWheel through it, or try Quick Share."))
     raise OSError(tr("Couldn't upload. Check the internet connection and try again."))
 
 
@@ -716,9 +753,8 @@ class InternetShare(QDialog):
         self.hours.setCurrentIndex(max(0, self.hours.findData(int(settings().value("share_minutes", 60)))))
         row.addWidget(self.hours, 1)
         lay.addLayout(row)
-        note = QLabel(tr("The file is uploaded to a free temporary file service (litterbox.catbox.moe, or tmpfiles.org) and "
-                         "deleted automatically after that time. Anyone with the link can download it until then. Up to 1 GB "
-                         "(100 MB for links shorter than an hour)."))
+        note = QLabel(tr("The file is uploaded to a free temporary file service (DragWheel tries several in turn) and deleted "
+                         "automatically after about that time. Anyone with the link can download it until then. Up to 1 GB."))
         note.setWordWrap(True)
         note.setFixedWidth(360)
         note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
@@ -840,6 +876,8 @@ class SendChooser(QDialog):
         for key, title, desc in (
                 ("quick", tr("Quick Share"), tr("Google's Quick Share sends straight to a nearby Android phone. No network setup.")),
                 ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network and any phone, iPhone too. Deleted after 5 minutes to 72 hours.")),
+                ("iphone", tr("iPhone (instead of AirDrop)"), tr("AirDrop only works between Apple devices, so Windows can't use it. "
+                                                                  "This makes an internet link instead: scan the code with the iPhone camera.")),
                 ("bluetooth", tr("Bluetooth"), tr("Slower, but needs no network. Works with phones paired to this PC (Android; iPhones can't receive files over Bluetooth).")),
                 ("wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Nothing leaves your home, but routers and firewalls can block it."))):
             b = QPushButton(f"{title}\n{desc}")
@@ -1011,8 +1049,16 @@ class Actions:
         if not files:
             self.app.toast.show_msg(tr("Bluetooth"), tr("Pick files, not folders"), "err", 5000)
             return
-        import subprocess
-        subprocess.Popen([str(exe), *files])
+        ok = False
+        link = winsys.sendto_entry("bluetooth")
+        if link is not None:
+            try:                                          # what right-click → Send to → Bluetooth device does
+                ok = winsys.drop_files_on(link, files)
+            except Exception as e:
+                winsys.log(f"bluetooth drop: {e}")
+        if not ok:
+            import subprocess
+            subprocess.Popen([str(exe), *files])
         self.app.toast.show_msg(tr("Bluetooth"), tr("Choose your phone in the Bluetooth window, then accept the files on the phone. "
                                                     "The phone must be paired with this PC first."), "info", 8000)
 
@@ -1247,6 +1293,14 @@ class ModelDownload(QRunnable):
 # ============================================================================
 # The wheel
 # ============================================================================
+WHEEL_ANIMS = [("circle", "Circle"), ("fade", "Fade"), ("spin", "Spin"), ("none", "None")]
+
+
+def wheel_anim() -> str:
+    v = settings().value("wheel_anim", "circle")
+    return v if v in dict(WHEEL_ANIMS) else "circle"
+
+
 class Wheel(QWidget):
     R_IN = 62
     R_MID = 158
@@ -1272,7 +1326,31 @@ class Wheel(QWidget):
         self.opacity_anim.setDuration(110)
         self.opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
         self.pill_timer = QTimer(self, singleShot=True, interval=380, timeout=self._pill_dwell)
+        self._t = 1.0                     # 0 = closed, 1 = fully open (open/close animation)
+        self._closing = False
+        self._style = "circle"
+        self.t_anim = QVariantAnimation(self)
+        self.t_anim.valueChanged.connect(self._set_t)
+        self.t_anim.finished.connect(self._anim_done)
         self._resize_for(1)
+
+    def _set_t(self, v):
+        self._t = float(v)
+        self.update()
+
+    def _animate(self, to):
+        self.t_anim.stop()
+        opening = to > self._t
+        fast = self._style == "fade"
+        self.t_anim.setDuration((130 if fast else 190) if opening else (110 if fast else 140))
+        self.t_anim.setEasingCurve(QEasingCurve.OutCubic if opening else QEasingCurve.InCubic)
+        self.t_anim.setStartValue(self._t)
+        self.t_anim.setEndValue(float(to))
+        self.t_anim.start()
+
+    def _anim_done(self):
+        if self._closing and self._t <= 0.001:
+            self._finish_hide()
 
     # ------------------------------------------------------------- geometry
     def _rings(self):
@@ -1348,7 +1426,11 @@ class Wheel(QWidget):
             x = max(geo.left(), min(x, geo.right() - self.width()))
             y = max(geo.top(), min(y, geo.bottom() - self.height()))
         self.move(x, y)
-        self.setWindowOpacity(0.0)
+        self._closing = False
+        self._style = wheel_anim()
+        self.t_anim.stop()
+        self._t = 0.0 if self._style != "none" else 1.0
+        self.setWindowOpacity(1.0)
         if click_mode:
             self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, False)
         else:
@@ -1358,13 +1440,25 @@ class Wheel(QWidget):
         if click_mode:
             self.activateWindow()
             self.setFocus()
-        self.opacity_anim.stop()
-        self.opacity_anim.setStartValue(0.0)
-        self.opacity_anim.setEndValue(1.0)
-        self.opacity_anim.start()
+        if self._style != "none":
+            self._animate(1.0)
 
     def dismiss(self):
         self.pill_timer.stop()
+        if self.isVisible() and self._style != "none" and not self._closing:
+            self._closing = True                       # keep drawing what was there while it goes away
+            self._animate(0.0)
+            return
+        if not self._closing:
+            self._finish_hide()
+
+    def is_open(self) -> bool:
+        return self.isVisible() and not self._closing
+
+    def _finish_hide(self):
+        self._closing = False
+        self.t_anim.stop()
+        self._t = 1.0
         self.hide()
         self.paths = []
         self.ops = []
@@ -1375,6 +1469,9 @@ class Wheel(QWidget):
         return [u.toLocalFile() for u in md.urls() if u.isLocalFile() and u.toLocalFile()]
 
     def dragEnterEvent(self, e):
+        if self._closing:
+            e.ignore()
+            return
         paths = self._paths_from(e.mimeData())
         if not paths:
             e.ignore()
@@ -1462,6 +1559,9 @@ class Wheel(QWidget):
         self._track(e.position())
 
     def mousePressEvent(self, e):
+        if self._closing:
+            e.ignore()
+            return
         kind, val = self.hit(e.position())
         if kind == "pill":
             self.set_mode(val)
@@ -1509,6 +1609,29 @@ class Wheel(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
         c = self.center()
+        t = max(0.0, min(1.0, self._t))
+        if t < 1.0:                                   # opening / closing animation
+            if t <= 0.0:
+                return
+            if self._style == "circle":               # grows out of the pointer as a circle
+                sc = 0.8 + 0.2 * t
+                p.translate(c)
+                p.scale(sc, sc)
+                p.translate(-c)
+                reach = math.hypot(self.width(), self.height())
+                clip = QPainterPath()
+                clip.addEllipse(c, 30 + t * reach, 30 + t * reach)
+                p.setClipPath(clip)
+                p.setOpacity(min(1.0, 0.35 + t))
+            elif self._style == "spin":
+                sc = 0.9 + 0.1 * t
+                p.translate(c)
+                p.rotate(-28 * (1 - t))
+                p.scale(sc, sc)
+                p.translate(-c)
+                p.setOpacity(t)
+            else:
+                p.setOpacity(t)
         rings = self._rings()
         outer = rings[-1][1]
 
@@ -2153,6 +2276,7 @@ class LiveRelay:
         args = ["-hide_banner", "-loglevel", "warning", "-fflags", "+genpts"]
         self.last_data = time.monotonic()
         self.total = 0
+        self.forbidden = False
         ua = next((v for k, v in hdr.items() if k.lower() == "user-agent"), None)
         if ua:
             args += ["-user_agent", ua]
@@ -2177,12 +2301,23 @@ class LiveRelay:
                 t0 = time.monotonic()
 
                 def errors(stream=proc.stderr):            # ffmpeg's own warnings, so a stall can be explained
-                    n = 0
+                    n = forbidden = 0
                     for raw in iter(stream.readline, b""):
                         line = raw.decode("utf-8", "replace").strip()
-                        if line and n < 40:
+                        if line and n < 12:
                             n += 1
                             winsys.log(f"live relay ffmpeg [{time.monotonic() - t0:.0f}s]: {line[:220]}")
+                        if "403 Forbidden" in line:
+                            forbidden += 1
+                            if forbidden == 3:             # this player's stream is refused: use another one
+                                client = engine.yt_client(url)
+                                engine.LIVE_BAD_CLIENTS.add(client)
+                                relay.forbidden = True
+                                winsys.log(f"live relay: YouTube refuses the {client or '?'} stream, switching player")
+                                try:
+                                    proc.kill()
+                                except Exception:
+                                    pass
                 threading.Thread(target=errors, daemon=True).start()
                 sent = 0
                 try:
@@ -2251,9 +2386,10 @@ class MediaOSD(QWidget):
         return s.value("media_osd_when", "unfocused") == "always" or not focused
 
     @classmethod
-    def flash(cls, kind, near=None):
+    def flash(cls, kind, near=None, level=None):
         if cls._one is None:
             cls._one = MediaOSD()
+        cls._one.level = level
         cls._one._show(kind, near)
 
     def __init__(self):
@@ -2262,6 +2398,7 @@ class MediaOSD(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.kind = "play"
+        self.level = None
         self.setFixedSize(180, 180)
         self._hold = QTimer(self, singleShot=True, timeout=self._fade)
         self._anim = QPropertyAnimation(self, b"windowOpacity", self)
@@ -2324,6 +2461,38 @@ class MediaOSD(QWidget):
             tri(cx + 40, False)
             tri(cx + 4, False)
             p.drawRoundedRect(QRectF(cx - 49, cy - 28, 9, 56), 2, 2)
+        elif k in ("volume", "mute"):
+            sy = cy - 16                                   # speaker a little higher, the level bar under it
+            sp = QPolygonF([QPointF(cx - 38, sy - 11), QPointF(cx - 26, sy - 11), QPointF(cx - 8, sy - 28),
+                            QPointF(cx - 8, sy + 28), QPointF(cx - 26, sy + 11), QPointF(cx - 38, sy + 11)])
+            path.addPolygon(sp)
+            path.closeSubpath()
+            pen = QPen(QColor(255, 255, 255, 215), 6, Qt.SolidLine, Qt.RoundCap)
+            lvl = self.level if self.level is not None else 1.0
+            if k == "mute" or lvl <= 0.001:
+                p.setPen(pen)
+                p.drawLine(QPointF(cx + 6, sy - 14), QPointF(cx + 34, sy + 14))
+                p.drawLine(QPointF(cx + 34, sy - 14), QPointF(cx + 6, sy + 14))
+            else:
+                p.setPen(pen)
+                p.setBrush(Qt.NoBrush)
+                for i, r in enumerate((14, 26, 38)):
+                    if lvl > i / 3 or i == 0:
+                        p.drawArc(QRectF(cx - 8 - r, sy - r, 2 * r, 2 * r), -45 * 16, 90 * 16)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 215))
+            bar = QRectF(cx - 50, cy + 34, 100, 8)
+            p.setBrush(QColor(255, 255, 255, 70))
+            p.drawRoundedRect(bar, 4, 4)
+            p.setBrush(QColor(255, 255, 255, 215) if k == "volume" else QColor(255, 255, 255, 110))
+            p.drawRoundedRect(QRectF(bar.x(), bar.y(), bar.width() * lvl, bar.height()), 4, 4)
+            f = QFont("Segoe UI", 10, QFont.DemiBold)
+            p.setFont(f)
+            p.setPen(QColor(255, 255, 255, 215))
+            p.drawText(QRectF(cx - 50, cy + 44, 100, 22), Qt.AlignCenter, f"{round(lvl * 100)}")
+            p.setPen(Qt.NoPen)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 215))
         p.drawPath(path.simplified())
         p.end()
 
@@ -2902,6 +3071,15 @@ class FloatWindow(QWidget):
         recent = [t for t in getattr(self, "_live_reloads", []) if now - t < 60] + [now]
         self._live_reloads = recent
         spare = getattr(self, "_spare", None)
+        if spare and spare[1].get("client") in engine.LIVE_BAD_CLIENTS:
+            spare = self._spare = None                   # made for a player YouTube now refuses
+        relay = getattr(self, "_relay", None)
+        if relay is not None and relay.forbidden and not spare and _APP is not None:
+            winsys.log("float: live stream re-opened with another player")
+            relay.forbidden = False
+            self._live_reloads = []
+            _APP._resolve_and_play(self.link["page"], self, quiet=True)
+            return
         if spare and now - spare[0] < 90:                 # a fresh link is ready: switch to it right away
             self._spare = None
             winsys.log("float: live stream switched to the fresh link")
@@ -5051,6 +5229,35 @@ def custom_ops_for(mode, paths) -> list:
     return out
 
 
+class WheelPreview(QLabel):
+    """The wheel as it will look, drawn by the real Wheel (never shown on its own)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.wheel = Wheel(_APP)
+        self.wheel._style = "none"
+        self.setMinimumSize(300, 330)
+        self.setAlignment(Qt.AlignCenter)
+
+    def show_ops(self, mode, paths, ops, hover=-1):
+        w = self.wheel
+        w.mode, w.paths = mode, paths
+        w.ops = ops or [engine.Op("none", "No conversions" if mode == "convert" else "No tools", lambda *a: None)]
+        w.hover = hover if ops else -1
+        w._t = 1.0
+        img = w.grab()
+        dpr = self.devicePixelRatioF() or 1.0
+        side = min(self.width(), self.height()) * dpr
+        pm = img.scaled(int(side), int(side), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pm.setDevicePixelRatio(dpr)
+        self.setPixmap(pm)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.wheel.ops:
+            self.show_ops(self.wheel.mode, self.wheel.paths, self.wheel.ops, self.wheel.hover)
+
+
 class WheelLayoutDialog(QDialog):
     """Pick which slices show on a wheel for a file type, and their order (drag to reorder)."""
 
@@ -5059,7 +5266,7 @@ class WheelLayoutDialog(QDialog):
         from PySide6.QtWidgets import QListWidget, QAbstractItemView
         self.setWindowTitle(f"{APP} — " + tr("Wheel slices"))
         self.setStyleSheet(i18n.css(DIALOG_CSS))
-        self.resize(460, 560)
+        self.resize(820, 580)
         lay = QVBoxLayout(self)
         row = QHBoxLayout()
         self.mode = QComboBox()
@@ -5076,7 +5283,16 @@ class WheelLayoutDialog(QDialog):
         self.list = QListWidget()
         self.list.setDragDropMode(QAbstractItemView.InternalMove)
         self.list.setDefaultDropAction(Qt.MoveAction)
-        lay.addWidget(self.list, 1)
+        body = QHBoxLayout()
+        body.addWidget(self.list, 1)
+        self.preview = WheelPreview()
+        body.addWidget(self.preview, 1)
+        lay.addLayout(body, 1)
+        self._ops_now = []
+        self._redraw = QTimer(self, singleShot=True, interval=0, timeout=self._update_preview)
+        self.list.model().rowsMoved.connect(lambda *a: self._redraw.start())
+        self.list.itemChanged.connect(lambda *a: self._redraw.start())
+        self.list.currentRowChanged.connect(lambda *a: self._redraw.start())
         hint = QLabel(tr("Untick a slice to hide it. Drag to change the order — the first ones go at the top of the wheel."))
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
@@ -5128,6 +5344,8 @@ class WheelLayoutDialog(QDialog):
         order = {k: i for i, k in enumerate(lay.get("order", []))}
         ops = self._ops(mode, cat)
         ops = sorted(ops, key=lambda o: order.get(o.id, 10_000 + ops.index(o)))
+        self._ops_now = ops
+        self.list.blockSignals(True)
         self.list.clear()
         for o in ops:
             it = QListWidgetItem(tr(o.label) + (f"   ·  {tr(o.hint)}" if o.hint else ""))
@@ -5135,6 +5353,24 @@ class WheelLayoutDialog(QDialog):
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
             it.setCheckState(Qt.Unchecked if o.id in hidden else Qt.Checked)
             self.list.addItem(it)
+        self.list.blockSignals(False)
+        self._redraw.start()
+
+    def _update_preview(self):
+        by_id = {o.id: o for o in self._ops_now}
+        shown, hover = [], -1
+        cur = self.list.currentRow()
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            o = by_id.get(it.data(Qt.UserRole))
+            if o is None or it.checkState() != Qt.Checked:
+                continue
+            if i == cur:
+                hover = len(shown)
+            shown.append(o)
+        cat = self.kind.currentData()
+        paths = [engine._fake_path(cat)] if cat != "folder" else ["C:/example/folder"]
+        self.preview.show_ops(self.mode.currentData(), paths, shown, hover)
 
     def _reset(self):
         self.layouts.pop(self._key, None)
@@ -5402,6 +5638,7 @@ class SettingsDialog(QDialog):
             "on_top": self.on_top.isChecked(),
             "ctrl_open": self.ctrl_open.isChecked(),
             "media_osd": self.media_osd.isChecked(),
+            "anim": self.anim.currentData(),
             "media_osd_when": self.media_osd_when.currentData(),
         }
 
@@ -5421,6 +5658,7 @@ class SettingsDialog(QDialog):
             "on_top": s.value("float_on_top", "true") == "true",
             "ctrl_open": s.value("float_ctrl_open", "true") == "true",
             "media_osd": s.value("media_osd", "true") == "true",
+            "anim": wheel_anim(),
             "media_osd_when": s.value("media_osd_when", "unfocused"),
         }
 
@@ -5524,6 +5762,11 @@ class SettingsDialog(QDialog):
         self.scroll = QCheckBox(tr("Scroll the mouse wheel while dragging to open the wheel and move between slices"))
         self.scroll.setChecked(st["scroll"])
         f1.addRow(self.scroll)
+        self.anim = QComboBox()
+        for k, label in WHEEL_ANIMS:
+            self.anim.addItem(tr(label), k)
+        self.anim.setCurrentIndex(max(0, self.anim.findData(st["anim"])))
+        f1.addRow(tr("Opening and closing"), self.anim)
         lay.addWidget(g1)
 
         g2 = QGroupBox(tr("Output"))
@@ -5560,7 +5803,7 @@ class SettingsDialog(QDialog):
         self.ctrl_open = QCheckBox(tr("Hold Ctrl and double-click a file, or press Ctrl+Enter, to open it in Float"))
         self.ctrl_open.setChecked(st["ctrl_open"])
         vf.addWidget(self.ctrl_open)
-        self.media_osd = QCheckBox(tr("Show a big play/pause sign on screen when the keyboard's media keys control a float"))
+        self.media_osd = QCheckBox(tr("Show a big sign on screen (play, pause, next, volume…) when the keyboard's media keys control a float"))
         self.media_osd.setChecked(st["media_osd"])
         vf.addWidget(self.media_osd)
         self.media_osd_when = QComboBox()
@@ -5850,6 +6093,7 @@ class SettingsDialog(QDialog):
         s.setValue("float_on_top", "true" if self.on_top.isChecked() else "false")
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
+        s.setValue("wheel_anim", self.anim.currentData())
         s.setValue("media_osd_when", self.media_osd_when.currentData())
         self.app.watcher.refresh_settings()
         engine.OUTPUT_DIR = (self.out.text().strip() or None) if mode == "folder" else None
@@ -6130,7 +6374,7 @@ class DragWheelApp(QObject):
 
     # ---- triggers
     def on_tap(self, mode):
-        if self.wheel.isVisible():
+        if self.wheel.is_open():
             if mode != self.wheel.mode:
                 self.wheel.set_mode(mode)
             if not self.wheel.paths:
@@ -6150,7 +6394,7 @@ class DragWheelApp(QObject):
 
     def on_scroll(self, delta):
         w = self.wheel
-        if not w.isVisible():
+        if not w.is_open():
             w.popup("convert", click_mode=False)
             self._fill_from_explorer()
             return
@@ -6158,25 +6402,25 @@ class DragWheelApp(QObject):
             w.scroll_step(1 if delta < 0 else -1)
 
     def on_drag_cancel(self):
-        if self.wheel.isVisible() and not self.wheel.click_mode:
+        if self.wheel.is_open() and not self.wheel.click_mode:
             winsys.log("drag cancelled with Esc")
             self.wheel.dismiss()
 
     def on_drag_move(self):
         w = self.wheel
-        if w.isVisible() and not w.click_mode:
+        if w.is_open() and not w.click_mode:
             w._track(QPointF(w.mapFromGlobal(QCursor.pos())))
 
     def on_release(self):
         w = self.wheel
-        if w.isVisible() and not w.click_mode:
+        if w.is_open() and not w.click_mode:
             pos = QPointF(w.mapFromGlobal(QCursor.pos()))
             # give a real OLE drop time to arrive; if it doesn't, apply the slice under the cursor
             QTimer.singleShot(350, lambda: self._finish_drag(pos))
 
     def _finish_drag(self, pos):
         w = self.wheel
-        if not w.isVisible() or w.click_mode or w.dropped:
+        if not w.is_open() or w.click_mode or w.dropped:
             return
         kind, val = w.hit(pos)
         if w.scroll_active and 0 <= w.hover < len(w.ops):
@@ -6406,6 +6650,23 @@ class DragWheelApp(QObject):
                 if shown and MediaOSD.wanted(focused):
                     MediaOSD.flash(shown, target)
             self._media_down[vk] = down
+        # volume and mute keys: Windows changes the volume; show it big while a float is playing
+        import time
+        vol_keys = [vk for vk in (0xAD, 0xAE, 0xAF) if winsys.key_down(vk)]
+        playing = [f for f in floats if f._playing()]
+        if vol_keys and playing and time.monotonic() >= getattr(self, "_vol_next", 0):
+            fresh = any(not self._media_down.get(vk) for vk in vol_keys)
+            self._vol_next = time.monotonic() + (0.1 if fresh else 0.15)
+            target = FloatWindow.last_used if FloatWindow.last_used in playing else playing[-1]
+            if MediaOSD.wanted(target.isActiveWindow()):
+                QTimer.singleShot(70, lambda t=target: self._show_volume(t))
+        for vk in (0xAD, 0xAE, 0xAF):
+            self._media_down[vk] = vk in vol_keys
+
+    def _show_volume(self, target):
+        v = winsys.system_volume()
+        if v is not None:
+            MediaOSD.flash("mute" if v[1] else "volume", target, level=v[0])
 
     def _start(self, op, paths, params):
         name = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
