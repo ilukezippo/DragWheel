@@ -17,13 +17,14 @@
 - **Unblock** on the Actions wheel: removes Windows' "This file came from another computer" mark from downloaded files (and everything inside a folder)
 - **Drag a web page into a float:** drag the site icon from the browser's address bar (or a link or tab) onto a float to play that video there
 - **Paste a file into a float:** copy a video or song in Explorer (Ctrl+C) or "Copy as path", then press Ctrl+V on a float to play it
+- **Open the log** from Settings → Advanced → Help
 - **Rename saved links** (right-click a float → Saved links): rename the one playing, or rename, reorder, add, remove or clear them all in *Manage saved links…*
 - An empty float: *Open* and double-click choose a file (the window now comes to the front); *Show in Explorer* and *Copy path* only show when something is open
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
 - **JPEG** slice next to JPG for pictures (same format, .jpeg name); Settings → Wheel slices lists every format of a type
 - Fixed: right-clicking many files at once (Explorer starts DragWheel once per file) now gathers all of them into one wheel, and a slice you already chose is applied to files that arrive late; Unblock also handles very long paths and read-only files
 - Fixed: choosing a saved link could play a different one (the link on the clipboard), and a renamed live link showed the video's own title again; the same fix applies to Recent results and the QR menu in the tray
-- **Smoother live streams:** a live video is now asked from three YouTube players at once, so if YouTube starts refusing one, the float switches to another in a moment instead of reloading for 12 seconds; the stream is also fetched one request at a time after a refusal, and reconnects by itself after network hiccups
+- **Smoother live streams:** live videos now come from YouTube's mobile-web player first, whose live stream keeps playing (the stream used before was refused by YouTube every ~30 seconds); other players are asked at the same time, so if YouTube starts refusing one, the float switches to another in a moment instead of reloading for 12 seconds; the stream is also fetched one request at a time after a refusal, and reconnects by itself after network hiccups
 - Fixed: links reopened after an update or at Windows start were not added to Saved links
 - Fixed: right-clicking a float playing a link could fail (Repeat menu)
 - Fixed: a crash repeating many times a second is written to the log only once
