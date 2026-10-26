@@ -1695,7 +1695,7 @@ def pdf_to_html(src, p):
 
 
 # Arabic in PDFs: "لإ / لأ / لآ" are one glyph (a ligature) and often come out of a PDF in the wrong order
-_AR_LIGATURE_FIX = {"اإل": "الإ", "األ": "الأ", "اآل": "الآ", "اإ ل": "الإ"}
+_AR_LIGATURE_FIX = {"اإل": "الإ", "األ": "الأ", "اآل": "الآ", "اإ ل": "الإ", "اال": "الا"}
 
 
 def _fix_arabic_ligatures(text: str) -> str:
@@ -1744,7 +1744,19 @@ def _word_pdf_reflow(src: Path) -> Path | None:
 
 
 def pdf_to_docx(src, p):
-    """PDF → Word: Microsoft Word when it's installed (keeps the look, handles Arabic), else pdf2docx."""
+    """PDF → Word that looks the same: every line where it was, real tables, the drawings behind (pdfdocx)."""
+    import pdfdocx
+    out = out_for(src, "docx")
+    t = _token()
+    pdfdocx.convert(Path(src), out, progress=lambda f: report_progress(f) if t is not None else None,
+                    cancelled=lambda: bool(t and t.cancelled))
+    check_cancel()
+    return out
+
+
+def pdf_to_docx_flow(src, p):
+    """PDF → Word as flowing text you can rewrite freely: Microsoft Word's own PDF import when it's installed,
+    else pdf2docx."""
     if word_installed():
         res = _word_pdf_reflow(Path(src))
         if res:
@@ -3270,7 +3282,8 @@ def conversions(paths: list[str]) -> list[Op]:
         for f in AUDIO_OUT:
             add(f, audio_to(f))
     elif cat == "pdf":
-        add("docx", pdf_to_docx, "DOCX")
+        ops.append(Op("to_docx", "DOCX", pdf_to_docx, hint="same look"))
+        ops.append(Op("to_docx_flow", "DOCX", pdf_to_docx_flow, hint="flowing text"))
         add("png", pdf_to_images("png"))
         add("jpg", pdf_to_images("jpg"))
         add("txt", pdf_to_text)

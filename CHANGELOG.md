@@ -4,7 +4,8 @@
 
 - **Float and Quick preview show documents:** PDFs, e-books, comics, Word (DOC, DOCX, RTF, ODT), Excel, PowerPoint, text, Markdown, HTML and CSV files show their first page instead of an icon
 - Quick preview follows the pointer while you drag
-- **PDF to Word** uses Microsoft Word's own PDF import when Word is installed, so the result looks like the original, Arabic and tables included; without Word, broken Arabic letters (لا / لإ / لأ) are put back in order
+- **PDF to Word that looks the same:** every line stays where it was, in the same font, size and weight, tables become real Word tables, and lines, logos and pictures stay behind the text; Arabic is written as proper right-to-left text you can edit
+- A second **PDF to Word (flowing text)** slice keeps the old way, for documents you want to rewrite freely (Microsoft Word's own PDF import when Word is installed)
 - **Animation speed** slider next to the wheel animation in Settings (opening and closing)
 - New subtle sounds when the wheel opens and closes (with the click sounds and their volume)
 - Changing the language or theme in Settings fades smoothly instead of flashing
