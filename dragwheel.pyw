@@ -9141,6 +9141,18 @@ def selftest() -> int:
     res = jobproc.JobProcess("convert", "to_7z", [str(big)], {}, None).run(lambda: time.monotonic() - start > 3)
     left = [p.name for p in d.iterdir()]
     winsys.log(f"selftest cancel: {res} after {time.monotonic() - start:.1f}s, folder={left}")
+    try:                                     # PDF → Word (same look) works in the packaged app
+        import pymupdf
+        pdf = pymupdf.open()
+        pg = pdf.new_page()
+        pg.insert_text((72, 90), "Hello DragWheel", fontsize=14)
+        pg.draw_rect(pymupdf.Rect(60, 60, 300, 110), color=(0, 0, 0))
+        pdf.save(str(d / "letter.pdf"))
+        pdf.close()
+        res = jobproc.JobProcess("convert", "to_docx", [str(d / "letter.pdf")], {}, None).run(lambda: False)
+        winsys.log(f"selftest pdf→docx: {res}")
+    except Exception as e:
+        winsys.log(f"selftest pdf→docx failed: {e}")
     import shutil
     shutil.rmtree(d, ignore_errors=True)
     return 0
