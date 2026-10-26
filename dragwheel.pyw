@@ -1730,9 +1730,11 @@ class Wheel(QWidget):
             self.dismiss()
         elif k in (Qt.Key_Right, Qt.Key_Down) and n:
             self.hover = (self.hover + 1) % n if self.hover >= 0 else 0
+            play_tick()
             self.update()
         elif k in (Qt.Key_Left, Qt.Key_Up) and n:
             self.hover = (self.hover - 1) % n if self.hover >= 0 else n - 1
+            play_tick()
             self.update()
         elif k == Qt.Key_Tab:
             self.set_mode(MODES[(MODES.index(self.mode) + 1) % 3])
@@ -1748,7 +1750,12 @@ class Wheel(QWidget):
             name = {Qt.Key_Shift: "Shift", Qt.Key_Control: "Ctrl", Qt.Key_Alt: "Alt"}.get(k)
             for m, kname in keys.items():
                 if name == kname:
-                    self.set_mode(m)
+                    if m == self.mode:
+                        self.dismiss()                 # the same key again closes the wheel
+                    else:
+                        play_tick()
+                        self.set_mode(m)
+                    break
 
     def focusOutEvent(self, e):
         if self.click_mode:
@@ -2002,19 +2009,25 @@ def _media_sound(words) -> str | None:
 _TICK = None
 
 
-def play_tick():
-    """The soft click when the highlight moves to another slice (Settings → Everyday)."""
+def _tick_effect():
+    """Loaded once at start-up, so even the first click plays straight away."""
     global _TICK
-    if settings().value("tick_sound", "true") != "true":
+    if _TICK is None:
+        from PySide6.QtMultimedia import QSoundEffect
+        _TICK = QSoundEffect()
+        _TICK.setSource(QUrl.fromLocalFile(asset("sounds/tick.wav")))
+    return _TICK
+
+
+def play_tick(force=False):
+    """The click when the highlight moves to another slice (Settings → Everyday, with its own volume)."""
+    if settings().value("tick_sound", "true") != "true" and not force:
         return
     try:
-        if _TICK is None:
-            from PySide6.QtMultimedia import QSoundEffect
-            _TICK = QSoundEffect()
-            _TICK.setSource(QUrl.fromLocalFile(asset("sounds/tick.wav")))
-            _TICK.setVolume(1.0)
-        _TICK.stop()
-        _TICK.play()
+        fx = _tick_effect()
+        fx.setVolume(max(0, min(100, int(settings().value("tick_volume", 70)))) / 100)
+        fx.stop()
+        fx.play()
     except Exception as e:
         winsys.log(f"tick sound: {e}")
 
@@ -4147,6 +4160,8 @@ QLineEdit:focus,QComboBox:focus{border-color:$accent} QCheckBox{color:$text;font
 QListWidget{background:$surface;color:$text;border:1px solid $border;border-radius:6px;padding:2px}
 QScrollBar:vertical{background:transparent;width:10px;margin:2px} QScrollBar::handle:vertical{background:$button;border-radius:4px;min-height:30px}
 QScrollBar::handle:vertical:hover{background:$hover} QScrollBar::add-line,QScrollBar::sub-line{height:0;width:0} QScrollBar::add-page,QScrollBar::sub-page{background:transparent}
+QSlider::groove:horizontal{height:4px;background:$border;border-radius:2px} QSlider::sub-page:horizontal{background:$accent;border-radius:2px}
+QSlider::handle:horizontal{background:$text;width:14px;height:14px;margin:-5px 0;border-radius:7px}
 QListWidget::item{padding:3px 4px} QListWidget::item:selected{background:$accent;color:$on_accent;border-radius:4px}
 QPushButton{background:$button;color:$text;border:none;border-radius:6px;padding:6px 16px;font:600 9pt 'Segoe UI'}
 QPushButton:default{background:$accent;color:$on_accent} QPushButton:hover{background:$hover} QPushButton:default:hover{background:$accent2}
@@ -6274,6 +6289,7 @@ class SettingsDialog(QDialog):
             "tour_start": self.tour_start.isChecked(),
             "cursor_busy": self.cursor_busy.isChecked(),
             "tick_sound": self.tick_sound.isChecked(),
+            "tick_volume": self.tick_volume.value(),
             "crash_reports": self.crash_reports.isChecked(),
             "job_mode": self.job_mode.currentData(),
             "link_stops": self.link_stops.isChecked(),
@@ -6305,6 +6321,7 @@ class SettingsDialog(QDialog):
             "tour_start": s.value("tour_at_start", "true") == "true",
             "cursor_busy": s.value("cursor_busy", "true") == "true",
             "tick_sound": s.value("tick_sound", "true") == "true",
+            "tick_volume": int(s.value("tick_volume", 70)),
             "crash_reports": s.value("crash_reports", "false") == "true",
             "job_mode": s.value("job_mode", "queue"),
             "link_stops": s.value("float_link_stops", "true") == "true",
@@ -6530,9 +6547,28 @@ class SettingsDialog(QDialog):
         self.finish_sound = QCheckBox(tr("Play a sound (Windows' Calendar sound when done, Messaging sound on errors, Cancel and Undo)"))
         self.finish_sound.setChecked(st["finish_sound"])
         v.addWidget(self.finish_sound)
+        from PySide6.QtWidgets import QSlider
+        row = QHBoxLayout()
         self.tick_sound = QCheckBox(tr("Soft click when moving between slices"))
         self.tick_sound.setChecked(st["tick_sound"])
-        v.addWidget(self.tick_sound)
+        row.addWidget(self.tick_sound)
+        row.addSpacing(12)
+        row.addWidget(QLabel(tr("Volume")))
+        self.tick_volume = QSlider(Qt.Horizontal)
+        self.tick_volume.setRange(0, 100)
+        self.tick_volume.setValue(st["tick_volume"])
+        self.tick_volume.setFixedWidth(160)
+        self.tick_volume.setEnabled(st["tick_sound"])
+        self.tick_sound.toggled.connect(self.tick_volume.setEnabled)
+
+        def try_tick():                            # hear it while you choose
+            settings().setValue("tick_volume", self.tick_volume.value())
+            play_tick(force=True)
+        self.tick_volume.sliderReleased.connect(try_tick)
+        self.tick_volume.valueChanged.connect(lambda _v: None if self.tick_volume.isSliderDown() else try_tick())
+        row.addWidget(self.tick_volume)
+        row.addStretch(1)
+        v.addLayout(row)
         lay.addWidget(g)
 
         g = QGroupBox(tr("While DragWheel is working"))
@@ -6905,6 +6941,7 @@ class SettingsDialog(QDialog):
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
         s.setValue("wheel_anim", self.anim.currentData())
         s.setValue("job_mode", self.job_mode.currentData())
+        s.setValue("tick_volume", self.tick_volume.value())
         for key, box in (("shake", self.shake), ("peek", self.peek), ("finish_anim", self.finish_anim),
                          ("finish_sound", self.finish_sound), ("tour_at_start", self.tour_start),
                          ("cursor_busy", self.cursor_busy), ("float_link_stops", self.link_stops),
@@ -7492,6 +7529,10 @@ class DragWheelApp(QObject):
         self.watcher.start()
         self._peek = None
         self.watch = FolderWatch(self)
+        try:
+            _tick_effect()                       # load the click sound now
+        except Exception as e:
+            winsys.log(f"tick sound: {e}")
         self.cursor_busy = CursorBusy()
         self._busy_timer = QTimer(self, interval=250, timeout=self._update_cursor_busy)
         self._busy_timer.start()
@@ -7650,6 +7691,9 @@ class DragWheelApp(QObject):
     # ---- triggers
     def on_tap(self, mode):
         if self.wheel.is_open():
+            if mode == self.wheel.mode and self.wheel.paths:
+                self.wheel.dismiss()                 # the same key again closes the wheel
+                return
             if mode != self.wheel.mode:
                 play_tick()
                 self.wheel.set_mode(mode)
@@ -7735,6 +7779,9 @@ class DragWheelApp(QObject):
             w.dismiss()
 
     def on_hotkey(self):
+        if self.wheel.is_open():                   # Ctrl+Alt+Space again closes it
+            self.wheel.dismiss()
+            return
         paths = winsys.explorer_selection()
         if not paths:
             self.toast.show_msg(tr("Nothing selected"), tr("Select files in File Explorer, then press Ctrl+Alt+Space"))
