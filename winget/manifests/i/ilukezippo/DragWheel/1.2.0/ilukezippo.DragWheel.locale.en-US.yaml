@@ -17,8 +17,8 @@ Description: |-
   DragWheel is a free, open-source tray app that converts files without opening a program.
   While dragging a file in File Explorer, tap Shift, Ctrl or Alt (or scroll the mouse wheel) and a radial menu
   appears under the cursor. Drop the file on a slice to convert it or run a tool: images, video, audio, PDF,
-  Office files, subtitles, e-books and archives (ZIP, 7Z, RAR, TAR), plus crop & resize, compress, trim, merge
-  and file actions. Everything runs on your PC; nothing is uploaded.
+  Office files, subtitles, e-books, comics, fonts and archives (ZIP, 7Z, RAR, TAR), plus PDF signing, crop & resize, compress, trim, merge
+  and file actions. Conversions run on your own PC.
 Moniker: dragwheel
 Tags:
   - converter
