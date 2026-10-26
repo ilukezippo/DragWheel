@@ -775,9 +775,10 @@ def _link_log(msg):
 # YouTube live: some players' streams get "403 Forbidden" on segments after a few seconds (they need a token
 # DragWheel doesn't have). Players that did that are remembered for the session and skipped next time.
 LIVE_BAD_CLIENTS = set()
-LIVE_CLIENT_ORDER = ["tv", "android_vr", "web_safari"]   # players whose live streams need no extra token
-_LIVE_CLIENT_RANK = {"TVHTML5": 0, "TVHTML5_SIMPLY_EMBEDDED_PLAYER": 0, "IOS": 1, "ANDROID_VR": 2, "ANDROID": 2,
-                     "WEB_SAFARI": 3, "MWEB": 4, "WEB": 5}
+# mweb's live playlist keeps working (android_vr's segments are refused after ~30 s); mweb needs the JS runtime
+LIVE_CLIENT_ORDER = ["mweb", "tv", "web_safari", "android_vr"]
+_LIVE_CLIENT_RANK = {"MWEB": 0, "TVHTML5": 1, "TVHTML5_SIMPLY_EMBEDDED_PLAYER": 1, "IOS": 3, "ANDROID_VR": 4, "ANDROID": 4,
+                     "WEB_SAFARI": 2, "WEB": 5}
 
 
 def yt_client(url) -> str:
@@ -876,13 +877,16 @@ def resolve_link(url, quality=None, _updated=False) -> dict:
         # stream came from and has the others ready to switch to straight away if YouTube refuses one
         base = [c for c in cmd if c not in ("--extractor-args", _YT_CLIENTS)]
         procs = {c: subprocess.Popen(base + ["--extractor-args", f"youtube:player_client={c}", url],
-                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                                      creationflags=NO_WINDOW) for c in LIVE_CLIENT_ORDER if c not in LIVE_BAD_CLIENTS}
         for c, pr in procs.items():
             try:
-                outp, _e = pr.communicate(timeout=60)
+                outp, errp = pr.communicate(timeout=60)
                 if pr.returncode == 0:
                     per_client[c] = json.loads(outp.decode("utf-8", "replace") or "{}")
+                else:
+                    last = [x for x in errp.decode("utf-8", "replace").splitlines() if x.strip()][-1:]
+                    _link_log(f"live player {c}: {(last or ['failed'])[0][:200]}")
             except Exception:
                 try:
                     pr.kill()
