@@ -1453,9 +1453,9 @@ class Wheel(QWidget):
         opening = to > self._t
         fast = self._style == "fade"
         if self._style == "bloom":
-            ms = 460 if opening else 200
+            ms = 460 if opening else 320
         else:
-            ms = (130 if fast else 190) if opening else (110 if fast else 140)
+            ms = (130 if fast else 190) if opening else (120 if fast else 180)
         self.t_anim.setDuration(max(40, int(ms / anim_speed())))
         self.t_anim.setEasingCurve(QEasingCurve.OutCubic if opening else QEasingCurve.InCubic)
         self.t_anim.setStartValue(self._t)
@@ -3019,7 +3019,7 @@ class FloatWindow(QWidget):
                 self.aspect = img.width / max(1, img.height)
             except Exception:
                 self.src = None
-        elif cat in DOC_PREVIEW_CATS and path and Path(path).suffix.lower() not in TEXTLIKE_EXT:
+        elif path and (cat in DOC_PREVIEW_CATS or cat == "comic") and Path(path).suffix.lower() not in (".cbr", ".cb7", ".cbt"):
             # PDFs, e-books and Office files show their first page; the icon stays until it's drawn
             if not getattr(self, "_page_hooked", False):
                 self.page_ready.connect(self._got_page, Qt.QueuedConnection)
@@ -6419,18 +6419,52 @@ class SettingsDialog(QDialog):
         if code == theme.mode():
             return
         state = self._state()
+        cover = self._freeze()
         settings().setValue("theme", code)
         self.app.apply_theme()
-        QTimer.singleShot(0, lambda: self._build(state))
+        QTimer.singleShot(0, lambda: self._rebuild_under(cover, state))
 
     def _language_changed(self, _idx):
         code = self.lang.currentData()
         if code == settings().value("language", ""):
             return
         state = self._state()
+        cover = self._freeze()                               # a picture of the old look stays on top…
         settings().setValue("language", code)
         self.app.apply_language()
-        QTimer.singleShot(0, lambda: self._build(state))     # rebuild outside the combo's signal
+        QTimer.singleShot(0, lambda: self._rebuild_under(cover, state))     # rebuild outside the combo's signal
+
+    def _freeze(self):
+        """Cover the window with a still picture of itself, so a rebuild underneath never flickers."""
+        from PySide6.QtWidgets import QLabel
+        pm = self.grab()
+        cover = QLabel(self)
+        cover.setPixmap(pm)
+        cover.setGeometry(0, 0, pm.width(), pm.height())
+        cover.setAttribute(Qt.WA_TransparentForMouseEvents)
+        cover.show()
+        cover.raise_()
+        return cover
+
+    def _rebuild_under(self, cover, state):
+        """…the new language or theme is built under it, then the picture fades away."""
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+        self.setUpdatesEnabled(False)
+        try:
+            self._build(state)
+        finally:
+            cover.raise_()
+            self.setUpdatesEnabled(True)
+        fx = QGraphicsOpacityEffect(cover)
+        fx.setOpacity(1.0)
+        cover.setGraphicsEffect(fx)
+        anim = QPropertyAnimation(fx, b"opacity", cover)
+        anim.setDuration(int(260 / anim_speed()))
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.finished.connect(cover.deleteLater)
+        QTimer.singleShot(30, anim.start)                     # once the new page has painted
 
     def reject(self):
         if settings().value("language", "") != self.orig_lang:   # Cancel undoes a language switch
@@ -7127,9 +7161,76 @@ class PeekSignals(QObject):
     ready = Signal(object, object)      # path, QImage
 
 
+def _office_to_pdf(src: Path, dest: Path) -> bool:
+    """Print a Word, Excel or PowerPoint file (or RTF, ODT…) to `dest` as a PDF, read-only, without touching
+    the original's folder: Microsoft Office when it's installed, else LibreOffice."""
+    cat = engine.EXT_CATEGORY.get(engine.ext_of(str(src)))
+    if winsys.IS_WIN:
+        try:
+            import pythoncom
+            import win32com.client as wc
+            pythoncom.CoInitialize()
+            try:
+                if cat in ("document", "pdf"):
+                    app = wc.DispatchEx("Word.Application")
+                    app.Visible = False
+                    app.DisplayAlerts = 0
+                    try:
+                        doc = app.Documents.Open(str(src), ConfirmConversions=False, ReadOnly=True,
+                                                 AddToRecentFiles=False, Visible=False)
+                        doc.ExportAsFixedFormat(str(dest), 17, OpenAfterExport=False, OptimizeFor=1,
+                                                Range=3, From=1, To=1)          # first page is enough
+                        doc.Close(False)
+                    finally:
+                        app.Quit()
+                elif cat == "spreadsheet":
+                    app = wc.DispatchEx("Excel.Application")
+                    app.Visible = False
+                    app.DisplayAlerts = False
+                    try:
+                        wb = app.Workbooks.Open(str(src), ReadOnly=True, UpdateLinks=0)
+                        wb.ActiveSheet.ExportAsFixedFormat(0, str(dest), From=1, To=1, OpenAfterPublish=False)
+                        wb.Close(False)
+                    finally:
+                        app.Quit()
+                elif cat == "slides":
+                    app = wc.DispatchEx("PowerPoint.Application")
+                    try:
+                        pres = app.Presentations.Open(str(src), ReadOnly=True, WithWindow=False)
+                        pres.SaveAs(str(dest), 32)
+                        pres.Close()
+                    finally:
+                        app.Quit()
+            finally:
+                pythoncom.CoUninitialize()
+            if dest.exists() and dest.stat().st_size > 0:
+                return True
+        except Exception as e:
+            winsys.log(f"preview: Office could not open {src.name}: {e}")
+    exe = engine.soffice()
+    if exe:
+        import subprocess
+        import tempfile
+        td = Path(tempfile.mkdtemp(prefix="dw-prev-"))
+        try:
+            subprocess.run([exe, "--headless", "--norestore", "--convert-to", "pdf", "--outdir", str(td), str(src)],
+                           timeout=90, stdin=subprocess.DEVNULL, capture_output=True, creationflags=engine.NO_WINDOW)
+            made = list(td.glob("*.pdf"))
+            if made:
+                shutil.move(str(made[0]), str(dest))
+                return True
+        except Exception as e:
+            winsys.log(f"preview: LibreOffice could not open {src.name}: {e}")
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+    return False
+
+
+_PREVIEW_LOCK = threading.Lock()
+
+
 def _pdf_for_preview(p: Path) -> Path | None:
-    """A PDF of a Word, Excel or PowerPoint file for previews, made once (Office or LibreOffice) and kept in
-    the temp folder until the file changes."""
+    """A PDF of an Office-type file for previews, made once and kept in the temp folder until the file changes."""
     import hashlib
     import tempfile
     try:
@@ -7138,31 +7239,99 @@ def _pdf_for_preview(p: Path) -> Path | None:
         return None
     key = hashlib.sha1(f"{p}|{st.st_size}|{st.st_mtime_ns}".encode("utf-8")).hexdigest()[:16]
     folder = Path(tempfile.gettempdir()) / "DragWheel previews"
-    folder.mkdir(exist_ok=True)
-    done = list(folder.glob(f"{key}*.pdf"))
-    if done:
-        return done[0]
-    work = folder / key
-    work.mkdir(exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True)
+    out = folder / f"{key}.pdf"
+    with _PREVIEW_LOCK:                      # Float and Quick preview asking at once make it only once
+        if out.exists() and out.stat().st_size > 0:
+            return out
+        part = folder / f"{key}.tmp.pdf"
+        part.unlink(missing_ok=True)
+        if _office_to_pdf(p.resolve(), part):
+            os.replace(part, out)
+            return out
+        part.unlink(missing_ok=True)
+        winsys.log(f"preview: no page for {p.name} (needs Microsoft Office or LibreOffice)")
+        return None
+
+
+def _text_page_image(p: Path, width: int) -> "QImage | None":
+    """Text, Markdown, HTML, CSV and JSON files drawn as a white page."""
+    from PySide6.QtGui import QTextDocument, QTextOption
     try:
-        import jobproc
-        kind, val = jobproc.JobProcess("convert", "to_pdf", [str(p)], {}, str(work)).run(lambda: False)
-        if kind != "done" or not val:
-            winsys.log(f"preview: {p.name}: {val}")
-            return None
-        out = folder / f"{key}.pdf"
-        shutil.move(str(val[0]), str(out))
-        return out
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+        raw = p.read_bytes()[:400_000]
+    except OSError:
+        return None
+    txt = None
+    for enc in ("utf-8-sig", "utf-16", "cp1256", "latin-1"):
+        try:
+            txt = raw.decode(enc)
+            if enc == "utf-16" and not raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+                continue
+            break
+        except UnicodeDecodeError:
+            continue
+    if txt is None:
+        return None
+    e = p.suffix.lower()
+    doc = QTextDocument()
+    doc.setDocumentMargin(36)
+    f = QFont(i18n.ui_font() if e in (".md", ".markdown", ".html", ".htm") else "Consolas", 11)
+    doc.setDefaultFont(f)
+    opt = QTextOption()
+    opt.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+    if any("\u0600" <= ch <= "\u06ff" for ch in txt[:2000]):
+        opt.setTextDirection(Qt.RightToLeft)
+        opt.setAlignment(Qt.AlignRight)
+    doc.setDefaultTextOption(opt)
+    if e in (".html", ".htm"):
+        doc.setHtml(txt)
+    elif e in (".md", ".markdown"):
+        doc.setMarkdown(txt)
+    elif e in (".csv", ".tsv"):
+        import csv
+        import html as _h
+        rows = list(csv.reader(txt.splitlines()[:60], delimiter="\t" if e == ".tsv" else ","))
+        doc.setHtml("<table border='1' cellspacing='0' cellpadding='4' style='border-collapse:collapse'>" + "".join(
+            "<tr>" + "".join(f"<td>{_h.escape(c)}</td>" for c in r[:12]) + "</tr>" for r in rows) + "</table>")
+    elif opt.textDirection() == Qt.RightToLeft:
+        import html as _h
+        doc.setDefaultFont(QFont(i18n.ui_font(), 12))
+        doc.setHtml("<div dir='rtl' align='right' style='white-space:pre-wrap'>" + _h.escape(txt[:20000]) + "</div>")
+    else:
+        doc.setPlainText(txt[:20000])
+    page_w = 620
+    doc.setTextWidth(page_w)
+    page_h = int(page_w * 1.414)
+    scale = width / page_w
+    img = QImage(width, int(page_h * scale), QImage.Format_RGB888)
+    img.fill(QColor(255, 255, 255))
+    pnt = QPainter(img)
+    pnt.setRenderHint(QPainter.Antialiasing)
+    pnt.setRenderHint(QPainter.TextAntialiasing)
+    pnt.scale(scale, scale)
+    pnt.setClipRect(QRectF(0, 0, page_w, page_h))
+    from PySide6.QtGui import QAbstractTextDocumentLayout
+    ctx = QAbstractTextDocumentLayout.PaintContext()
+    ctx.palette.setColor(ctx.palette.ColorRole.Text, QColor(20, 20, 20))
+    doc.documentLayout().draw(pnt, ctx)
+    pnt.end()
+    return img
 
 
 def document_page_image(path, width=1200, page=0) -> "QImage | None":
-    """First page of a PDF, e-book, comic, or Word/Excel/PowerPoint file (through a PDF) as a picture."""
+    """First page of any document as a picture: PDFs, e-books and comics directly, Word/Excel/PowerPoint/RTF/ODT
+    through a PDF, and text, Markdown, HTML and CSV files drawn as a page."""
     p = Path(path)
     cat = engine.EXT_CATEGORY.get(engine.ext_of(str(p)))
+    e = p.suffix.lower()
+    if e in TEXTLIKE_EXT or e in (".markdown", ".json"):
+        try:
+            return _text_page_image(p, width)
+        except Exception as ex:
+            winsys.log(f"preview: {p.name}: {ex}")
+            return None
     src = p
-    if cat in ("document", "spreadsheet", "slides") and p.suffix.lower() not in TEXTLIKE_EXT:
+    if cat in ("document", "spreadsheet", "slides"):
         src = _pdf_for_preview(p)
         if src is None:
             return None
@@ -7175,8 +7344,8 @@ def document_page_image(path, width=1200, page=0) -> "QImage | None":
             zoom = width / max(1.0, pg.rect.width)
             pix = pg.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
             return QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
-    except Exception as e:
-        winsys.log(f"preview: {p.name}: {e}")
+    except Exception as ex:
+        winsys.log(f"preview: {p.name}: {ex}")
         return None
 
 
@@ -7199,7 +7368,7 @@ def _peek_image(path) -> "QImage | None":
                     im = im.convert("RGBA")
                     img = QImage(im.tobytes("raw", "RGBA"), im.width, im.height, QImage.Format_RGBA8888).copy()
             return None if img.isNull() else img.scaled(900, 900, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        if (cat in DOC_PREVIEW_CATS and p.suffix.lower() not in TEXTLIKE_EXT) or p.suffix.lower() in (".cbz", ".xps"):
+        if cat in DOC_PREVIEW_CATS or p.suffix.lower() in (".cbz", ".xps", ".json"):
             return document_page_image(p, 900)
         if cat == "video":
             import subprocess
@@ -7232,6 +7401,8 @@ class PeekWindow(QWidget):
         self.text = ""
         self.sig = PeekSignals()
         self.sig.ready.connect(self._got, Qt.QueuedConnection)
+        self.follow = QTimer(self, interval=15, timeout=self._place)    # rides along with the pointer
+        self._last_pos = None
 
     def peek(self, paths):
         self.path = paths[0]
@@ -7239,8 +7410,7 @@ class PeekWindow(QWidget):
         self.img = None
         self.text = ""
         cat = engine.EXT_CATEGORY.get(engine.ext_of(str(p)))
-        if p.is_file() and (cat in ("subtitle",) or p.suffix.lower() in (".txt", ".md", ".csv", ".json", ".log", ".py",
-                                                                          ".ini", ".xml", ".html", ".srt")):
+        if p.is_file() and (cat in ("subtitle",) or p.suffix.lower() in (".log", ".py", ".ini", ".xml", ".srt")):
             try:
                 with open(p, encoding="utf-8", errors="replace") as f:
                     self.text = "".join(f.readline() for _ in range(24))[:2400]
@@ -7270,11 +7440,27 @@ class PeekWindow(QWidget):
         else:
             w, h = 300, 150
         self.resize(w, h)
+        self._last_pos = None
+        self._place()
+
+    def _place(self):
         pos = QCursor.pos()
+        if pos == self._last_pos:
+            return
+        self._last_pos = pos
+        w, h = self.width(), self.height()
         scr = (QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()).availableGeometry()
         x = pos.x() + 28 if pos.x() + 28 + w < scr.right() else pos.x() - 28 - w
         y = max(scr.top() + 8, min(pos.y() - h // 2, scr.bottom() - h - 8))
         self.move(x, y)
+
+    def showEvent(self, e):
+        self.follow.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self.follow.stop()
+        super().hideEvent(e)
 
     def paintEvent(self, _e):
         p = QPainter(self)

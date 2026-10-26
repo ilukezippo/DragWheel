@@ -2,10 +2,12 @@
 
 ## 1.2.1 — October 2026
 
-- **Float and Quick preview show documents again:** PDFs, e-books and Word, Excel and PowerPoint files show their first page instead of an icon
+- **Float and Quick preview show documents:** PDFs, e-books, comics, Word (DOC, DOCX, RTF, ODT), Excel, PowerPoint, text, Markdown, HTML and CSV files show their first page instead of an icon
+- Quick preview follows the pointer while you drag
 - **PDF to Word** uses Microsoft Word's own PDF import when Word is installed, so the result looks like the original, Arabic and tables included; without Word, broken Arabic letters (لا / لإ / لأ) are put back in order
-- **Animation speed** slider next to the wheel animation in Settings
-- New soft sounds when the wheel opens and closes (with the click sounds and their volume)
+- **Animation speed** slider next to the wheel animation in Settings (opening and closing)
+- New subtle sounds when the wheel opens and closes (with the click sounds and their volume)
+- Changing the language or theme in Settings fades smoothly instead of flashing
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
 - Fixed: a crash repeating many times a second is written to the log only once
 
