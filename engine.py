@@ -1654,7 +1654,7 @@ def pdf_to_text(src, p):
     mu = _mu()
     doc = mu.open(str(src))
     out = out_for(src, "txt")
-    out.write_text("\n\n".join(pg.get_text() for pg in doc), encoding="utf-8")
+    out.write_text(_fix_arabic_ligatures("\n\n".join(pg.get_text() for pg in doc)), encoding="utf-8")
     return out
 
 
@@ -1694,11 +1694,64 @@ def pdf_to_html(src, p):
     return out
 
 
+# Arabic in PDFs: "لإ / لأ / لآ" are one glyph (a ligature) and often come out of a PDF in the wrong order
+_AR_LIGATURE_FIX = {"اإل": "الإ", "األ": "الأ", "اآل": "الآ", "اإ ل": "الإ"}
+
+
+def _fix_arabic_ligatures(text: str) -> str:
+    for bad, good in _AR_LIGATURE_FIX.items():
+        text = text.replace(bad, good)
+    return text
+
+
+def _word_pdf_reflow(src: Path) -> Path | None:
+    """Microsoft Word's own PDF import ("PDF Reflow"): by far the closest layout, and right-to-left Arabic
+    comes back as real paragraphs and tables. Its one-time "Word will now convert your PDF" message is
+    switched off for the conversion and put back afterwards."""
+    if not IS_WIN:
+        return None
+    key = None
+    old = None
+    try:
+        import winreg
+        for ver in ("16.0", "15.0"):
+            try:
+                key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Microsoft\Office\{ver}\Word\Options")
+                break
+            except OSError:
+                key = None
+        if key is not None:
+            try:
+                old = winreg.QueryValueEx(key, "DisableConvertPdfWarning")[0]
+            except OSError:
+                old = None
+            winreg.SetValueEx(key, "DisableConvertPdfWarning", 0, winreg.REG_DWORD, 1)
+    except Exception:
+        key = None
+    try:
+        return _com_convert(Path(src).resolve(), "docx")
+    finally:
+        if key is not None:
+            try:
+                import winreg
+                if old is None:
+                    winreg.DeleteValue(key, "DisableConvertPdfWarning")
+                else:
+                    winreg.SetValueEx(key, "DisableConvertPdfWarning", 0, winreg.REG_DWORD, old)
+                key.Close()
+            except Exception:
+                pass
+
+
 def pdf_to_docx(src, p):
+    """PDF → Word: Microsoft Word when it's installed (keeps the look, handles Arabic), else pdf2docx."""
+    if word_installed():
+        res = _word_pdf_reflow(Path(src))
+        if res:
+            return res
     try:
         from pdf2docx import Converter
     except ImportError:
-        # fall back to Word, which can open PDFs
         return office_convert(src, "docx")
     out = out_for(src, "docx")
     cv = Converter(str(src))
@@ -1706,7 +1759,40 @@ def pdf_to_docx(src, p):
         cv.convert(str(out))
     finally:
         cv.close()
+    try:                                              # put Arabic lam-alef ligatures back in the right order
+        import docx as _docx
+        d = _docx.Document(str(out))
+        changed = False
+
+        def fix_runs(paragraphs):
+            nonlocal changed
+            for para in paragraphs:
+                for r in para.runs:
+                    t = _fix_arabic_ligatures(r.text)
+                    if t != r.text:
+                        r.text = t
+                        changed = True
+        fix_runs(d.paragraphs)
+        for tbl in d.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    fix_runs(cell.paragraphs)
+        if changed:
+            d.save(str(out))
+    except Exception:
+        pass
     return out
+
+
+def word_installed() -> bool:
+    if not IS_WIN:
+        return False
+    try:
+        import winreg
+        winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, "Word.Application").Close()
+        return True
+    except OSError:
+        return False
 
 
 def pdf_compress(src, p):
@@ -2112,7 +2198,7 @@ def epub_to_text(src, p):
     mu = _mu()
     doc = mu.open(str(src))
     out = out_for(src, "txt")
-    out.write_text("\n\n".join(pg.get_text() for pg in doc), encoding="utf-8")
+    out.write_text(_fix_arabic_ligatures("\n\n".join(pg.get_text() for pg in doc)), encoding="utf-8")
     return out
 
 

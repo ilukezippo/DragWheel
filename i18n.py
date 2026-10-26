@@ -875,3 +875,9 @@ from locales import send12b as _sd12b  # noqa: E402
 for _code, _vals in _sd12b.T.items():
     assert len(_vals) == len(_sd12b.KEYS), _code
     T[_code].update(dict(zip(_sd12b.KEYS, _vals)))
+
+from locales import speed121 as _sp121  # noqa: E402
+
+for _code, _vals in _sp121.T.items():
+    assert len(_vals) == len(_sp121.KEYS), _code
+    T[_code].update(dict(zip(_sp121.KEYS, _vals)))

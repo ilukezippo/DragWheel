@@ -42,7 +42,7 @@ from i18n import tr
 
 APP = "DragWheel"
 DONATE_URL = "https://buymeacoffee.com/ilukezippo"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 ACCENT = QColor("#ff8a00")
 ACCENT_2 = QColor("#ffb347")
@@ -1397,6 +1397,14 @@ def wheel_anim() -> str:
     return v if v in dict(WHEEL_ANIMS) else "bloom"
 
 
+def anim_speed() -> float:
+    """Animation speed from Settings: 100 = normal, 25 = four times slower, 250 = 2.5 times faster."""
+    try:
+        return max(25, min(250, int(settings().value("anim_speed", 100)))) / 100
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def _ease_back(k):
     """0..1 with a small overshoot, like something popping open."""
     k = max(0.0, min(1.0, k)) - 1
@@ -1445,9 +1453,10 @@ class Wheel(QWidget):
         opening = to > self._t
         fast = self._style == "fade"
         if self._style == "bloom":
-            self.t_anim.setDuration(460 if opening else 200)
+            ms = 460 if opening else 200
         else:
-            self.t_anim.setDuration((130 if fast else 190) if opening else (110 if fast else 140))
+            ms = (130 if fast else 190) if opening else (110 if fast else 140)
+        self.t_anim.setDuration(max(40, int(ms / anim_speed())))
         self.t_anim.setEasingCurve(QEasingCurve.OutCubic if opening else QEasingCurve.InCubic)
         self.t_anim.setStartValue(self._t)
         self.t_anim.setEndValue(float(to))
@@ -1534,6 +1543,8 @@ class Wheel(QWidget):
 
     # ------------------------------------------------------------- show/hide
     def popup(self, mode, paths=None, click_mode=False, at: QPoint | None = None):
+        if not self.is_open():
+            play_wheel_sound("open")
         self.click_mode = click_mode
         self.dropped = False
         self.scroll_active = False
@@ -1575,6 +1586,8 @@ class Wheel(QWidget):
 
     def dismiss(self):
         self.pill_timer.stop()
+        if self.is_open():
+            QTimer.singleShot(40, lambda: play_wheel_sound("close"))   # after a drop, the choice sound wins
         if self.isVisible() and self._style != "none" and not self._closing:
             self._closing = True                       # keep drawing what was there while it goes away
             self._animate(0.0)
@@ -2010,12 +2023,20 @@ _TICK = None
 
 
 _SELECT = None
+_EFFECTS = {}
+_LAST_SELECT = 0.0
 
 
 def _tick_effect(name="tick"):
     """Loaded once at start-up, so even the first click plays straight away."""
     global _TICK, _SELECT
     from PySide6.QtMultimedia import QSoundEffect
+    if name in ("open", "close"):
+        if name not in _EFFECTS:
+            fx = QSoundEffect()
+            fx.setSource(QUrl.fromLocalFile(asset(f"sounds/{name}.wav")))
+            _EFFECTS[name] = fx
+        return _EFFECTS[name]
     if name == "select":
         if _SELECT is None:
             _SELECT = QSoundEffect()
@@ -2027,8 +2048,25 @@ def _tick_effect(name="tick"):
     return _TICK
 
 
+def play_wheel_sound(name):
+    """The soft rising sound when the wheel opens and the falling one when it closes (same switch and volume as the tick)."""
+    if settings().value("tick_sound", "true") != "true":
+        return
+    if name == "close" and time.monotonic() - _LAST_SELECT < 0.8:
+        return                                   # choosing a slice already made its own sound
+    try:
+        fx = _tick_effect(name)
+        fx.setVolume(max(0, min(100, int(settings().value("tick_volume", 70)))) / 100 * 0.8)
+        fx.stop()
+        fx.play()
+    except Exception as e:
+        winsys.log(f"{name} sound: {e}")
+
+
 def play_select():
     """The deeper "press" when you choose a slice (like the iPod's centre button). Same switch and volume as the tick."""
+    global _LAST_SELECT
+    _LAST_SELECT = time.monotonic()
     if settings().value("tick_sound", "true") != "true":
         return
     try:
@@ -2899,6 +2937,7 @@ class FloatWindow(QWidget):
             QTimer.singleShot(60, lambda: winsys.bring_to_front(int(self.winId())))
 
     closed = Signal()
+    page_ready = Signal(object, object)    # path, QImage of a document's first page (from a thread)
     RADIUS = 14
     EDGE = 7              # resize border
     CLOSE_R = 11
@@ -2980,6 +3019,13 @@ class FloatWindow(QWidget):
                 self.aspect = img.width / max(1, img.height)
             except Exception:
                 self.src = None
+        elif cat in DOC_PREVIEW_CATS and path and Path(path).suffix.lower() not in TEXTLIKE_EXT:
+            # PDFs, e-books and Office files show their first page; the icon stays until it's drawn
+            if not getattr(self, "_page_hooked", False):
+                self.page_ready.connect(self._got_page, Qt.QueuedConnection)
+                self._page_hooked = True
+            threading.Thread(target=lambda pp=path: self.page_ready.emit(pp, document_page_image(pp, 1400)),
+                             daemon=True).start()
         elif not path and not link:                   # an empty float: drop a file, paste a link, or pick a saved one
             self.kind = "empty"
             self.aspect = 16 / 9
@@ -3025,6 +3071,20 @@ class FloatWindow(QWidget):
 
     def display_name(self):
         return self.link["title"] if self.link else Path(self.path).name
+
+    def _got_page(self, path, img):
+        if path != self.path or self.link or img is None or img.isNull():
+            return
+        self.src = QPixmap.fromImage(img)
+        self.kind = "image"
+        self.aspect = img.width() / max(1, img.height())
+        self._scaled = None
+        w = 300 if self.aspect >= 1 else max(self.MIN_W, int(400 * self.aspect))
+        tl = self.pos() if self.isVisible() else None
+        self._apply_size(w, self._height_for(w))
+        if tl is not None:
+            self.move(tl)
+        self.update()
 
     def _open_original(self):
         QDesktopServices.openUrl(QUrl(self.link["page"]) if self.link else QUrl.fromLocalFile(self.path))
@@ -6305,6 +6365,7 @@ class SettingsDialog(QDialog):
             "ctrl_open": self.ctrl_open.isChecked(),
             "media_osd": self.media_osd.isChecked(),
             "anim": self.anim.currentData(),
+            "anim_speed": self.anim_speed.value(),
             "shake": self.shake.isChecked(),
             "tour_start": self.tour_start.isChecked(),
             "cursor_busy": self.cursor_busy.isChecked(),
@@ -6337,6 +6398,7 @@ class SettingsDialog(QDialog):
             "ctrl_open": s.value("float_ctrl_open", "true") == "true",
             "media_osd": s.value("media_osd", "true") == "true",
             "anim": wheel_anim(),
+            "anim_speed": int(round(anim_speed() * 100)),
             "shake": s.value("shake", "true") == "true",
             "tour_start": s.value("tour_at_start", "true") == "true",
             "cursor_busy": s.value("cursor_busy", "true") == "true",
@@ -6471,7 +6533,30 @@ class SettingsDialog(QDialog):
         for k, label in WHEEL_ANIMS:
             self.anim.addItem(tr(label), k)
         self.anim.setCurrentIndex(max(0, self.anim.findData(st["anim"])))
-        f1.addRow(tr("Animations"), self.anim)
+        from PySide6.QtWidgets import QSlider
+        arow = QHBoxLayout()
+        arow.addWidget(self.anim)
+        arow.addSpacing(12)
+        arow.addWidget(QLabel(tr("Speed")))
+        self.anim_speed = QSlider(Qt.Horizontal)
+        self.anim_speed.setRange(25, 250)
+        self.anim_speed.setSingleStep(5)
+        self.anim_speed.setPageStep(25)
+        self.anim_speed.setValue(st["anim_speed"])
+        self.anim_speed.setFixedWidth(150)
+        self.anim_speed_lbl = QLabel()
+        self.anim_speed_lbl.setMinimumWidth(44)
+
+        def speed_label(v):
+            self.anim_speed_lbl.setText(f"{v / 100:.2g}×")
+        speed_label(self.anim_speed.value())
+        self.anim_speed.valueChanged.connect(speed_label)
+        self.anim.currentIndexChanged.connect(lambda _i: self.anim_speed.setEnabled(self.anim.currentData() != "none"))
+        self.anim_speed.setEnabled(st["anim"] != "none")
+        arow.addWidget(self.anim_speed)
+        arow.addWidget(self.anim_speed_lbl)
+        arow.addStretch(1)
+        f1.addRow(tr("Animations"), arow)
         lay.addWidget(g1)
 
         g2 = QGroupBox(tr("Output"))
@@ -6960,6 +7045,7 @@ class SettingsDialog(QDialog):
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
         s.setValue("wheel_anim", self.anim.currentData())
+        s.setValue("anim_speed", self.anim_speed.value())
         s.setValue("job_mode", self.job_mode.currentData())
         s.setValue("tick_volume", self.tick_volume.value())
         for key, box in (("shake", self.shake), ("peek", self.peek), ("finish_anim", self.finish_anim),
@@ -7033,8 +7119,65 @@ class CursorBusy(QWidget):
         p.end()
 
 
+DOC_PREVIEW_CATS = ("pdf", "document", "spreadsheet", "slides", "ebook")
+TEXTLIKE_EXT = (".txt", ".md", ".csv", ".tsv", ".json", ".html", ".htm", ".rtf", ".log")
+
+
 class PeekSignals(QObject):
     ready = Signal(object, object)      # path, QImage
+
+
+def _pdf_for_preview(p: Path) -> Path | None:
+    """A PDF of a Word, Excel or PowerPoint file for previews, made once (Office or LibreOffice) and kept in
+    the temp folder until the file changes."""
+    import hashlib
+    import tempfile
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    key = hashlib.sha1(f"{p}|{st.st_size}|{st.st_mtime_ns}".encode("utf-8")).hexdigest()[:16]
+    folder = Path(tempfile.gettempdir()) / "DragWheel previews"
+    folder.mkdir(exist_ok=True)
+    done = list(folder.glob(f"{key}*.pdf"))
+    if done:
+        return done[0]
+    work = folder / key
+    work.mkdir(exist_ok=True)
+    try:
+        import jobproc
+        kind, val = jobproc.JobProcess("convert", "to_pdf", [str(p)], {}, str(work)).run(lambda: False)
+        if kind != "done" or not val:
+            winsys.log(f"preview: {p.name}: {val}")
+            return None
+        out = folder / f"{key}.pdf"
+        shutil.move(str(val[0]), str(out))
+        return out
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def document_page_image(path, width=1200, page=0) -> "QImage | None":
+    """First page of a PDF, e-book, comic, or Word/Excel/PowerPoint file (through a PDF) as a picture."""
+    p = Path(path)
+    cat = engine.EXT_CATEGORY.get(engine.ext_of(str(p)))
+    src = p
+    if cat in ("document", "spreadsheet", "slides") and p.suffix.lower() not in TEXTLIKE_EXT:
+        src = _pdf_for_preview(p)
+        if src is None:
+            return None
+    try:
+        import pymupdf
+        with pymupdf.open(str(src)) as doc:
+            if doc.page_count == 0:
+                return None
+            pg = doc[min(page, doc.page_count - 1)]
+            zoom = width / max(1.0, pg.rect.width)
+            pix = pg.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+            return QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
+    except Exception as e:
+        winsys.log(f"preview: {p.name}: {e}")
+        return None
 
 
 def _peek_image(path) -> "QImage | None":
@@ -7056,12 +7199,8 @@ def _peek_image(path) -> "QImage | None":
                     im = im.convert("RGBA")
                     img = QImage(im.tobytes("raw", "RGBA"), im.width, im.height, QImage.Format_RGBA8888).copy()
             return None if img.isNull() else img.scaled(900, 900, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        if cat == "pdf" or p.suffix.lower() in (".cbz", ".epub", ".xps"):
-            import fitz
-            with fitz.open(str(p)) as doc:
-                pix = doc[0].get_pixmap(dpi=90)
-                return QImage(pix.samples, pix.width, pix.height, pix.stride,
-                              QImage.Format_RGB888 if pix.n == 3 else QImage.Format_RGBA8888).copy()
+        if (cat in DOC_PREVIEW_CATS and p.suffix.lower() not in TEXTLIKE_EXT) or p.suffix.lower() in (".cbz", ".xps"):
+            return document_page_image(p, 900)
         if cat == "video":
             import subprocess
             import tempfile
@@ -7465,7 +7604,7 @@ class DragWatcher(QObject):
                         self.shaken.emit()
                 any_drag = int(settings().value("detect_any", 0)) == 1
                 for m, name in keys.items():
-                    if held[name] and not self.prev.get(name):
+                    if held.get(name) and not self.prev.get(name):
                         if any_drag or winsys.file_drag_active():
                             self.tapped.emit(m)
         else:
@@ -7711,8 +7850,12 @@ class DragWheelApp(QObject):
 
     # ---- triggers
     def on_tap(self, mode):
+        now = time.monotonic()
+        if now - getattr(self, "_last_tap", 0.0) < 0.22:
+            return                                    # one press is one toggle, never open-then-close
+        self._last_tap = now
         if self.wheel.is_open():
-            if mode == self.wheel.mode and self.wheel.paths:
+            if mode == self.wheel.mode:
                 self.wheel.dismiss()                 # the same key again closes the wheel
                 return
             if mode != self.wheel.mode:
@@ -8669,10 +8812,17 @@ class CrashDialog(QDialog):
 
 
 _CRASH_SEEN = set()
+_CRASH_LOGGED = set()
 
 
 def report_crash(kind, details):
-    """Every crash goes to the log and the crash folder; the report window only when crash reports are on."""
+    """Every crash goes to the log and the crash folder (once per kind of error per session); the report window
+    only when crash reports are on."""
+    key = (details.strip().splitlines()[-1] if details.strip() else kind) + "|" + \
+        next((ln.strip() for ln in reversed(details.splitlines()) if ln.strip().startswith("File ")), "")
+    if key in _CRASH_LOGGED:
+        return
+    _CRASH_LOGGED.add(key)
     text = crash_report_text(kind, details)
     import time
     try:
@@ -8680,7 +8830,6 @@ def report_crash(kind, details):
     except OSError:
         pass
     winsys.log(f"crash: {kind}: {details.strip().splitlines()[-1] if details.strip() else ''}")
-    key = details.strip().splitlines()[-1] if details.strip() else kind
     if settings().value("crash_reports", "false") != "true" or key in _CRASH_SEEN:
         return
     _CRASH_SEEN.add(key)
