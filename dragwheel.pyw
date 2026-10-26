@@ -6041,6 +6041,16 @@ class WheelLayoutDialog(QDialog):
         paths = [engine._fake_path(cat)] if cat not in ("folder",) else ["C:/example/folder"]
         if mode == "convert":
             ops = engine.conversions(paths)
+            # a JPG never offers "JPG", so also ask a second type of the same kind: every format can be arranged
+            alt = {"image": "png", "video": "mkv", "audio": "wav", "document": "odt", "slides": "odp",
+                   "spreadsheet": "ods", "ebook": "mobi", "comic": "cbr", "font": "otf", "subtitle": "vtt",
+                   "archive": "7z"}.get(cat)
+            if alt:
+                have = {o.id for o in ops}
+                for i, o in enumerate(engine.conversions([engine._fake_path(cat, alt)])):
+                    if o.id not in have:
+                        ops.insert(min(i, len(ops)), o)
+                        have.add(o.id)
         elif mode == "tool":
             ops = engine.tools(paths)
         else:
