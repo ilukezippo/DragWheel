@@ -10,10 +10,12 @@
 - New subtle sounds when the wheel opens and closes (with the click sounds and their volume)
 - Changing the language or theme in Settings fades smoothly instead of flashing
 - **Unblock** on the Actions wheel: removes Windows' "This file came from another computer" mark from downloaded files (and everything inside a folder)
-- **Rename saved links** (right-click a float → Saved links): rename the one playing, or rename, reorder and remove them all in *Manage saved links…*
+- **Rename saved links** (right-click a float → Saved links): rename the one playing, or rename, reorder, add, remove or clear them all in *Manage saved links…*
 - An empty float: *Open* and double-click choose a file (the window now comes to the front); *Show in Explorer* and *Copy path* only show when something is open
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
 - Fixed: Settings → Wheel slices now lists every format of a type (JPG was missing for pictures)
+- Fixed: links reopened after an update or at Windows start were not added to Saved links
+- Fixed: right-clicking a float playing a link could fail (Repeat menu)
 - Fixed: a crash repeating many times a second is written to the log only once
 
 ## 1.2.0 — October 2026

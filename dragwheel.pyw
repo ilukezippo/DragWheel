@@ -2837,18 +2837,17 @@ class SavedLinksDialog(QDialog):
         tip.setWordWrap(True)
         lay.addWidget(tip)
         self.list = QListWidget()
+        self.list.setStyleSheet("QListWidget::item{padding:6px 8px; min-height:24px}"
+                                "QListWidget QLineEdit{padding:2px 6px; min-height:26px; margin:0}")
         self.list.setDragDropMode(QAbstractItemView.InternalMove)
         self.list.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
                                   | QAbstractItemView.SelectedClicked)
         for it in saved_links():
-            li = QListWidgetItem(link_name(it))
-            li.setData(Qt.UserRole, dict(it))
-            li.setToolTip(it["url"])
-            li.setFlags(li.flags() | Qt.ItemIsEditable)
-            self.list.addItem(li)
+            self._add_item(it)
         lay.addWidget(self.list, 1)
         row = QHBoxLayout()
-        for label, fn in ((tr("Play"), self._play), (tr("Rename"), self._rename), (tr("Remove"), self._remove)):
+        for label, fn in ((tr("Play"), self._play), (tr("Add…"), self._add), (tr("Rename"), self._rename),
+                          (tr("Remove"), self._remove), (tr("Clear the list"), self._clear)):
             b = QPushButton(label)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -2862,6 +2861,49 @@ class SavedLinksDialog(QDialog):
         lay.addLayout(row)
         if self.list.count():
             self.list.setCurrentRow(0)
+
+    def _add_item(self, it, select=False):
+        from PySide6.QtCore import QSize
+        from PySide6.QtWidgets import QListWidgetItem
+        li = QListWidgetItem(link_name(it))
+        li.setData(Qt.UserRole, dict(it))
+        li.setToolTip(it["url"])
+        li.setFlags(li.flags() | Qt.ItemIsEditable)
+        li.setSizeHint(QSize(0, 36))                 # room to type when renaming
+        self.list.addItem(li)
+        if select:
+            self.list.setCurrentItem(li)
+        return li
+
+    def _add(self):
+        from PySide6.QtWidgets import QInputDialog
+        clip = QGuiApplication.clipboard().text().strip()
+        url, ok = QInputDialog.getText(self, tr("Add…"), tr("Link to a video or song"),
+                                       text=clip if engine.is_link(clip) else "")
+        url = url.strip()
+        if not ok or not url:
+            return
+        if not engine.is_link(url):
+            QMessageBox.information(self, tr("Saved links"), tr("That isn't a link to a web page."))
+            return
+        for i in range(self.list.count()):
+            if self.list.item(i).data(Qt.UserRole)["url"] == url:
+                self.list.setCurrentRow(i)
+                return
+        name, ok = QInputDialog.getText(self, tr("Rename"), tr("Name for this link (empty = the page's title)"))
+        it = {"url": url, "title": url}
+        if ok and name.strip():
+            it["name"] = name.strip()
+        li = self._add_item(it)
+        self.list.takeItem(self.list.row(li))       # newest first, like links you play
+        self.list.insertItem(0, li)
+        self.list.setCurrentItem(li)
+
+    def _clear(self):
+        if not self.list.count():
+            return
+        if QMessageBox.question(self, tr("Saved links"), tr("Remove all saved links?")) == QMessageBox.Yes:
+            self.list.clear()
 
     def _items(self):
         out = []
@@ -4328,7 +4370,7 @@ class FloatWindow(QWidget):
                     continue
                 a = rm.addAction(label)
                 a.setCheckable(True)
-                a.setChecked(self.repeat == key or (self.link and key == "one" and self.repeat == "all"))
+                a.setChecked(bool(self.repeat == key or (self.link and key == "one" and self.repeat == "all")))
                 a.triggered.connect(lambda _=False, k=key: self.set_repeat(k))
         if self.player:
             m.addSeparator()
@@ -8517,8 +8559,12 @@ class DragWheelApp(QObject):
             self.busy_links = max(0, getattr(self, "busy_links", 1) - 1)
             if card is not None and card in self.toast.cards:
                 card.close_card()
-            if not err and info and not pin and not quiet:
-                remember_link(info.get("page") or url, info.get("title"))
+            if not err and info:
+                page = info.get("page") or url
+                if not pin and not quiet:
+                    remember_link(page, info.get("title"))       # newest first
+                elif not any(x["url"] in (page, url) for x in saved_links()):
+                    remember_link(page, info.get("title"))       # reopened or refreshed floats are kept too
             if err and pin is not None and pin.get("_tries", 0) < 4:     # at sign-in the network may not be up yet
                 pin["_tries"] = pin.get("_tries", 0) + 1
                 QTimer.singleShot(15000, lambda: self._resolve_and_play(url, None, pin=pin))
