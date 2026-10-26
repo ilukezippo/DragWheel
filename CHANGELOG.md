@@ -13,6 +13,7 @@
 - **Rename saved links** (right-click a float → Saved links): rename the one playing, or rename, reorder and remove them all in *Manage saved links…*
 - An empty float: *Open* and double-click choose a file (the window now comes to the front); *Show in Explorer* and *Copy path* only show when something is open
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
+- Fixed: Settings → Wheel slices now lists every format of a type (JPG was missing for pictures)
 - Fixed: a crash repeating many times a second is written to the log only once
 
 ## 1.2.0 — October 2026
