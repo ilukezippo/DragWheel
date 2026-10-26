@@ -72,6 +72,7 @@ Var WelcomeBody
 
 !insertmacro MUI_UNPAGE_WELCOME
 !insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_COMPONENTS
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_UNPAGE_FINISH
 
@@ -238,6 +239,20 @@ Section "$(SecStartupName)" SecStartup
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APPNAME}" '"$INSTDIR\${EXE}" --tray'
 SectionEnd
 
+; Optional downloads: DragWheel fetches the ticked ones by itself right after it starts (with a progress card),
+; so the installer stays small and a failed download can simply be retried from the app.
+SectionGroup "$(SecDlGroup)" SecDl
+  Section /o "$(SecDlBg)" SecDlBg
+    WriteRegStr HKCU "${SETTINGS_KEY}\predownload" "isnet" "1"
+  SectionEnd
+  Section /o "$(SecDlSpeech)" SecDlSpeech
+    WriteRegStr HKCU "${SETTINGS_KEY}\predownload" "whisper-small" "1"
+  SectionEnd
+  Section /o "$(SecDlLinks)" SecDlLinks
+    WriteRegStr HKCU "${SETTINGS_KEY}\predownload" "yt-dlp" "1"
+  SectionEnd
+SectionGroupEnd
+
 Section /o "$(SecDesktopName)" SecDesktop
   CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0
 SectionEnd
@@ -247,6 +262,10 @@ SectionEnd
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMenu}    "$(SecMenuDesc)"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecStartup} "$(SecStartupDesc)"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "$(SecDesktopDesc)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDl}      "$(SecDlDesc)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDlBg}    "$(SecDlBgDesc)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDlSpeech} "$(SecDlSpeechDesc)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDlLinks} "$(SecDlLinksDesc)"
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Function .onInit
@@ -303,8 +322,11 @@ Function un.onInit
   !insertmacro MUI_UNGETLANGUAGE
 FunctionEnd
 
-Section "Uninstall"
+Section "!un.$(UnSecApp)" UnSecApp
+  SectionIn RO
+  SetShellVarContext current
   Delete "$LOCALAPPDATA\Microsoft\WindowsApps\dragwheel.cmd"
+  SetShellVarContext all
   !insertmacro StopDragWheel
   nsExec::Exec 'netsh advfirewall firewall delete rule name="DragWheel (Send to phone)"'
   Pop $0
@@ -314,7 +336,6 @@ Section "Uninstall"
   DeleteRegKey   HKCU "Software\Classes\Directory\Background\shell\DragWheel"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APPNAME}"
   DeleteRegKey   HKLM "${UNINST_KEY}"
-  DeleteRegKey   HKCU "Software\DragWheel"
 
   SetShellVarContext all
   Delete "$DESKTOP\${APPNAME}.lnk"
@@ -329,6 +350,29 @@ Section "Uninstall"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd
+
+; unticked = kept, so reinstalling later brings everything back as it was
+Section /o "un.$(UnSecSettings)" UnSecSettings
+  DeleteRegKey HKCU "Software\DragWheel"
+  SetShellVarContext current
+  RMDir /r "$LOCALAPPDATA\DragWheel\crash"
+  Delete "$LOCALAPPDATA\DragWheel\*.*"
+  RMDir "$LOCALAPPDATA\DragWheel"
+  SetShellVarContext all
+SectionEnd
+
+Section /o "un.$(UnSecDownloads)" UnSecDownloads
+  SetShellVarContext current
+  RMDir /r "$LOCALAPPDATA\DragWheel\models"
+  RMDir "$LOCALAPPDATA\DragWheel"
+  SetShellVarContext all
+SectionEnd
+
+!insertmacro MUI_UNFUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${UnSecApp}       "$(UnSecAppDesc)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${UnSecSettings}  "$(UnSecSettingsDesc)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${UnSecDownloads} "$(UnSecDownloadsDesc)"
+!insertmacro MUI_UNFUNCTION_DESCRIPTION_END
 
 ; ---------------------------------------------------------------------------
 ; Strings
@@ -360,6 +404,34 @@ LangString RunNow         ${LANG_ENGLISH} "Start ${APPNAME} now"
 LangString RunNow         ${LANG_ARABIC}  "تشغيل ${APPNAME} الآن"
 LangString FinishText     ${LANG_ENGLISH} "${APPNAME} lives in the system tray.$\r$\n$\r$\nDrag any file and tap Shift to try it."
 LangString FinishText     ${LANG_ARABIC}  "يعمل ${APPNAME} من شريط المهام.$\r$\n$\r$\nاسحب أي ملف واضغط Shift لتجربته."
+LangString UnSecApp       ${LANG_ENGLISH} "${APPNAME} (the app, its menus and shortcuts)"
+LangString UnSecApp       ${LANG_ARABIC}  "${APPNAME} (التطبيق وقوائمه واختصاراته)"
+LangString UnSecSettings  ${LANG_ENGLISH} "Also remove my settings"
+LangString UnSecSettings  ${LANG_ARABIC}  "إزالة إعداداتي أيضًا"
+LangString UnSecDownloads ${LANG_ENGLISH} "Also remove downloaded AI models and tools"
+LangString UnSecDownloads ${LANG_ARABIC}  "إزالة نماذج الذكاء الاصطناعي والأدوات المنزّلة أيضًا"
+LangString UnSecAppDesc   ${LANG_ENGLISH} "Removes ${APPNAME} from this PC."
+LangString UnSecAppDesc   ${LANG_ARABIC}  "يزيل ${APPNAME} من هذا الجهاز."
+LangString UnSecSettingsDesc ${LANG_ENGLISH} "Your settings, presets, chains, saved links, watch folders and the log. Leave it unticked to keep them for when you install ${APPNAME} again."
+LangString UnSecSettingsDesc ${LANG_ARABIC}  "إعداداتك والإعدادات المسبقة والسلاسل والروابط المحفوظة ومجلدات المراقبة والسجل. اتركه دون تحديد للاحتفاظ بها عند تثبيت ${APPNAME} مرة أخرى."
+LangString UnSecDownloadsDesc ${LANG_ENGLISH} "The AI models and yt-dlp downloaded after installing (they can be several hundred MB)."
+LangString UnSecDownloadsDesc ${LANG_ARABIC}  "نماذج الذكاء الاصطناعي وأداة yt-dlp التي نُزّلت بعد التثبيت (قد تبلغ عدة مئات من الميغابايت)."
+LangString SecDlGroup     ${LANG_ENGLISH} "Optional downloads"
+LangString SecDlGroup     ${LANG_ARABIC}  "تنزيلات اختيارية"
+LangString SecDlBg        ${LANG_ENGLISH} "Remove background — AI model (178 MB)"
+LangString SecDlBg        ${LANG_ARABIC}  "إزالة الخلفية — نموذج ذكاء اصطناعي (178 ميغابايت)"
+LangString SecDlSpeech    ${LANG_ENGLISH} "Speech to text — AI model (190 MB)"
+LangString SecDlSpeech    ${LANG_ARABIC}  "تحويل الكلام إلى نص — نموذج ذكاء اصطناعي (190 ميغابايت)"
+LangString SecDlLinks     ${LANG_ENGLISH} "Play YouTube and other links — yt-dlp (18 MB)"
+LangString SecDlLinks     ${LANG_ARABIC}  "تشغيل روابط يوتيوب وغيرها — yt-dlp (18 ميغابايت)"
+LangString SecDlDesc      ${LANG_ENGLISH} "Parts that are downloaded once instead of being inside the installer. ${APPNAME} downloads the ticked ones right after it starts. Anything you skip is offered the first time you use it."
+LangString SecDlDesc      ${LANG_ARABIC}  "أجزاء تُنزَّل مرة واحدة بدلًا من وجودها داخل برنامج التثبيت. يُنزّل ${APPNAME} المحدَّد منها فور تشغيله، وما تتركه يُعرض عليك عند أول استخدام."
+LangString SecDlBgDesc    ${LANG_ENGLISH} "Removes the background of photos (Tools → Remove background, and in Crop & Resize). Runs offline."
+LangString SecDlBgDesc    ${LANG_ARABIC}  "يزيل خلفية الصور (الأدوات ← إزالة الخلفية، وفي القص وتغيير الحجم). يعمل دون إنترنت."
+LangString SecDlSpeechDesc ${LANG_ENGLISH} "Turns speech in videos and recordings into subtitles and text, Arabic included (Tools → Transcribe). Runs offline."
+LangString SecDlSpeechDesc ${LANG_ARABIC}  "يحوّل الكلام في الفيديو والتسجيلات إلى ترجمة ونص، بما فيها العربية (الأدوات ← تفريغ). يعمل دون إنترنت."
+LangString SecDlLinksDesc ${LANG_ENGLISH} "Lets Float play links from YouTube and about 1,800 other sites (Play copied link in Float)."
+LangString SecDlLinksDesc ${LANG_ARABIC}  "يتيح للنافذة العائمة تشغيل روابط يوتيوب ونحو 1800 موقع آخر (تشغيل الرابط المنسوخ)."
 LangString SecCoreName    ${LANG_ENGLISH} "${APPNAME} (required)"
 LangString SecCoreName    ${LANG_ARABIC}  "${APPNAME} (مطلوب)"
 LangString SecMenuName    ${LANG_ENGLISH} "Explorer right-click menu and Send To"

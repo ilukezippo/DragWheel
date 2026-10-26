@@ -729,6 +729,87 @@ def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: F
     raise OSError(tr("Couldn't upload. Check the internet connection and try again."))
 
 
+def share_links() -> list:
+    """Internet links still alive: [{"url", "name", "expires"}] (Unix time)."""
+    import time
+    try:
+        v = json.loads(settings().value("share_links", "[]") or "[]")
+    except (TypeError, ValueError):
+        v = []
+    alive = [x for x in v if isinstance(x, dict) and x.get("expires", 0) > time.time()]
+    if len(alive) != len(v):
+        settings().setValue("share_links", json.dumps(alive, ensure_ascii=False))
+    return alive
+
+
+def remember_share_link(url, name, minutes):
+    import time
+    links = [x for x in share_links() if x["url"] != url]
+    links.insert(0, {"url": url, "name": name, "expires": time.time() + minutes * 60})
+    settings().setValue("share_links", json.dumps(links[:20], ensure_ascii=False))
+
+
+def qr_pixmap(text, scale=7) -> QPixmap:
+    import io as _io
+    import segno
+    buf = _io.BytesIO()
+    segno.make(text, error="m").save(buf, kind="png", scale=scale, border=3, dark="#000", light="#fff")
+    return QPixmap.fromImage(QImage.fromData(buf.getvalue()))
+
+
+def _time_left(expires) -> str:
+    import time
+    m = max(1, int((expires - time.time()) // 60))
+    return tr("{n} min left", n=m) if m < 60 else tr("{h} h {m} min left", h=m // 60, m=m % 60)
+
+
+class ShareQR(QDialog):
+    """Tray → Send to phone — show QR code: an internet link made earlier, until it runs out."""
+
+    def __init__(self, item):
+        super().__init__(None, Qt.WindowStaysOnTopHint)
+        from PySide6.QtWidgets import QLayout
+        self.item = item
+        self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetFixedSize)
+        head = QLabel(f"<b>{item['name']}</b>")
+        head.setFixedWidth(330)
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        self.left = QLabel()
+        self.left.setStyleSheet(f"color:{theme.hexc('dim')}")
+        lay.addWidget(self.left)
+        qr = QLabel()
+        pm = qr_pixmap(item["url"])
+        qr.setPixmap(pm)
+        qr.setFixedSize(pm.size())
+        lay.addWidget(qr, 0, Qt.AlignHCenter)
+        link = QLabel(f"<span style='color:{theme.hexc('dim')}'>{item['url']}</span>")
+        link.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        link.setAlignment(Qt.AlignCenter)
+        lay.addWidget(link)
+        b = QPushButton(tr("Copy link"))
+        b.clicked.connect(lambda: QGuiApplication.clipboard().setText(item["url"]))
+        lay.addWidget(b)
+        b = QPushButton(tr("Close"))
+        b.clicked.connect(self.close)
+        lay.addWidget(b)
+        self._t = QTimer(self, interval=20000, timeout=self._tick)
+        self._t.start()
+        self._tick()
+
+    def _tick(self):
+        import time
+        if self.item["expires"] <= time.time():
+            self.close()                                   # the link has run out
+            return
+        self.left.setText(_time_left(self.item["expires"]))
+
+
 class InternetShare(QDialog):
     """Send to phone through a temporary internet link: upload, then a QR code to open it on any phone."""
     MINUTES = [5, 10, 15, 30, 60, 12 * 60, 24 * 60, 72 * 60]
@@ -800,6 +881,7 @@ class InternetShare(QDialog):
 
     def _start(self):
         settings().setValue("share_minutes", self.hours.currentData())
+        self.shared_name = self.paths[0].name if len(self.paths) == 1 else tr("{n} files", n=len(self.paths))
         self.go.setEnabled(False)
         self.hours.setEnabled(False)
         self.bar.show()
@@ -841,6 +923,7 @@ class InternetShare(QDialog):
             return
         self.url = val
         winsys.log(f"send to phone (internet): uploaded to {host}")
+        remember_share_link(val, self.shared_name, int(self.hours.currentData()))
         self.status.setText("<b>" + tr("Scan with your phone's camera") + "</b> — " +
                             tr("works on any network, even mobile data."))
         try:
@@ -4062,6 +4145,8 @@ border:1px solid $border;border-radius:8px;margin-top:22px;padding:10px 8px 8px 
 QLineEdit,QComboBox{background:$surface;color:$text;border:1px solid $border;border-radius:6px;padding:5px 8px;font:10pt 'Segoe UI'}
 QLineEdit:focus,QComboBox:focus{border-color:$accent} QCheckBox{color:$text;font:10pt 'Segoe UI'}
 QListWidget{background:$surface;color:$text;border:1px solid $border;border-radius:6px;padding:2px}
+QScrollBar:vertical{background:transparent;width:10px;margin:2px} QScrollBar::handle:vertical{background:$button;border-radius:4px;min-height:30px}
+QScrollBar::handle:vertical:hover{background:$hover} QScrollBar::add-line,QScrollBar::sub-line{height:0;width:0} QScrollBar::add-page,QScrollBar::sub-page{background:transparent}
 QListWidget::item{padding:3px 4px} QListWidget::item:selected{background:$accent;color:$on_accent;border-radius:4px}
 QPushButton{background:$button;color:$text;border:none;border-radius:6px;padding:6px 16px;font:600 9pt 'Segoe UI'}
 QPushButton:default{background:$accent;color:$on_accent} QPushButton:hover{background:$hover} QPushButton:default:hover{background:$accent2}
@@ -6274,10 +6359,20 @@ class SettingsDialog(QDialog):
         root.setContentsMargins(12, 8, 12, 12)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
-        self.tabs.addTab(self._settings_tab(st), tr("Settings"))
-        self.tabs.addTab(self._everyday_tab(st), tr("Everyday"))
-        self.tabs.addTab(self._mine_tab(), tr("Make it yours"))
-        self.tabs.addTab(self._about_tab(st), tr("About"))
+        def scroll(page):                          # long tabs scroll instead of growing past the screen
+            from PySide6.QtWidgets import QScrollArea
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.NoFrame)
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            area.setWidget(page)
+            area.setStyleSheet("QScrollArea{background:transparent}")
+            area.viewport().setAutoFillBackground(False)
+            return area
+        self.tabs.addTab(scroll(self._settings_tab(st)), tr("Settings"))
+        self.tabs.addTab(scroll(self._everyday_tab(st)), tr("Everyday"))
+        self.tabs.addTab(scroll(self._mine_tab()), tr("Make it yours"))
+        self.tabs.addTab(scroll(self._about_tab(st)), tr("About"))
         self.tabs.setCurrentIndex(keep_tab)
         root.addWidget(self.tabs)
 
@@ -6289,6 +6384,9 @@ class SettingsDialog(QDialog):
         bb.rejected.connect(self.reject)
         root.addWidget(bb)
         self.adjustSize()
+        scr = (self.screen() or QGuiApplication.primaryScreen()).availableGeometry()
+        widest = max(self.tabs.widget(i).widget().sizeHint().width() for i in range(self.tabs.count()))
+        self.resize(min(scr.width() - 40, max(self.width(), widest + 60)), min(scr.height() - 80, 760))
 
     # ---- Settings tab
     def _settings_tab(self, st):
@@ -6458,7 +6556,8 @@ class SettingsDialog(QDialog):
         lbl.setWordWrap(True)
         v.addWidget(lbl)
         self.watch_list = QListWidget()
-        self.watch_list.setMinimumHeight(80)
+        self.watch_list.setMinimumHeight(70)
+        self.watch_list.setMaximumHeight(130)
         v.addWidget(self.watch_list)
         row = QHBoxLayout()
         b = QPushButton(tr("Add…"))
@@ -7397,6 +7496,7 @@ class DragWheelApp(QObject):
         self._update_jobs = set()
         QTimer.singleShot(8000, self._auto_update_check)
         QTimer.singleShot(150, self.restore_pinned_floats)
+        self.predownload()
 
     def restore_pinned_floats(self):
         """Reopen the floats that were open before an update, and those set to 'Open when Windows starts'."""
@@ -7434,6 +7534,7 @@ class DragWheelApp(QObject):
         menu.addAction(tr("Play copied link in Float"), self.play_link)
         recent = menu.addMenu(tr("Recent results"))
         recent.aboutToShow.connect(lambda m=recent: self._fill_recent(m))
+        self._qr_menu = menu.addMenu(tr("Send to phone — show QR code"))
         menu.addSeparator()
         menu.addAction(tr("How it works"), self.show_help)
         menu.addAction(tr("Settings…"), self.show_settings)
@@ -7452,8 +7553,26 @@ class DragWheelApp(QObject):
         """Conversions/tools still running and not already being cancelled."""
         return [w for w in list(self.running) if not w.cancel_requested]
 
+    def _fill_qr_menu(self):
+        sub = self._qr_menu
+        sub.clear()
+        links = share_links()
+        sub.menuAction().setVisible(bool(links))           # only while an internet link is still alive
+        for it in links:
+            name = it["name"] if len(it["name"]) <= 40 else it["name"][:37] + "…"
+            sub.addAction(f"{name}   ·   {_time_left(it['expires'])}", lambda it=it: self._show_qr(it))
+
+    def _show_qr(self, it):
+        w = ShareQR(it)
+        self._phone_windows = getattr(self, "_phone_windows", [])
+        self._phone_windows.append(w)
+        w.show()
+        w.raise_()
+        w.activateWindow()
+
     def _refresh_tray_menu(self):
         """Cancel entries go first in the tray menu, only while work is in progress."""
+        self._fill_qr_menu()
         menu = self._menu
         for act in self._cancel_actions:
             menu.removeAction(act)
@@ -7665,11 +7784,39 @@ class DragWheelApp(QObject):
         """Ask once, then download the AI model `op` needs and run the op when it's ready."""
         self._ensure_model(op.model, tr(op.label).rstrip("…"), lambda: self._start(op, paths, params))
 
-    def _ensure_model(self, name, what, on_ready):
+    def predownload(self):
+        """Downloads ticked in the installer ("Optional downloads"), one after another, after DragWheel starts."""
+        s = settings()
+        s.beginGroup("predownload")
+        names = [k for k in s.childKeys() if s.value(k) == "1"]
+        s.endGroup()
+        labels = {"isnet": tr("Remove background"), "whisper-small": tr("Transcribe…").rstrip("…"),
+                  "yt-dlp": tr("Play copied link in Float")}
+        todo = [n for n in names if n in engine.MODELS]
+
+        def nxt():
+            while todo:
+                name = todo.pop(0)
+                if engine.model_ready(name):
+                    settings().remove(f"predownload/{name}")
+                    continue
+
+                def done(name=name):
+                    settings().remove(f"predownload/{name}")
+                    QTimer.singleShot(500, nxt)
+                self._ensure_model(name, labels.get(name, name), done, ask=False, on_fail=lambda: QTimer.singleShot(500, nxt))
+                return
+        if todo:
+            winsys.log(f"optional downloads from the installer: {todo}")
+            QTimer.singleShot(4000, nxt)
+
+    def _ensure_model(self, name, what, on_ready, ask=True, on_fail=None):
         """Download a model or tool once (after asking), then call on_ready()."""
         if engine.model_ready(name):
             on_ready()
             return
+        if not ask:
+            return self._download_model(name, what, on_ready, on_fail)
         m = engine.MODELS[name]
         mb = m.get("mb") or m["size"] // 1048576
         box = QMessageBox()
@@ -7689,6 +7836,9 @@ class DragWheelApp(QObject):
         box.exec()
         if box.clickedButton() is not ok:
             return
+        self._download_model(name, what, on_ready, on_fail)
+
+    def _download_model(self, name, what, on_ready, on_fail=None):
         job = ModelDownload(name)
         job.setAutoDelete(False)
         self._update_jobs.add(job)
@@ -7707,10 +7857,14 @@ class DragWheelApp(QObject):
             if job.card in self.toast.cards:
                 job.card.close_card()
             if err == CANCELLED:
+                if on_fail:
+                    on_fail()
                 return
             if err:
                 self.toast.show_msg(tr("Couldn't download the AI model") if name != "yt-dlp" else tr("Couldn't do that"),
                                     err, "err", 8000)
+                if on_fail:
+                    on_fail()
                 return
             winsys.log(f"model {name} ready: {path}")
             on_ready()
