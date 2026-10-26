@@ -5968,7 +5968,10 @@ def wheel_layout() -> dict:
 
 def apply_wheel_layout(mode, category, ops):
     """Your order and hidden slices for this wheel and file type."""
-    lay = wheel_layout().get(f"{mode}/{category}")
+    layouts = wheel_layout()
+    lay = layouts.get(f"{mode}/{category}")
+    if not lay and mode == "action":
+        lay = layouts.get("action/*")                  # Actions set up once for all file types
     if not lay:
         return ops
     hidden = set(lay.get("hidden", []))
@@ -6272,11 +6275,26 @@ class WheelLayoutDialog(QDialog):
         lay.addWidget(bb)
         self.layouts = wheel_layout()
         self._key = None
-        self.mode.currentIndexChanged.connect(self._load)
+        self._all_touched = False
+        self.mode.currentIndexChanged.connect(self._mode_changed)
         self.kind.currentIndexChanged.connect(self._load)
+        self._mode_changed()
+
+    def _mode_changed(self):
+        """Actions are the same for every type of file, so they can be arranged once for all of them."""
+        self.kind.blockSignals(True)
+        has_all = self.kind.count() and self.kind.itemData(0) == "*"
+        if self.mode.currentData() == "action" and not has_all:
+            self.kind.insertItem(0, tr("All file types"), "*")
+            self.kind.setCurrentIndex(0)
+        elif self.mode.currentData() != "action" and has_all:
+            self.kind.removeItem(0)
+            self.kind.setCurrentIndex(0)
+        self.kind.blockSignals(False)
         self._load()
 
     def _ops(self, mode, cat):
+        cat = "image" if cat == "*" else cat
         paths = [engine._fake_path(cat)] if cat not in ("folder",) else ["C:/example/folder"]
         if mode == "convert":
             ops = engine.conversions(paths)
@@ -6307,14 +6325,19 @@ class WheelLayoutDialog(QDialog):
             order.append(it.data(Qt.UserRole))
             if it.checkState() != Qt.Checked:
                 hidden.append(it.data(Qt.UserRole))
-        self.layouts[self._key] = {"order": order, "hidden": hidden}
+        new = {"order": order, "hidden": hidden}
+        if new == getattr(self, "_shown", None) and self._key not in self.layouts:
+            return                                     # only looked at, not changed: nothing to keep
+        if self._key == "action/*" and new != self._shown:
+            self._all_touched = True
+        self.layouts[self._key] = new
 
     def _load(self):
         from PySide6.QtWidgets import QListWidgetItem
         self._store()
         mode, cat = self.mode.currentData(), self.kind.currentData()
         self._key = f"{mode}/{cat}"
-        lay = self.layouts.get(self._key, {})
+        lay = self.layouts.get(self._key) or (self.layouts.get("action/*", {}) if mode == "action" else {})
         hidden = set(lay.get("hidden", []))
         order = {k: i for i, k in enumerate(lay.get("order", []))}
         ops = self._ops(mode, cat)
@@ -6329,6 +6352,7 @@ class WheelLayoutDialog(QDialog):
             it.setCheckState(Qt.Unchecked if o.id in hidden else Qt.Checked)
             self.list.addItem(it)
         self.list.blockSignals(False)
+        self._shown = {"order": [o.id for o in ops], "hidden": [o.id for o in ops if o.id in hidden]}
         self._redraw.start()
 
     def _update_preview(self):
@@ -6344,6 +6368,7 @@ class WheelLayoutDialog(QDialog):
                 hover = len(shown)
             shown.append(o)
         cat = self.kind.currentData()
+        cat = "image" if cat == "*" else cat
         paths = [engine._fake_path(cat)] if cat != "folder" else ["C:/example/folder"]
         self.preview.show_ops(self.mode.currentData(), paths, shown, hover)
 
@@ -6354,6 +6379,9 @@ class WheelLayoutDialog(QDialog):
 
     def _save_and_close(self):
         self._store()
+        if self._all_touched:                          # "All file types" was changed: it wins over per-type ones
+            for k in [k for k in self.layouts if k.startswith("action/") and k != "action/*"]:
+                self.layouts.pop(k)
         settings().setValue("wheel_layout", json.dumps({k: v for k, v in self.layouts.items() if v.get("hidden") or v.get("order")}))
         self.accept()
 
@@ -7172,7 +7200,12 @@ class SettingsDialog(QDialog):
         row4 = QHBoxLayout()
         last = float(settings().value("last_update_check", 0) or 0)
         import time as _t
-        when = _t.strftime("%Y-%m-%d %H:%M", _t.localtime(last)) if last else tr("never")
+        if last:
+            lt = _t.localtime(last)
+            hour = lt.tm_hour % 12 or 12
+            when = f"{_t.strftime('%Y-%m-%d', lt)}  {hour}:{lt.tm_min:02d} {tr('AM') if lt.tm_hour < 12 else tr('PM')}"
+        else:
+            when = tr("never")
         lastlbl = QLabel(tr("Last checked: {when}", when=when))
         lastlbl.setObjectName("dim")
         row4.addWidget(lastlbl, 1)

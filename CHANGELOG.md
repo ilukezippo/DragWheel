@@ -3,6 +3,8 @@
 ## 1.2.1 — October 2026
 
 - **New Settings layout:** clear pages down the side (General, Wheel, Sounds & notifications, Files & jobs, Float, Customize, Advanced, About) with each section on its own card; Segoe UI everywhere, more room next to tick boxes, and buttons no longer stay lit after you click them
+- **Actions for all file types at once:** in Customize → Choose slices, the Actions wheel can be arranged once for every type of file
+- "Last checked" for updates shows the time with AM/PM
 - **MKV H.264 and MKV H.265** (smaller) instead of a single MKV slice
 - **DOC, XLS and PPT** for older Office: Word, Excel and PowerPoint files can be saved in the 97–2003 formats
 - **Float and Quick preview show documents:** PDFs, e-books, comics, Word (DOC, DOCX, RTF, ODT), Excel, PowerPoint, text, Markdown, HTML and CSV files show their first page instead of an icon
