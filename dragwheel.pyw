@@ -6544,7 +6544,7 @@ class SettingsDialog(QDialog):
         self.finish_anim = QCheckBox(tr("Animate the tick on the notification"))
         self.finish_anim.setChecked(st["finish_anim"])
         v.addWidget(self.finish_anim)
-        self.finish_sound = QCheckBox(tr("Play a sound (Windows' Calendar sound when done, Messaging sound on errors, Cancel and Undo)"))
+        self.finish_sound = QCheckBox(tr("Play notification sounds"))
         self.finish_sound.setChecked(st["finish_sound"])
         v.addWidget(self.finish_sound)
         from PySide6.QtWidgets import QSlider
