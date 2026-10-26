@@ -3223,14 +3223,16 @@ class FloatWindow(QWidget):
 
     def display_name(self):
         if self.link:
-            saved = next((x for x in saved_links() if x["url"] == self.link.get("page")), None)
+            keys = (self.link.get("saved"), self.link.get("page"))
+            saved = next((x for x in saved_links() if x["url"] in keys), None)
             return link_name(saved) if saved else self.link["title"]
         return Path(self.path).name
 
     def _rename_link(self):
         from PySide6.QtWidgets import QInputDialog
-        page = self.link.get("page") if self.link else None
-        saved = next((x for x in saved_links() if x["url"] == page), None)
+        keys = (self.link.get("saved"), self.link.get("page")) if self.link else ()
+        saved = next((x for x in saved_links() if x["url"] in keys), None)
+        page = saved["url"] if saved else None
         if not saved:
             return
         self.activateWindow()
@@ -4399,13 +4401,14 @@ class FloatWindow(QWidget):
             for it in saved:
                 title = link_name(it)
                 title = title if len(title) <= 60 else title[:57] + "…"
-                a = sm.addAction(title, lambda u=it["url"]: _APP.play_link(target=self, url=u))
+                a = sm.addAction(title, lambda _=False, u=it["url"]: _APP.play_link(target=self, url=u))
                 a.setToolTip(it["url"])
             if saved:
                 sm.addSeparator()
-                if self.link and any(x["url"] == self.link.get("page") for x in saved):
+                cur_key = next((x["url"] for x in saved if self.link and x["url"] in (self.link.get("saved"), self.link.get("page"))), None)
+                if cur_key:
                     sm.addAction(tr("Rename this link…"), self._rename_link)
-                    sm.addAction(tr("Remove this link from the list"), lambda: forget_link(self.link.get("page")))
+                    sm.addAction(tr("Remove this link from the list"), lambda _=False, k=cur_key: forget_link(k))
                 sm.addAction(tr("Manage saved links…"),
                              lambda: SavedLinksDialog(lambda u: _APP.play_link(target=self, url=u)).exec())
                 sm.addAction(tr("Clear the list"), lambda: settings().setValue("float_links", "[]"))
@@ -8302,7 +8305,7 @@ class DragWheelApp(QObject):
         sub.menuAction().setVisible(bool(links))           # only while an internet link is still alive
         for it in links:
             name = it["name"] if len(it["name"]) <= 40 else it["name"][:37] + "…"
-            sub.addAction(f"{name}   ·   {_time_left(it['expires'])}", lambda it=it: self._show_qr(it))
+            sub.addAction(f"{name}   ·   {_time_left(it['expires'])}", lambda _=False, it=it: self._show_qr(it))
 
     def _show_qr(self, it):
         w = ShareQR(it)
@@ -8715,10 +8718,14 @@ class DragWheelApp(QObject):
                 card.close_card()
             if not err and info:
                 page = info.get("page") or url
+                # a saved link stays under the address you saved (the site may answer with a longer one)
+                saved_urls = [x["url"] for x in saved_links()]
+                key = url if url in saved_urls else page
+                info["saved"] = key
                 if not pin and not quiet:
-                    remember_link(page, info.get("title"))       # newest first
-                elif not any(x["url"] in (page, url) for x in saved_links()):
-                    remember_link(page, info.get("title"))       # reopened or refreshed floats are kept too
+                    remember_link(key, info.get("title"))        # newest first
+                elif key not in saved_urls:
+                    remember_link(key, info.get("title"))        # reopened or refreshed floats are kept too
             if err and pin is not None and pin.get("_tries", 0) < 4:     # at sign-in the network may not be up yet
                 pin["_tries"] = pin.get("_tries", 0) + 1
                 QTimer.singleShot(15000, lambda: self._resolve_and_play(url, None, pin=pin))
@@ -9056,9 +9063,9 @@ class DragWheelApp(QObject):
             name = p.name if len(p.name) <= 46 else p.name[:43] + "…"
             m = sub.addMenu(prov.icon(QFileInfo(str(p))), name)
             m.setToolTipsVisible(True)
-            m.addAction(tr("Open"), lambda p=p: os.startfile(str(p)) if hasattr(os, "startfile") else None)
-            m.addAction(tr("Show in folder"), lambda p=p: winsys.reveal([str(p)]))
-            m.addAction(tr("Open in Float"), lambda p=p: self.actions.float([str(p)], {}))
+            m.addAction(tr("Open"), lambda _=False, p=p: os.startfile(str(p)) if hasattr(os, "startfile") else None)
+            m.addAction(tr("Show in folder"), lambda _=False, p=p: winsys.reveal([str(p)]))
+            m.addAction(tr("Open in Float"), lambda _=False, p=p: self.actions.float([str(p)], {}))
             info = m.addAction(r.get("what", ""))
             info.setEnabled(False)
         sub.addSeparator()

@@ -20,6 +20,7 @@
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
 - **JPEG** slice next to JPG for pictures (same format, .jpeg name); Settings → Wheel slices lists every format of a type
 - Fixed: right-clicking many files at once (Explorer starts DragWheel once per file) now gathers all of them into one wheel, and a slice you already chose is applied to files that arrive late; Unblock also handles very long paths and read-only files
+- Fixed: choosing a saved link could play a different one (the link on the clipboard), and a renamed live link showed the video's own title again; the same fix applies to Recent results and the QR menu in the tray
 - Fixed: links reopened after an update or at Windows start were not added to Saved links
 - Fixed: right-clicking a float playing a link could fail (Repeat menu)
 - Fixed: a crash repeating many times a second is written to the log only once
