@@ -20,6 +20,7 @@
   <a href="https://ilukezippo.github.io/DragWheel/"><b>Website</b></a> ·
   <a href="../../releases/latest"><b>⬇ Download the installer</b></a> ·
   <a href="#how-to-use">How to use</a> ·
+  <a href="CHANGELOG.md">What's new</a> ·
   <a href="#supported-formats">Formats</a> ·
   <a href="#build-from-source">Build</a>
 </p>
@@ -63,6 +64,8 @@ All keys can be changed in **Settings** (tray icon → Settings).
 - **Everyday:** recent results in the tray, a queue for many files, Undo, watch folders, a command line (`dragwheel convert *.heic --to jpg`), quick preview (tap Space while dragging), wheel animations, sounds, high contrast
 - **AI, offline:** remove backgrounds, blur faces, speech to text in many languages including Arabic
 - **Smaller installer** (97 MB) and optional downloads you can tick during setup
+
+Everything that changed is in the [changelog](CHANGELOG.md).
 
 <table>
   <tr>

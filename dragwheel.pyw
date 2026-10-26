@@ -2009,14 +2009,34 @@ def _media_sound(words) -> str | None:
 _TICK = None
 
 
-def _tick_effect():
+_SELECT = None
+
+
+def _tick_effect(name="tick"):
     """Loaded once at start-up, so even the first click plays straight away."""
-    global _TICK
+    global _TICK, _SELECT
+    from PySide6.QtMultimedia import QSoundEffect
+    if name == "select":
+        if _SELECT is None:
+            _SELECT = QSoundEffect()
+            _SELECT.setSource(QUrl.fromLocalFile(asset("sounds/select.wav")))
+        return _SELECT
     if _TICK is None:
-        from PySide6.QtMultimedia import QSoundEffect
         _TICK = QSoundEffect()
         _TICK.setSource(QUrl.fromLocalFile(asset("sounds/tick.wav")))
     return _TICK
+
+
+def play_select():
+    """The deeper "press" when you choose a slice (like the iPod's centre button). Same switch and volume as the tick."""
+    if settings().value("tick_sound", "true") != "true":
+        return
+    try:
+        fx = _tick_effect("select")
+        fx.setVolume(max(0, min(100, int(settings().value("tick_volume", 70)))) / 100)
+        fx.play()
+    except Exception as e:
+        winsys.log(f"select sound: {e}")
 
 
 def play_tick(force=False):
@@ -6549,7 +6569,7 @@ class SettingsDialog(QDialog):
         v.addWidget(self.finish_sound)
         from PySide6.QtWidgets import QSlider
         row = QHBoxLayout()
-        self.tick_sound = QCheckBox(tr("Soft click when moving between slices"))
+        self.tick_sound = QCheckBox(tr("Click sounds on the wheel (moving and choosing)"))
         self.tick_sound.setChecked(st["tick_sound"])
         row.addWidget(self.tick_sound)
         row.addSpacing(12)
@@ -7530,7 +7550,8 @@ class DragWheelApp(QObject):
         self._peek = None
         self.watch = FolderWatch(self)
         try:
-            _tick_effect()                       # load the click sound now
+            _tick_effect()                       # load the click sounds now
+            _tick_effect("select")
         except Exception as e:
             winsys.log(f"tick sound: {e}")
         self.cursor_busy = CursorBusy()
@@ -7810,6 +7831,7 @@ class DragWheelApp(QObject):
     def execute(self, op: engine.Op, paths: list[str]):
         if op.id == "none":
             return
+        play_select()
         params = {}
         if getattr(op, "spec", None):
             params["_spec"] = op.spec
