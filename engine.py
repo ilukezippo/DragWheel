@@ -1168,6 +1168,10 @@ def image_to(fmt):
     return f
 
 
+def image_to_jpeg(src, p):
+    return save_image(open_image(src), out_for(src, "jpeg"), "jpg")
+
+
 def image_tool(tag, transform, keep_ext=True, fmt_override=None):
     def f(src, p):
         img = open_image(src)
@@ -3269,8 +3273,12 @@ def conversions(paths: list[str]) -> list[Op]:
         for f in IMAGE_OUT:
             if f == "pdf":
                 ops.append(Op("to_pdf", "PDF", images_to_pdf, multi=True))
+            elif f == "jpg" and ext_of(paths[0]) == "jpeg":     # .jpeg → .jpg
+                ops.append(Op("to_jpg", "JPG", image_to("jpg")))
             else:
                 add(f, image_to(f))
+            if f == "jpg" and ext_of(paths[0]) != "jpeg":    # the same picture type, as .jpeg
+                ops.append(Op("to_jpeg", "JPEG", image_to_jpeg))
     elif cat == "video":
         for f in VIDEO_OUT:
             add(f, video_to(f))

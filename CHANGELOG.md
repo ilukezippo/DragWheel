@@ -8,12 +8,13 @@
 - A second **PDF to Word (flowing text)** slice keeps the old way, for documents you want to rewrite freely (Microsoft Word's own PDF import when Word is installed)
 - **Animation speed** slider next to the wheel animation in Settings (opening and closing)
 - New subtle sounds when the wheel opens and closes (with the click sounds and their volume)
-- Changing the language or theme in Settings fades smoothly instead of flashing
+- Changing the language or theme: Settings fades out, changes, and fades back in (no flash)
 - **Unblock** on the Actions wheel: removes Windows' "This file came from another computer" mark from downloaded files (and everything inside a folder)
 - **Rename saved links** (right-click a float → Saved links): rename the one playing, or rename, reorder, add, remove or clear them all in *Manage saved links…*
 - An empty float: *Open* and double-click choose a file (the window now comes to the front); *Show in Explorer* and *Copy path* only show when something is open
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
-- Fixed: Settings → Wheel slices now lists every format of a type (JPG was missing for pictures)
+- **JPEG** slice next to JPG for pictures (same format, .jpeg name); Settings → Wheel slices lists every format of a type
+- Fixed: Unblock now also works for very long paths and read-only files
 - Fixed: links reopened after an update or at Windows start were not added to Saved links
 - Fixed: right-clicking a float playing a link could fail (Repeat menu)
 - Fixed: a crash repeating many times a second is written to the log only once

@@ -204,12 +204,26 @@ def unblock(paths, limit=50_000) -> tuple[int, int, int]:
         checked += 1
         if checked > limit:
             break
-        ads = f + ":Zone.Identifier"
-        if not os.path.exists(ads):
-            continue
+        full = os.path.abspath(f)
+        if IS_WIN and not full.startswith("\\\\?\\"):     # long paths too
+            full = "\\\\?\\UNC\\" + full[2:] if full.startswith("\\\\") else "\\\\?\\" + full
+        ads = full + ":Zone.Identifier"
         try:
             os.remove(ads)
             done += 1
+        except FileNotFoundError:
+            continue                                  # wasn't blocked
+        except PermissionError:
+            try:                                      # read-only files: allow the change, then put it back
+                import stat
+                mode = os.stat(full).st_mode
+                os.chmod(full, mode | stat.S_IWRITE)
+                os.remove(ads)
+                os.chmod(full, mode)
+                done += 1
+            except OSError as e:
+                failed += 1
+                log(f"unblock {f}: {e}")
         except OSError as e:
             failed += 1
             log(f"unblock {f}: {e}")

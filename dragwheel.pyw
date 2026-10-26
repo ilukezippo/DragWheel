@@ -6633,52 +6633,53 @@ class SettingsDialog(QDialog):
         if code == theme.mode():
             return
         state = self._state()
-        cover = self._freeze()
-        settings().setValue("theme", code)
-        self.app.apply_theme()
-        QTimer.singleShot(0, lambda: self._rebuild_under(cover, state))
+
+        def swap():
+            settings().setValue("theme", code)
+            self.app.apply_theme()
+            self._build(state)
+        self._fade_swap(swap)
 
     def _language_changed(self, _idx):
         code = self.lang.currentData()
         if code == settings().value("language", ""):
             return
         state = self._state()
-        cover = self._freeze()                               # a picture of the old look stays on top…
-        settings().setValue("language", code)
-        self.app.apply_language()
-        QTimer.singleShot(0, lambda: self._rebuild_under(cover, state))     # rebuild outside the combo's signal
 
-    def _freeze(self):
-        """Cover the window with a still picture of itself, so a rebuild underneath never flickers."""
-        from PySide6.QtWidgets import QLabel
-        pm = self.grab()
-        cover = QLabel(self)
-        cover.setPixmap(pm)
-        cover.setGeometry(0, 0, pm.width(), pm.height())
-        cover.setAttribute(Qt.WA_TransparentForMouseEvents)
-        cover.show()
-        cover.raise_()
-        return cover
-
-    def _rebuild_under(self, cover, state):
-        """…the new language or theme is built under it, then the picture fades away."""
-        from PySide6.QtWidgets import QGraphicsOpacityEffect
-        self.setUpdatesEnabled(False)
-        try:
+        def swap():
+            settings().setValue("language", code)
+            self.app.apply_language()
             self._build(state)
-        finally:
-            cover.raise_()
-            self.setUpdatesEnabled(True)
-        fx = QGraphicsOpacityEffect(cover)
-        fx.setOpacity(1.0)
-        cover.setGraphicsEffect(fx)
-        anim = QPropertyAnimation(fx, b"opacity", cover)
-        anim.setDuration(int(260 / anim_speed()))
-        anim.setStartValue(1.0)
-        anim.setEndValue(0.0)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.finished.connect(cover.deleteLater)
-        QTimer.singleShot(30, anim.start)                     # once the new page has painted
+        self._fade_swap(swap)
+
+    def _fade_swap(self, swap):
+        """The window fades out, changes language or theme while it can't be seen, then fades back in."""
+        if getattr(self, "_swapping", False):
+            return
+        self._swapping = True
+        ms = max(60, int(170 / anim_speed()))
+        out = QPropertyAnimation(self, b"windowOpacity", self)
+        out.setDuration(ms)
+        out.setStartValue(self.windowOpacity())
+        out.setEndValue(0.0)
+        out.setEasingCurve(QEasingCurve.InCubic)
+
+        def rebuild():
+            try:
+                swap()
+            finally:
+                QTimer.singleShot(40, back)                  # once the new page has painted
+
+        def back():
+            inn = QPropertyAnimation(self, b"windowOpacity", self)
+            inn.setDuration(ms + 60)
+            inn.setStartValue(0.0)
+            inn.setEndValue(1.0)
+            inn.setEasingCurve(QEasingCurve.OutCubic)
+            inn.finished.connect(lambda: setattr(self, "_swapping", False))
+            inn.start(QPropertyAnimation.DeleteWhenStopped)
+        out.finished.connect(lambda: QTimer.singleShot(0, rebuild))   # outside the combo box's signal
+        out.start(QPropertyAnimation.DeleteWhenStopped)
 
     def reject(self):
         if settings().value("language", "") != self.orig_lang:   # Cancel undoes a language switch
