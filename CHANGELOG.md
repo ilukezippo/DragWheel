@@ -2,7 +2,9 @@
 
 ## 1.2.1 — October 2026
 
-- **New Settings layout:** clear pages down the side (General, Wheel, Sounds & notifications, Files & jobs, Float, Customize, Advanced, About) with each section on its own card
+- **New Settings layout:** clear pages down the side (General, Wheel, Sounds & notifications, Files & jobs, Float, Customize, Advanced, About) with each section on its own card; Segoe UI everywhere, more room next to tick boxes, and buttons no longer stay lit after you click them
+- **MKV H.264 and MKV H.265** (smaller) instead of a single MKV slice
+- **DOC, XLS and PPT** for older Office: Word, Excel and PowerPoint files can be saved in the 97–2003 formats
 - **Float and Quick preview show documents:** PDFs, e-books, comics, Word (DOC, DOCX, RTF, ODT), Excel, PowerPoint, text, Markdown, HTML and CSV files show their first page instead of an icon
 - Quick preview follows the pointer while you drag
 - **PDF to Word that looks the same:** every line stays where it was, in the same font, size and weight, tables become real Word tables, and lines, logos and pictures stay behind the text; Arabic is written as proper right-to-left text you can edit

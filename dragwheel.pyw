@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from PySide6.QtCore import (QEasingCurve, QObject, QPointF, QPropertyAnimation, QRectF, QRunnable, QSizeF, QVariantAnimation,
+from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QPointF, QPropertyAnimation, QRectF, QRunnable, QSizeF, QVariantAnimation,
                             QRect, QSettings, QSize, Qt, QThreadPool, QTimer, QUrl, Signal, QMimeData, QPoint)
 from PySide6.QtGui import (QTextDocumentFragment, QAction, QBrush, QColor, QCursor, QDesktopServices, QDrag, QFont, QFontMetrics,
                            QGuiApplication, QIcon, QImage, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
@@ -4469,10 +4469,12 @@ QGroupBox#section QLabel,QGroupBox#section QCheckBox{background:transparent}
 """
 
 DIALOG_CSS = """
+*{font-family:'Segoe UI'}
 QDialog{background:$bg} QWidget#page{background:$bg} QLabel{color:$text;font:10pt 'Segoe UI'} QGroupBox{color:$dim;font:600 9pt 'Segoe UI';
 border:1px solid $border;border-radius:8px;margin-top:22px;padding:10px 8px 8px 8px} QGroupBox::title{subcontrol-origin:margin;subcontrol-position:top left;padding:0 6px;left:8px;top:0px}
 QLineEdit,QComboBox{background:$surface;color:$text;border:1px solid $border;border-radius:6px;padding:5px 8px;font:10pt 'Segoe UI'}
-QLineEdit:focus,QComboBox:focus{border-color:$accent} QCheckBox{color:$text;font:10pt 'Segoe UI'}
+QLineEdit:focus,QComboBox:focus{border-color:$accent} QCheckBox,QRadioButton{color:$text;font:10pt 'Segoe UI';spacing:10px}
+QListWidget{font:10pt 'Segoe UI'} QListWidget::indicator{margin-right:10px}
 QListWidget{background:$surface;color:$text;border:1px solid $border;border-radius:6px;padding:2px}
 QScrollBar:vertical{background:transparent;width:10px;margin:2px} QScrollBar::handle:vertical{background:$button;border-radius:4px;min-height:30px}
 QScrollBar::handle:vertical:hover{background:$hover} QScrollBar::add-line,QScrollBar::sub-line{height:0;width:0} QScrollBar::add-page,QScrollBar::sub-page{background:transparent}
@@ -4481,6 +4483,7 @@ QSlider::handle:horizontal{background:$text;width:14px;height:14px;margin:-5px 0
 QListWidget::item{padding:3px 4px} QListWidget::item:selected{background:$accent;color:$on_accent;border-radius:4px}
 QPushButton{background:$button;color:$text;border:none;border-radius:6px;padding:6px 16px;font:600 9pt 'Segoe UI'}
 QPushButton:default{background:$accent;color:$on_accent} QPushButton:hover{background:$hover} QPushButton:default:hover{background:$accent2}
+QPushButton:pressed{background:$border} QPushButton:default:pressed{background:$accent} QPushButton:focus{outline:none}
 QComboBox QAbstractItemView{background:$surface;color:$text;selection-background-color:$accent;selection-color:$on_accent}
 QMessageBox{background:$bg}
 QTabWidget::pane{border:none;background:$bg} QTabWidget{background:$bg}
@@ -7451,6 +7454,19 @@ DOC_PREVIEW_CATS = ("pdf", "document", "spreadsheet", "slides", "ebook")
 TEXTLIKE_EXT = (".txt", ".md", ".csv", ".tsv", ".json", ".html", ".htm", ".rtf", ".log")
 
 
+class ButtonPolish(QObject):
+    """Buttons act like buttons: clicking one doesn't leave it lit up as the window's default button.
+    Only the main button of a dialog's button row (Save, OK) stays highlighted."""
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Polish and isinstance(obj, QPushButton) and not obj.property("_dw_polished"):
+            obj.setProperty("_dw_polished", True)
+            if not isinstance(obj.parent(), QDialogButtonBox):
+                obj.setAutoDefault(False)
+                obj.setDefault(False)
+        return False
+
+
 class PeekSignals(QObject):
     ready = Signal(object, object)      # path, QImage
 
@@ -9491,6 +9507,9 @@ def main():
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setApplicationName(APP)
     qapp.setWindowIcon(app_icon())
+    qapp.setFont(QFont(i18n.ui_font(), 9))
+    _button_fix = ButtonPolish(qapp)
+    qapp.installEventFilter(_button_fix)
 
     flags, paths = parse_args(sys.argv[1:])
     if "--selftest" in flags:

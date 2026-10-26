@@ -352,6 +352,8 @@ VIDEO_ARGS = {
             "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"],
     "mov": ["-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"],
     "mkv": ["-c:v", "libx264", "-crf", "20", "-c:a", "aac", "-b:a", "192k"],
+    "mkv_hevc": ["-c:v", "libx265", "-preset", "medium", "-crf", "24", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                 "-b:a", "192k", "-x265-params", "log-level=error"],
     "webm": ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "33", "-deadline", "good", "-cpu-used", "5",
              "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k"],
     "avi": ["-c:v", "mpeg4", "-q:v", "4", "-c:a", "libmp3lame", "-q:a", "3"],
@@ -373,6 +375,8 @@ AUDIO_ARGS = {
 
 def video_to(fmt):
     def f(src, p):
+        if fmt == "mkv_hevc":
+            return ff(src, out_for(src, "mkv", "hevc"), *VIDEO_ARGS[fmt])
         return ff(src, out_for(src, fmt), *VIDEO_ARGS[fmt])
     return f
 
@@ -2328,7 +2332,7 @@ def soffice() -> str | None:
 
 WORD_FMT = {"pdf": 17, "docx": 16, "rtf": 6, "txt": 7, "html": 10, "odt": 23, "doc": 0}
 EXCEL_FMT = {"pdf": None, "xlsx": 51, "csv": 62, "ods": 60, "xls": 56}
-PPT_FMT = {"pdf": 32, "pptx": 24, "png": 18, "jpg": 17, "odp": 35}
+PPT_FMT = {"pdf": 32, "pptx": 24, "ppt": 1, "png": 18, "jpg": 17, "odp": 35}
 
 
 def _com_convert(src: Path, fmt: str) -> Path | None:
@@ -2393,7 +2397,8 @@ def _lo_convert(src: Path, fmt: str) -> Path | None:
         return None
     import tempfile
     filt = {"txt": "txt:Text (encoded):UTF8", "csv": "csv:Text - txt - csv (StarCalc):44,34,76",
-            "docx": "docx:MS Word 2007 XML", "odt": "odt:writer8", "rtf": "rtf:Rich Text Format"}.get(fmt, fmt)
+            "docx": "docx:MS Word 2007 XML", "odt": "odt:writer8", "rtf": "rtf:Rich Text Format",
+            "doc": "doc:MS Word 97", "xls": "xls:MS Excel 97", "ppt": "ppt:MS PowerPoint 97"}.get(fmt, fmt)
     cmd_extra = ["--infilter=HTML (StarWriter)"] if ext_of(src) in ("html", "htm") else []
     td = temp_dir()
     try:
@@ -3281,7 +3286,11 @@ def conversions(paths: list[str]) -> list[Op]:
                 ops.append(Op("to_jpeg", "JPEG", image_to_jpeg))
     elif cat == "video":
         for f in VIDEO_OUT:
-            add(f, video_to(f))
+            if f == "mkv":                                   # MKV in both picture codecs
+                ops.append(Op("to_mkv", "MKV H.264", video_to("mkv")))
+                ops.append(Op("to_mkv_hevc", "MKV H.265", video_to("mkv_hevc"), hint="smaller file"))
+            else:
+                add(f, video_to(f))
         ops.append(Op("to_hevc", "MP4 H.265", video_to_hevc, hint="smaller file"))
         add("gif", video_to_gif)
         ops.append(Op("to_mp3", "MP3", audio_to("mp3"), hint="audio only"))
@@ -3309,7 +3318,7 @@ def conversions(paths: list[str]) -> list[Op]:
             if office_available():
                 add("docx", text_to_docx)
         else:  # docx / doc / rtf / odt
-            for f in ("pdf", "docx", "odt", "rtf", "txt", "html"):
+            for f in ("pdf", "docx", "doc", "odt", "rtf", "txt", "html"):     # DOC for older Word
                 add(f, office_to(f))
     elif cat == "slides":
         add("pdf", office_to("pdf"))
@@ -3317,6 +3326,7 @@ def conversions(paths: list[str]) -> list[Op]:
         add("jpg", slides_to_images("jpg"))
         if e != "pptx":
             add("pptx", office_to("pptx"))
+        add("ppt", office_to("ppt"))                         # older PowerPoint
         add("odp", office_to("odp"))
     elif cat == "spreadsheet":
         add("xlsx", sheet_to_xlsx)
@@ -3327,6 +3337,7 @@ def conversions(paths: list[str]) -> list[Op]:
         add("md", sheet_to_markdown, "Markdown")
         add("pdf", sheet_to_pdf)
         if office_available():
+            add("xls", office_to("xls"))                     # older Excel
             add("ods", office_to("ods"))
     elif cat == "subtitle":
         for f in SUB_OUT:
