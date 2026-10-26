@@ -3081,6 +3081,21 @@ class MediaOSD(QWidget):
         p.end()
 
 
+def _clipboard_media_file():
+    """A file copied in Explorer (Ctrl+C), or a copied path ("Copy as path"), when it's something Float shows."""
+    md = QGuiApplication.clipboard().mimeData()
+    cands = []
+    if md is not None and md.hasUrls():
+        cands += [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+    txt = QGuiApplication.clipboard().text().strip()
+    if txt and len(txt) < 1000:
+        cands.append(txt.splitlines()[0].strip().strip('"').strip("'"))
+    for c in cands:
+        if c and os.path.isfile(c):
+            return c
+    return None
+
+
 class FloatWindow(QWidget):
     def come_forward(self):
         """A float you just opened shows in front of other windows, even when it isn't set to stay on top."""
@@ -3319,11 +3334,22 @@ class FloatWindow(QWidget):
         files = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
         return files[0] if files and os.path.exists(files[0]) and files[0] != self.path else None
 
+    @staticmethod
+    def _dropped_link(md):
+        """A web page dragged from the browser (the address bar's site icon, a link, a tab)."""
+        cands = [u.toString() for u in md.urls() if not u.isLocalFile()] if md.hasUrls() else []
+        if md.hasText():
+            cands.append(md.text().strip().splitlines()[0] if md.text().strip() else "")
+        return next((c for c in cands if c and engine.is_link(c)), None)
+
     def dragEnterEvent(self, e):
-        if self._dropped_path(e.mimeData()):
+        if self._dropped_path(e.mimeData()) or (_APP is not None and self._dropped_link(e.mimeData())):
             e.acceptProposedAction()
             self._drop_hover = True
             self.update()
+
+    def dragMoveEvent(self, e):
+        e.acceptProposedAction()
 
     def dragLeaveEvent(self, e):
         self._drop_hover = False
@@ -3337,6 +3363,12 @@ class FloatWindow(QWidget):
             self._load(path)
             self._fade_to(1.0)
             QTimer.singleShot(1600, self._maybe_hide_controls)
+            return
+        link = self._dropped_link(e.mimeData()) if _APP is not None else None
+        if link:                                     # a video page dragged from the browser plays here
+            e.acceptProposedAction()
+            _APP.play_link(target=self, url=link)
+        self.update()
 
     # ---------------------------------------------------------------- media
     def _start_player(self, cat):
@@ -4336,7 +4368,14 @@ class FloatWindow(QWidget):
 
     def keyPressEvent(self, e):
         if e.matches(QKeySequence.Paste):
-            if _APP is not None:
+            f = _clipboard_media_file()
+            if f:                                    # a copied video/song (or its path) plays here
+                self._play_now = True
+                self._load(f)
+                self._fade_to(1.0)
+                self.come_forward()
+                QTimer.singleShot(1600, self._maybe_hide_controls)
+            elif _APP is not None:
                 _APP.play_link(target=self)
             return
         if e.key() == Qt.Key_Escape:
@@ -8675,6 +8714,17 @@ class DragWheelApp(QObject):
     def play_link(self, target=None, url=None):
         """Play the link on the clipboard (YouTube and other sites, or a direct media link) in a float.
         The float opens straight away with the loading circle and plays when the link is ready."""
+        if url is None and not engine.is_link(QGuiApplication.clipboard().text().strip()):
+            f = _clipboard_media_file()               # a copied file or path: play it in Float too
+            if f:
+                if target is not None and target in self.floats:
+                    target._play_now = True
+                    target._load(f)
+                    target._fade_to(1.0)
+                    target.come_forward()
+                else:
+                    self.actions.float([f], {})
+                return
         url = url or QGuiApplication.clipboard().text().strip()
         if not engine.is_link(url):
             self.toast.show_msg(tr("No link on the clipboard"), tr("Copy a link to a video or song first."), "info", 4000)
