@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Drag a file. Tap a key. Drop it on the wheel.</b><br>
-  An offline, zero-click file converter and toolbox for Windows. Nothing is ever uploaded.
+  An offline, zero-click file converter and toolbox for Windows. Your files stay on your PC.
 </p>
 
 <p align="center">
@@ -49,9 +49,39 @@ Then **release over a slice** to apply it. Release in the middle (or press **Esc
 
 Results are saved next to the original (`photo.webp`, `clip compressed.mp4`, …). The original file is never changed.
 
-**Without dragging:** select files and press **Ctrl + Alt + Space**, or right-click → **DragWheel** (on Windows 11: *Show more options*), or **Send to → DragWheel**. Then pick with the mouse, the scroll wheel, or the arrow keys + Enter. Tab switches wheels, Esc closes.
+**Other ways to open it:** shake the mouse while dragging, select files and press **Ctrl + Alt + Space**, or right-click → **DragWheel** (on Windows 11: *Show more options*, or turn on the full menu in Settings → Everyday). Then pick with the mouse, the scroll wheel, or the arrow keys + Enter. Tab switches wheels, Esc closes.
 
 All keys can be changed in **Settings** (tray icon → Settings).
+
+## What's new in 1.2
+
+- **PDF tools:** sign (draw or drop your signature, on one page, all pages or a range), arrange pages by dragging (drop more PDFs or pictures in), watermark with live preview, page numbers, grayscale, unlock, word count
+- **Comics, fonts, subtitles and archives:** CBR/CBZ/CB7 to PDF and back, font conversion and install, add or extract subtitles, split and join big files, password-protected ZIP/7Z, fix garbled Arabic text
+- **Float, the mini player:** play YouTube and ~1,800 sites (copy a link, right-click → *Play copied link in Float*), live streams, quality menu, repeat and loop, saved links, subtitles, keyboard media keys with a big on-screen sign
+- **Send to phone:** Quick Share, Bluetooth, or a temporary internet link with a QR code (5 minutes to 72 hours)
+- **Make it yours:** choose and reorder slices (with a live preview), presets like *WebP · quality 80 · max 1920 px*, chains like *resize → WebP → ZIP*, your own commands, results next to the file / in a folder / replacing it / on the clipboard, export and import settings
+- **Everyday:** recent results in the tray, a queue for many files, Undo, watch folders, a command line (`dragwheel convert *.heic --to jpg`), quick preview (tap Space while dragging), wheel animations, sounds, high contrast
+- **AI, offline:** remove backgrounds, blur faces, speech to text in many languages including Arabic
+- **Smaller installer** (97 MB) and optional downloads you can tick during setup
+
+<table>
+  <tr>
+    <td><img src="shots/slices.png" alt="Choosing the slices of a wheel, with a live preview"></td>
+    <td><img src="shots/tour.png" alt="The welcome tour"></td>
+  </tr>
+  <tr>
+    <td align="center">Make it yours: pick and order the slices</td>
+    <td align="center">A short welcome tour</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="shots/qr.png" alt="Send to phone with a QR code" width="260"></td>
+    <td align="center"><img src="shots/osd.png" alt="Media key signs" width="380"></td>
+  </tr>
+  <tr>
+    <td align="center">Send to phone: scan the code</td>
+    <td align="center">Media keys show a big sign over a Float</td>
+  </tr>
+</table>
 
 ## Features
 
@@ -64,7 +94,7 @@ All keys can be changed in **Settings** (tray icon → Settings).
 - **Dark and light themes:** follow Windows or pick one in Settings
 - **Cancel any time:** every conversion shows a notification with a **Cancel** button; partial files are cleaned up
 - **Updates built in:** checks this GitHub page once a day (can be turned off) and offers *Download & install*
-- **100% offline conversions.** No accounts, no uploads, no telemetry. The only connection is the optional update check
+- **100% offline conversions.** No accounts, no telemetry. DragWheel only goes online for things you ask for (updates, links you play, Send to phone) — see the [privacy policy](PRIVACY.md)
 
 <table>
   <tr>

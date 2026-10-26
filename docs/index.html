@@ -25,7 +25,7 @@
   "name": "DragWheel",
   "applicationCategory": "UtilitiesApplication",
   "operatingSystem": "Windows 10, Windows 11",
-  "softwareVersion": "1.1.0",
+  "softwareVersion": "1.2.0",
   "description": "Offline drag-and-drop file converter and toolbox for Windows. Tap a key while dragging a file and drop it on a radial wheel to convert images, video, audio, PDF, Office files and archives.",
   "url": "https://ilukezippo.github.io/DragWheel/",
   "downloadUrl": "https://github.com/ilukezippo/DragWheel/releases/latest",
@@ -197,6 +197,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
     <a class="brand" href="./"><img src="img/icon.webp" alt="" width="30" height="30">DragWheel</a>
     <nav aria-label="Page">
       <a class="hide-sm" href="#how">How it works</a>
+      <a class="hide-sm" href="#new">New in 1.2</a>
       <a class="hide-sm" href="#formats">Formats</a>
       <a href="https://github.com/ilukezippo/DragWheel">GitHub</a>
     </nav>
@@ -209,7 +210,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
         <a class="btn btn-main" href="https://github.com/ilukezippo/DragWheel/releases/latest">Download for Windows</a>
         <a class="btn btn-quiet" href="https://github.com/ilukezippo/DragWheel">View source</a>
       </div>
-      <p class="fine">Version 1.1.0 for Windows 10 and 11 (64-bit). Free and open source, MIT License.</p>
+      <p class="fine">Version 1.2.0 for Windows 10 and 11 (64-bit). Free and open source, MIT License.</p>
     </div>
 
     <div class="stage">
@@ -277,6 +278,37 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
     </div>
   </section>
 
+  <section id="new">
+    <div class="wrap">
+      <h2>New in 1.2</h2>
+      <p class="intro">The biggest update yet: PDF signing, a mini player for YouTube links, sending files to your phone, and a wheel you can make your own.</p>
+      <dl class="formats">
+        <div><dt>PDF tools</dt><dd>Sign with a drawn or dropped signature on one page, every page or a range. Arrange pages by dragging, watermark with a live preview, page numbers, grayscale, unlock.</dd></div>
+        <div><dt>Float, the mini player</dt><dd>Copy a YouTube link and play it on top of your work, live streams included. Quality menu, repeat and loop, saved links, subtitles and keyboard media keys.</dd></div>
+        <div><dt>Send to phone</dt><dd>Quick Share, Bluetooth, or a temporary internet link with a QR code that lasts 5 minutes to 72 hours.</dd></div>
+        <div><dt>Make it yours</dt><dd>Choose and reorder slices with a live preview, save presets and chains, add your own commands, and choose where results go.</dd></div>
+        <div><dt>Everyday</dt><dd>Recent results, a queue for many files, Undo, watch folders, a command line, quick preview with Space, wheel animations and sounds.</dd></div>
+        <div><dt>Comics, fonts and more</dt><dd>CBR and CBZ comics, font conversion and install, subtitles in and out of videos, split and join big files, password-protected ZIP and 7Z.</dd></div>
+      </dl>
+      <div class="gallery">
+        <figure class="shot">
+          <img src="img/slices.webp" width="860" height="560" loading="lazy" alt="Choosing which slices a wheel shows, with a live preview">
+          <figcaption>Pick and order the slices of every wheel.</figcaption>
+        </figure>
+        <div class="stack">
+          <figure class="shot">
+            <img src="img/tour.webp" width="642" height="504" loading="lazy" alt="The DragWheel welcome tour">
+            <figcaption>A short welcome tour shows the gesture.</figcaption>
+          </figure>
+          <figure class="shot">
+            <img src="img/qr.webp" width="352" height="399" loading="lazy" alt="Send to phone with a QR code">
+            <figcaption>Send to phone: scan the code with any phone.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section id="formats">
     <div class="wrap">
       <h2>What it converts</h2>
@@ -285,11 +317,12 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
         <div><dt>Images</dt><dd><b>To</b> PNG, JPG, WebP, HEIC, AVIF, TIFF, BMP, GIF, ICO, TGA, JPEG 2000, ICNS, PDF. Opens PSD, SVG, DDS, QOI and more.</dd></div>
         <div><dt>Video</dt><dd><b>To</b> MP4, MP4 H.265, MOV, MKV, WebM, AVI, WMV, GIF, or MP3 and M4A audio. Compress, trim, 720p, mute, snapshot, merge.</dd></div>
         <div><dt>Audio</dt><dd><b>To</b> MP3, M4A, WAV, FLAC, OGG, Opus, AIFF, WMA, AC3. Trim, normalize, mono, fade, merge.</dd></div>
-        <div><dt>PDF</dt><dd><b>To</b> DOCX, PNG, JPG, TXT, Markdown, HTML. Compress, split, extract pages or images, password-protect, merge.</dd></div>
+        <div><dt>PDF</dt><dd><b>To</b> DOCX, PNG, JPG, TXT, Markdown, HTML, CBZ. Sign, arrange pages, watermark, page numbers, compress, split, extract, password-protect, merge.</dd></div>
         <div><dt>Office files</dt><dd>Documents, slides and spreadsheets to PDF and each other, plus CSV, JSON and Markdown tables.</dd></div>
         <div><dt>Archives and folders</dt><dd><b>To</b> ZIP, 7Z, RAR, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, or extract them.</dd></div>
-        <div><dt>Subtitles and e-books</dt><dd>SRT, VTT and ASS subtitles; EPUB, MOBI, FB2, CBZ and XPS to PDF, text or images.</dd></div>
-        <div><dt>File actions</dt><dd>Copy, move, copy path, open with, Terminal here, and Float: pin a file on top of every window.</dd></div>
+        <div><dt>Subtitles, e-books and comics</dt><dd>SRT, VTT and ASS subtitles, added to or taken out of videos; EPUB, MOBI, FB2 and XPS to PDF, text or images; CBR, CBZ and CB7 comics to PDF and back.</dd></div>
+        <div><dt>Fonts</dt><dd>TTF, OTF, WOFF and WOFF2 to each other, or install a font with one drop.</dd></div>
+        <div><dt>File actions</dt><dd>Copy, move, copy path, rename in bulk, checksum, shred, send to phone, and Float: pin a file or play a link on top of every window.</dd></div>
       </dl>
       <p class="note">Word, PowerPoint and Excel conversions use Microsoft Office if it's installed, otherwise LibreOffice. Creating RAR files needs WinRAR.</p>
     </div>
