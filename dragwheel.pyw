@@ -1884,7 +1884,7 @@ class Wheel(QWidget):
             f.setWeight(QFont.DemiBold)
             p.setFont(f)
             p.setPen(ON_ACCENT if active else C("text"))
-            p.drawText(r, Qt.AlignCenter, f"{tr(keys[m])}  ·  {tr(MODE_LABEL[m])}")
+            p.drawText(r, Qt.AlignCenter, tr(MODE_LABEL[m]) if keys[m] == "None" else f"{tr(keys[m])}  ·  {tr(MODE_LABEL[m])}")
         p.end()
 
     @staticmethod
@@ -5541,7 +5541,7 @@ def message(title, html):
 # ============================================================================
 # Settings
 # ============================================================================
-KEY_NAMES = ["Shift", "Ctrl", "Alt", "CapsLock"]
+KEY_NAMES = ["Shift", "Ctrl", "Alt", "CapsLock", "None"]
 
 
 # ============================================================================
@@ -6881,9 +6881,14 @@ class SettingsDialog(QDialog):
 
     def save(self):
         keys = {m: cb.currentData() for m, cb in self.key_boxes.items()}
-        if len(set(keys.values())) < 3:
+        used = [k for k in keys.values() if k != "None"]
+        if len(set(used)) < len(used):
             QMessageBox.warning(self, APP, tr("Each wheel needs a different key."))
             return
+        if keys["convert"] == "None" and not self.shake.isChecked() and not self.scroll.isChecked() \
+                and all(k == "None" for k in keys.values()):
+            QMessageBox.warning(self, APP, tr("With no wheel keys, turn on Shake (Everyday tab) or scrolling, "
+                                              "or the wheel can only open from the right-click menu."))
         s = settings()
         for m, k in keys.items():
             s.setValue(f"keys/{m}", k)
@@ -7249,7 +7254,9 @@ class TourDialog(QDialog):
     def __init__(self, app, parent=None):
         super().__init__(parent, Qt.WindowStaysOnTopHint if parent is None else Qt.Dialog)
         self.app = app
-        key = tr(mode_keys()["convert"])
+        keys = mode_keys()
+        shake = keys["convert"] == "None"
+        key = tr("Shake") if shake else tr(keys["convert"])
         self.setWindowTitle(tr("Welcome to {app}", app=APP))
         self.setWindowIcon(app_icon())
         self.setStyleSheet(i18n.css(DIALOG_CSS) + f"QLabel#step{{padding:8px 10px;border-radius:10px;color:{theme.hexc('dim')}}}"
@@ -7263,7 +7270,7 @@ class TourDialog(QDialog):
         row = QHBoxLayout()
         self.steps = []
         for i, text in enumerate((tr("Drag a file (keep holding the mouse)"),
-                                  tr("Tap {key} — the wheel opens", key=key),
+                                  tr("Shake the mouse — the wheel opens") if shake else tr("Tap {key} — the wheel opens", key=key),
                                   tr("Drop it on a slice. Done!"))):
             lbl = QLabel(f"<b>{i + 1}</b>&nbsp;&nbsp;{text}")
             lbl.setObjectName("step")
@@ -7271,8 +7278,11 @@ class TourDialog(QDialog):
             row.addWidget(lbl, 1)
             self.steps.append(lbl)
         lay.addLayout(row)
-        more = QLabel(tr("{tools} opens Tools and {actions} opens Actions. Prefer clicking? Right-click a file → DragWheel.",
-                         tools=tr(mode_keys()["tool"]), actions=tr(mode_keys()["action"])))
+        if keys["tool"] != "None" and keys["action"] != "None":
+            more = QLabel(tr("{tools} opens Tools and {actions} opens Actions. Prefer clicking? Right-click a file → DragWheel.",
+                             tools=tr(keys["tool"]), actions=tr(keys["action"])))
+        else:
+            more = QLabel(tr("Switch wheels by resting on the buttons under the wheel. Prefer clicking? Right-click a file → DragWheel."))
         more.setWordWrap(True)
         more.setStyleSheet(f"color:{theme.hexc('dim')}")
         lay.addWidget(more)
@@ -7360,7 +7370,7 @@ class DragWatcher(QObject):
 
     def tick(self):
         keys = mode_keys()
-        held = {name: winsys.key_down(winsys.VK[name]) for name in set(keys.values())}
+        held = {name: winsys.key_down(winsys.VK[name]) for name in set(keys.values()) if name in winsys.VK}
         lmb = winsys.mouse_down()
 
         # global hotkey: Ctrl+Alt+Space
@@ -7527,7 +7537,9 @@ class DragWheelApp(QObject):
             w.show()
 
     def _build_tray_menu(self):
-        self.tray.setToolTip(tr("{app} — drag a file, tap {key}", app=APP, key=tr(mode_keys()["convert"])))
+        ck = mode_keys()["convert"]
+        self.tray.setToolTip(tr("{app} — drag a file and shake the mouse", app=APP) if ck == "None"
+                             else tr("{app} — drag a file, tap {key}", app=APP, key=tr(ck)))
         menu = QMenu()
         self._first_action = menu.addAction(tr("Convert files…"), self.pick_files)
         menu.addAction(tr("Save image from clipboard"), self.save_clipboard_image)
@@ -8849,7 +8861,8 @@ def main():
     elif paths:
         app.queue_paths(paths)
     elif "--tray" not in flags and not first_run:
-        app.tray.showMessage(APP, tr("Running in the tray. Drag a file and tap {key}.", key=tr(mode_keys()["convert"])),
+        app.tray.showMessage(APP, tr("Running in the tray. Drag a file and shake the mouse.") if mode_keys()["convert"] == "None"
+                             else tr("Running in the tray. Drag a file and tap {key}.", key=tr(mode_keys()["convert"])),
                              app_icon(), 3000)
     return qapp.exec()
 
