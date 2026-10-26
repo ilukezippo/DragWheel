@@ -2784,9 +2784,108 @@ def saved_links() -> list:
 
 
 def remember_link(url, title):
+    old = next((x for x in saved_links() if x["url"] == url), {})
     links = [x for x in saved_links() if x["url"] != url]
-    links.insert(0, {"url": url, "title": title or url})
+    item = {"url": url, "title": title or url}
+    if old.get("name"):
+        item["name"] = old["name"]                  # a name you gave it stays
+    links.insert(0, item)
     settings().setValue("float_links", json.dumps(links[:40], ensure_ascii=False))
+
+
+def link_name(it: dict) -> str:
+    """What a saved link is called: the name you gave it, else the page's title."""
+    return it.get("name") or it.get("title") or it.get("url", "")
+
+
+def rename_link(url, name):
+    links = saved_links()
+    for x in links:
+        if x["url"] == url:
+            if name and name.strip() and name.strip() != x.get("title"):
+                x["name"] = name.strip()
+            else:
+                x.pop("name", None)                  # an empty name goes back to the page's title
+    settings().setValue("float_links", json.dumps(links, ensure_ascii=False))
+
+
+class SavedLinksDialog(QDialog):
+    """Rename, remove, reorder and play the links you played in Float."""
+
+    def __init__(self, play=None, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QAbstractItemView, QListWidget, QListWidgetItem
+        self.play = play
+        self.setWindowTitle(f"{APP} — " + tr("Saved links"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
+        self.resize(560, 420)
+        lay = QVBoxLayout(self)
+        tip = QLabel(tr("Double-click a name to rename it. Drag to change the order."))
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        self.list = QListWidget()
+        self.list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
+                                  | QAbstractItemView.SelectedClicked)
+        for it in saved_links():
+            li = QListWidgetItem(link_name(it))
+            li.setData(Qt.UserRole, dict(it))
+            li.setToolTip(it["url"])
+            li.setFlags(li.flags() | Qt.ItemIsEditable)
+            self.list.addItem(li)
+        lay.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        for label, fn in ((tr("Play"), self._play), (tr("Rename"), self._rename), (tr("Remove"), self._remove)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(tr("Save"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.accepted.connect(self._save)
+        bb.rejected.connect(self.reject)
+        row.addWidget(bb)
+        lay.addLayout(row)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def _items(self):
+        out = []
+        for i in range(self.list.count()):
+            li = self.list.item(i)
+            it = dict(li.data(Qt.UserRole))
+            name = li.text().strip()
+            if name and name != it.get("title"):
+                it["name"] = name
+            else:
+                it.pop("name", None)
+            out.append(it)
+        return out
+
+    def _save(self):
+        settings().setValue("float_links", json.dumps(self._items(), ensure_ascii=False))
+        self.accept()
+
+    def _rename(self):
+        li = self.list.currentItem()
+        if li is not None:
+            self.list.editItem(li)
+
+    def _remove(self):
+        row = self.list.currentRow()
+        if row >= 0:
+            self.list.takeItem(row)
+
+    def _play(self):
+        li = self.list.currentItem()
+        if li is None:
+            return
+        self._save()
+        if self.play:
+            self.play(li.data(Qt.UserRole)["url"])
 
 
 def forget_link(url):
@@ -3070,7 +3169,24 @@ class FloatWindow(QWidget):
         self.update()
 
     def display_name(self):
-        return self.link["title"] if self.link else Path(self.path).name
+        if self.link:
+            saved = next((x for x in saved_links() if x["url"] == self.link.get("page")), None)
+            return link_name(saved) if saved else self.link["title"]
+        return Path(self.path).name
+
+    def _rename_link(self):
+        from PySide6.QtWidgets import QInputDialog
+        page = self.link.get("page") if self.link else None
+        saved = next((x for x in saved_links() if x["url"] == page), None)
+        if not saved:
+            return
+        self.activateWindow()
+        winsys.set_foreground(int(self.winId()))
+        name, ok = QInputDialog.getText(self, tr("Rename"), tr("Name for this link (empty = the page's title)"),
+                                        text=link_name(saved))
+        if ok:
+            rename_link(page, name)
+            self.update()
 
     def _got_page(self, path, img):
         if path != self.path or self.link or img is None or img.isNull():
@@ -4228,14 +4344,17 @@ class FloatWindow(QWidget):
                 a = sm.addAction(tr("Links you play in Float show up here"))
                 a.setEnabled(False)
             for it in saved:
-                title = it.get("title") or it["url"]
+                title = link_name(it)
                 title = title if len(title) <= 60 else title[:57] + "…"
                 a = sm.addAction(title, lambda u=it["url"]: _APP.play_link(target=self, url=u))
                 a.setToolTip(it["url"])
             if saved:
                 sm.addSeparator()
                 if self.link and any(x["url"] == self.link.get("page") for x in saved):
+                    sm.addAction(tr("Rename this link…"), self._rename_link)
                     sm.addAction(tr("Remove this link from the list"), lambda: forget_link(self.link.get("page")))
+                sm.addAction(tr("Manage saved links…"),
+                             lambda: SavedLinksDialog(lambda u: _APP.play_link(target=self, url=u)).exec())
                 sm.addAction(tr("Clear the list"), lambda: settings().setValue("float_links", "[]"))
             sm.setToolTipsVisible(True)
         m.addSeparator()
@@ -8355,7 +8474,7 @@ class DragWheelApp(QObject):
 
         def go():
             t = target if target is not None and target in self.floats else None
-            title = next((x.get("title") for x in saved_links() if x["url"] == url), None) or url
+            title = next((link_name(x) for x in saved_links() if x["url"] == url), None) or url
             pending = {"page": url, "title": title, "pending": True}
             restore = None
             if t is None:                                      # a new float, loading right away

@@ -1,17 +1,17 @@
-"""1.2.1: animation speed."""
-KEYS = ["Speed", "same look", "flowing text"]
+"""1.2.1 strings."""
+KEYS = ['Speed', 'same look', 'flowing text', 'Double-click a name to rename it. Drag to change the order.', 'Play', 'Rename', 'Remove', 'Rename this link…', 'Manage saved links…', "Name for this link (empty = the page's title)"]
 T = {
-    "ar": ['السرعة', 'نفس الشكل', 'نص متدفق'],
-    "fr": ['Vitesse', 'même aspect', 'texte continu'],
-    "es": ['Velocidad', 'mismo aspecto', 'texto continuo'],
-    "tr": ['Hız', 'aynı görünüm', 'akan metin'],
-    "de": ['Tempo', 'gleiches Aussehen', 'fließender Text'],
-    "fa": ['سرعت', 'همان ظاهر', 'متن روان'],
-    "hi": ['गति', 'वही रूप', 'बहता पाठ'],
-    "it": ['Velocità', 'stesso aspetto', 'testo continuo'],
-    "ja": ['速さ', '同じ見た目', '流れるテキスト'],
-    "pt": ['Velocidade', 'mesma aparência', 'texto corrido'],
-    "ru": ['Скорость', 'как в оригинале', 'сплошной текст'],
-    "ur": ['رفتار', 'وہی شکل', 'رواں متن'],
-    "zh": ['速度', '外观相同', '连续文本'],
+    "ar": ['السرعة', 'نفس الشكل', 'نص متدفق', 'انقر نقرًا مزدوجًا على الاسم لإعادة تسميته. اسحب لتغيير الترتيب.', 'تشغيل', 'إعادة تسمية', 'إزالة', 'إعادة تسمية هذا الرابط…', 'إدارة الروابط المحفوظة…', 'اسم هذا الرابط (فارغ = عنوان الصفحة)'],
+    "fr": ['Vitesse', 'même aspect', 'texte continu', "Double-cliquez sur un nom pour le renommer. Faites glisser pour changer l'ordre.", 'Lire', 'Renommer', 'Retirer', 'Renommer ce lien…', 'Gérer les liens enregistrés…', 'Nom de ce lien (vide = titre de la page)'],
+    "es": ['Velocidad', 'mismo aspecto', 'texto continuo', 'Haz doble clic en un nombre para cambiarlo. Arrastra para cambiar el orden.', 'Reproducir', 'Renombrar', 'Quitar', 'Renombrar este enlace…', 'Gestionar enlaces guardados…', 'Nombre de este enlace (vacío = título de la página)'],
+    "tr": ['Hız', 'aynı görünüm', 'akan metin', 'Yeniden adlandırmak için ada çift tıklayın. Sırayı değiştirmek için sürükleyin.', 'Oynat', 'Yeniden adlandır', 'Kaldır', 'Bu bağlantıyı yeniden adlandır…', 'Kayıtlı bağlantıları yönet…', 'Bu bağlantının adı (boş = sayfa başlığı)'],
+    "de": ['Tempo', 'gleiches Aussehen', 'fließender Text', 'Doppelklicken Sie auf einen Namen, um ihn umzubenennen. Ziehen ändert die Reihenfolge.', 'Abspielen', 'Umbenennen', 'Entfernen', 'Diesen Link umbenennen…', 'Gespeicherte Links verwalten…', 'Name für diesen Link (leer = Seitentitel)'],
+    "fa": ['سرعت', 'همان ظاهر', 'متن روان', 'برای تغییر نام، روی نام دوبار کلیک کنید. برای تغییر ترتیب بکشید.', 'پخش', 'تغییر نام', 'حذف', 'تغییر نام این پیوند…', 'مدیریت پیوندهای ذخیره\u200cشده…', 'نام این پیوند (خالی = عنوان صفحه)'],
+    "hi": ['गति', 'वही रूप', 'बहता पाठ', 'नाम बदलने के लिए उस पर डबल-क्लिक करें। क्रम बदलने के लिए खींचें।', 'चलाएँ', 'नाम बदलें', 'हटाएँ', 'इस लिंक का नाम बदलें…', 'सहेजे गए लिंक प्रबंधित करें…', 'इस लिंक का नाम (खाली = पेज का शीर्षक)'],
+    "it": ['Velocità', 'stesso aspetto', 'testo continuo', "Fai doppio clic su un nome per rinominarlo. Trascina per cambiare l'ordine.", 'Riproduci', 'Rinomina', 'Rimuovi', 'Rinomina questo link…', 'Gestisci link salvati…', 'Nome di questo link (vuoto = titolo della pagina)'],
+    "ja": ['速さ', '同じ見た目', '流れるテキスト', '名前をダブルクリックして変更します。ドラッグで順番を変えられます。', '再生', '名前を変更', '削除', 'このリンクの名前を変更…', '保存したリンクを管理…', 'このリンクの名前（空欄 = ページのタイトル）'],
+    "pt": ['Velocidade', 'mesma aparência', 'texto corrido', 'Clique duas vezes num nome para o renomear. Arraste para mudar a ordem.', 'Reproduzir', 'Renomear', 'Remover', 'Renomear este link…', 'Gerir links guardados…', 'Nome deste link (vazio = título da página)'],
+    "ru": ['Скорость', 'как в оригинале', 'сплошной текст', 'Дважды щёлкните имя, чтобы переименовать. Перетаскивайте, чтобы изменить порядок.', 'Воспроизвести', 'Переименовать', 'Удалить', 'Переименовать эту ссылку…', 'Управление сохранёнными ссылками…', 'Имя ссылки (пусто = заголовок страницы)'],
+    "ur": ['رفتار', 'وہی شکل', 'رواں متن', 'نام بدلنے کے لیے اس پر ڈبل کلک کریں۔ ترتیب بدلنے کے لیے گھسیٹیں۔', 'چلائیں', 'نام بدلیں', 'ہٹائیں', 'اس لنک کا نام بدلیں…', 'محفوظ لنکس کا انتظام…', 'اس لنک کا نام (خالی = صفحے کا عنوان)'],
+    "zh": ['速度', '外观相同', '连续文本', '双击名称即可重命名。拖动可调整顺序。', '播放', '重命名', '移除', '重命名此链接…', '管理已保存的链接…', '此链接的名称（留空 = 网页标题）'],
 }
