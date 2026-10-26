@@ -188,6 +188,35 @@ def bring_to_front(hwnd: int) -> None:
         log(f"bring to front: {e}")
 
 
+def unblock(paths, limit=50_000) -> tuple[int, int, int]:
+    """Remove the "came from another computer" mark (the Zone.Identifier stream Windows adds to downloads)
+    from files, and from every file inside folders. Returns (files checked, unblocked, failed)."""
+    def files():
+        for p in paths:
+            if os.path.isdir(p):
+                for root, _dirs, names in os.walk(p):
+                    for nm in names:
+                        yield os.path.join(root, nm)
+            elif os.path.isfile(p):
+                yield p
+    checked = done = failed = 0
+    for f in files():
+        checked += 1
+        if checked > limit:
+            break
+        ads = f + ":Zone.Identifier"
+        if not os.path.exists(ads):
+            continue
+        try:
+            os.remove(ads)
+            done += 1
+        except OSError as e:
+            failed += 1
+            log(f"unblock {f}: {e}")
+    log(f"unblock: {checked} checked, {done} unblocked, {failed} failed")
+    return checked, done, failed
+
+
 def set_foreground(hwnd: int) -> None:
     """Make this window the foreground window (allowed right after the user clicked one of ours)."""
     if not IS_WIN or not hwnd:

@@ -1020,6 +1020,7 @@ class Actions:
             A("openwith", "Open with…", self.open_with),
             A("rename", "Rename…", self.rename, "several at once"),
             A("hash", "Checksum", self.checksum, "SHA-256"),
+            A("unblock", "Unblock", self.unblock, "downloaded files"),
             A("phone", "Send to phone", self.phone),
             A("shred", "Shred…", self.shred, "can't be undone"),
         ]
@@ -1035,6 +1036,16 @@ class Actions:
             return
         winsys.log("renamed: " + "; ".join(f"{Path(o).name} -> {Path(n).name}" for o, n in done[:50]))
         self.app.toast.show_result(tr("Renamed {n} files", n=len(done)), [n for _, n in done])
+
+    def unblock(self, paths, p):
+        """Remove Windows' "This file came from another computer" mark (folders: everything inside)."""
+        n, blocked, failed = winsys.unblock(paths)
+        if failed:
+            self.app.toast.show_msg(tr("Unblock"), tr("{n} files couldn't be unblocked", n=failed), "err", 6000)
+        elif blocked:
+            self.app.toast.show_msg(tr("Unblocked {n} files", n=blocked), tr("Windows won't warn about them any more."), "ok", 5000)
+        else:
+            self.app.toast.show_msg(tr("Unblock"), tr("Nothing was blocked ({n} files checked)", n=n), "info", 5000)
 
     def checksum(self, paths, p):
         files = [Path(x) for x in paths if Path(x).is_file()]
