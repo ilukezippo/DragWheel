@@ -2,6 +2,7 @@
 
 ## 1.2.1 — October 2026
 
+- **New Settings layout:** clear pages down the side (General, Wheel, Sounds & notifications, Files & jobs, Float, Customize, Advanced, About) with each section on its own card
 - **Float and Quick preview show documents:** PDFs, e-books, comics, Word (DOC, DOCX, RTF, ODT), Excel, PowerPoint, text, Markdown, HTML and CSV files show their first page instead of an icon
 - Quick preview follows the pointer while you drag
 - **PDF to Word that looks the same:** every line stays where it was, in the same font, size and weight, tables become real Word tables, and lines, logos and pictures stay behind the text; Arabic is written as proper right-to-left text you can edit
@@ -14,7 +15,7 @@
 - An empty float: *Open* and double-click choose a file (the window now comes to the front); *Show in Explorer* and *Copy path* only show when something is open
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
 - **JPEG** slice next to JPG for pictures (same format, .jpeg name); Settings → Wheel slices lists every format of a type
-- Fixed: Unblock now also works for very long paths and read-only files
+- Fixed: right-clicking many files at once (Explorer starts DragWheel once per file) now gathers all of them into one wheel, and a slice you already chose is applied to files that arrive late; Unblock also handles very long paths and read-only files
 - Fixed: links reopened after an update or at Windows start were not added to Saved links
 - Fixed: right-clicking a float playing a link could fail (Repeat menu)
 - Fixed: a crash repeating many times a second is written to the log only once

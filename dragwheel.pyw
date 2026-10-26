@@ -4436,6 +4436,38 @@ class FloatWindow(QWidget):
 # ============================================================================
 # Dialog styling + parameter prompt (trim times, password…)
 # ============================================================================
+# Settings: the pages down the left side and which sections each one shows (by their English names)
+SETTINGS_PAGES = [
+    ("⚙", "General", "Language, look, and how DragWheel starts with Windows",
+     ["Appearance", "Startup and Explorer", "Windows right-click menu"]),
+    ("◎", "Wheel", "The keys and gestures that open the wheel while you drag a file",
+     ["Wheel keys — tap while dragging a file", "While dragging a file"]),
+    ("♪", "Sounds & notifications", "What you see and hear when a job finishes",
+     ["When a job finishes"]),
+    ("▤", "Files & jobs", "Where results go, and how several jobs run",
+     ["Output", "While DragWheel is working", "Watch folders"]),
+    ("▶", "Float", "The mini player for pictures, videos, music and links",
+     ["Float"]),
+    ("✎", "Customize", "Choose the slices, and add presets, chains and your own commands",
+     ["Wheel slices", "Presets and chains", "Your own slices"]),
+    ("⚑", "Advanced", "Command line, moving to another PC, help and crash reports",
+     ["Command line", "Move your setup to another PC", "Help"]),
+    ("ⓘ", "About", "", None),
+]
+
+SETTINGS_CSS = """
+QListWidget#nav{background:transparent;border:none;padding:0;outline:0}
+QListWidget#nav::item{color:$dim;padding:10px 12px;margin:1px 0;border-radius:8px;font:600 10pt 'Segoe UI'}
+QListWidget#nav::item:hover{background:$surface;color:$text}
+QListWidget#nav::item:selected{background:$surface;color:$text;border-left:3px solid $accent}
+QLabel#pagetitle{color:$text;font:600 17pt 'Segoe UI';padding:2px 0 0 2px}
+QLabel#pagesub{color:$dim;font:9.5pt 'Segoe UI';padding:0 0 6px 2px}
+QGroupBox#section{background:$surface;color:$text;font:600 10pt 'Segoe UI';border:1px solid $border;border-radius:10px;
+margin-top:30px;padding:14px 12px 12px 12px}
+QGroupBox#section::title{subcontrol-origin:margin;subcontrol-position:top left;left:4px;top:4px;padding:0 2px}
+QGroupBox#section QLabel,QGroupBox#section QCheckBox{background:transparent}
+"""
+
 DIALOG_CSS = """
 QDialog{background:$bg} QWidget#page{background:$bg} QLabel{color:$text;font:10pt 'Segoe UI'} QGroupBox{color:$dim;font:600 9pt 'Segoe UI';
 border:1px solid $border;border-radius:8px;margin-top:22px;padding:10px 8px 8px 8px} QGroupBox::title{subcontrol-origin:margin;subcontrol-position:top left;padding:0 6px;left:8px;top:0px}
@@ -6694,9 +6726,10 @@ class SettingsDialog(QDialog):
     def _build(self, state):
         st = state or self._initial()
         self.setWindowTitle(tr("{app} Settings", app=APP))
-        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setStyleSheet(i18n.css(DIALOG_CSS + (SETTINGS_CSS.replace("border-left", "border-right") if i18n.is_rtl()
+                                                  else SETTINGS_CSS)))
         self.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
-        keep_tab = self.tabs.currentIndex() if getattr(self, "tabs", None) is not None else 0
+        keep_tab = self.tabs.currentRow() if getattr(self, "tabs", None) is not None else 0
         if self.body is not None:
             self.outer.removeWidget(self.body)
             self.body.deleteLater()
@@ -6705,9 +6738,7 @@ class SettingsDialog(QDialog):
         self.outer.addWidget(self.body)
         root = QVBoxLayout(self.body)
         root.setContentsMargins(12, 8, 12, 12)
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
-        def scroll(page):                          # long tabs scroll instead of growing past the screen
+        def scroll(page):                          # long pages scroll instead of growing past the screen
             from PySide6.QtWidgets import QScrollArea
             area = QScrollArea()
             area.setWidgetResizable(True)
@@ -6717,12 +6748,53 @@ class SettingsDialog(QDialog):
             area.setStyleSheet("QScrollArea{background:transparent}")
             area.viewport().setAutoFillBackground(False)
             return area
-        self.tabs.addTab(scroll(self._settings_tab(st)), tr("Settings"))
-        self.tabs.addTab(scroll(self._everyday_tab(st)), tr("Everyday"))
-        self.tabs.addTab(scroll(self._mine_tab()), tr("Make it yours"))
-        self.tabs.addTab(scroll(self._about_tab(st)), tr("About"))
-        self.tabs.setCurrentIndex(keep_tab)
-        root.addWidget(self.tabs)
+        self._groups = {}
+        old = [self._settings_tab(st), self._everyday_tab(st), self._mine_tab()]
+        about = self._about_tab(st)
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem, QStackedWidget
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        self.nav = QListWidget()
+        self.nav.setObjectName("nav")
+        self.nav.setFixedWidth(196)
+        self.nav.setFocusPolicy(Qt.NoFocus)
+        self.stack = QStackedWidget()
+        for icon, title, sub, keys in SETTINGS_PAGES:
+            if keys is None:
+                page = about
+            else:
+                page = QWidget()
+                page.setObjectName("page")
+                lay = QVBoxLayout(page)
+                lay.setContentsMargins(4, 0, 8, 8)
+                lay.setSpacing(4)
+                head = QLabel(tr(title))
+                head.setObjectName("pagetitle")
+                lay.addWidget(head)
+                if sub:
+                    s_lbl = QLabel(tr(sub))
+                    s_lbl.setObjectName("pagesub")
+                    s_lbl.setWordWrap(True)
+                    lay.addWidget(s_lbl)
+                for k in keys:
+                    g = self._groups.pop(k, None)
+                    if g is not None:
+                        lay.addWidget(g)
+                lay.addStretch(1)
+            it = QListWidgetItem(f"{icon}   {tr(title)}")
+            self.nav.addItem(it)
+            self.stack.addWidget(scroll(page))
+        for k in self._groups:                        # (Updates stays on the About page)
+            if k != "Updates":
+                winsys.log(f"settings: section {k} has no page")
+        for w in old:
+            w.deleteLater()
+        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.nav.setCurrentRow(min(keep_tab, self.nav.count() - 1))
+        body.addWidget(self.nav)
+        body.addWidget(self.stack, 1)
+        self.tabs = self.nav                          # keeps the page you were on when the language changes
+        root.addLayout(body, 1)
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Save).setText(tr("Save"))
@@ -6733,8 +6805,15 @@ class SettingsDialog(QDialog):
         root.addWidget(bb)
         self.adjustSize()
         scr = (self.screen() or QGuiApplication.primaryScreen()).availableGeometry()
-        widest = max(self.tabs.widget(i).widget().sizeHint().width() for i in range(self.tabs.count()))
-        self.resize(min(scr.width() - 40, max(self.width(), widest + 60)), min(scr.height() - 80, 760))
+        widest = max(self.stack.widget(i).widget().sizeHint().width() for i in range(self.stack.count()))
+        self.resize(min(scr.width() - 40, max(860, widest + 196 + 70)), min(scr.height() - 80, 720))
+
+    def _group(self, key):
+        """A section card; its English name says which page of Settings it goes on (SETTINGS_PAGES)."""
+        g = QGroupBox(tr(key))
+        g.setObjectName("section")
+        self._groups[key] = g
+        return g
 
     # ---- Settings tab
     def _settings_tab(self, st):
@@ -6743,7 +6822,7 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(2, 6, 2, 2)
 
-        g0 = QGroupBox(tr("Appearance"))
+        g0 = self._group("Appearance")
         f0 = QFormLayout(g0)
         self.lang = QComboBox()
         self.lang.addItem(tr("System default"), "")
@@ -6761,7 +6840,7 @@ class SettingsDialog(QDialog):
         f0.addRow(tr("Theme"), self.theme_box)
         lay.addWidget(g0)
 
-        g1 = QGroupBox(tr("Wheel keys — tap while dragging a file"))
+        g1 = self._group("Wheel keys — tap while dragging a file")
         f1 = QFormLayout(g1)
         self.key_boxes = {}
         for m in MODES:
@@ -6808,7 +6887,7 @@ class SettingsDialog(QDialog):
         f1.addRow(tr("Animations"), arow)
         lay.addWidget(g1)
 
-        g2 = QGroupBox(tr("Output"))
+        g2 = self._group("Output")
         f2 = QFormLayout(g2)
         self.out_mode = QComboBox()
         for key, label in (("next", tr("Next to the original file")), ("folder", tr("In this folder")),
@@ -6831,7 +6910,7 @@ class SettingsDialog(QDialog):
         self.out_mode.currentIndexChanged.connect(lambda _i: self.out_row.setVisible(self.out_mode.currentData() == "folder"))
         lay.addWidget(g2)
 
-        gf = QGroupBox(tr("Float"))
+        gf = self._group("Float")
         vf = QVBoxLayout(gf)
         self.autoplay = QCheckBox(tr("Play videos and music as soon as they open in Float"))
         self.autoplay.setChecked(st["autoplay"])
@@ -6861,7 +6940,7 @@ class SettingsDialog(QDialog):
         vf.addLayout(row)
         lay.addWidget(gf)
 
-        g3 = QGroupBox("Windows")
+        g3 = self._group("Startup and Explorer")
         v3 = QVBoxLayout(g3)
         self.startup = QCheckBox(tr("Start {app} when I sign in", app=APP))
         self.startup.setChecked(st["startup"])
@@ -6883,7 +6962,7 @@ class SettingsDialog(QDialog):
         page.setObjectName("page")
         lay = QVBoxLayout(page)
         lay.setContentsMargins(2, 6, 2, 2)
-        g = QGroupBox(tr("While dragging a file"))
+        g = self._group("While dragging a file")
         v = QVBoxLayout(g)
         self.shake = QCheckBox(tr("Shake the mouse to open the wheel (instead of tapping a key)"))
         self.shake.setChecked(st["shake"])
@@ -6893,7 +6972,7 @@ class SettingsDialog(QDialog):
         v.addWidget(self.peek)
         lay.addWidget(g)
 
-        g = QGroupBox(tr("When a job finishes"))
+        g = self._group("When a job finishes")
         v = QVBoxLayout(g)
         self.finish_anim = QCheckBox(tr("Animate the tick on the notification"))
         self.finish_anim.setChecked(st["finish_anim"])
@@ -6925,7 +7004,7 @@ class SettingsDialog(QDialog):
         v.addLayout(row)
         lay.addWidget(g)
 
-        g = QGroupBox(tr("While DragWheel is working"))
+        g = self._group("While DragWheel is working")
         v = QVBoxLayout(g)
         self.cursor_busy = QCheckBox(tr("Show a small spinning circle next to the mouse pointer"))
         self.cursor_busy.setChecked(st["cursor_busy"])
@@ -6940,7 +7019,7 @@ class SettingsDialog(QDialog):
         v.addLayout(row)
         lay.addWidget(g)
 
-        g = QGroupBox(tr("Watch folders"))
+        g = self._group("Watch folders")
         v = QVBoxLayout(g)
         lbl = QLabel(tr("Anything that lands in these folders is converted by itself, e.g. every HEIC photo in Downloads becomes a JPG."))
         lbl.setWordWrap(True)
@@ -6962,7 +7041,7 @@ class SettingsDialog(QDialog):
         self._fill_watch()
 
         if winsys.windows_11():
-            g = QGroupBox(tr("Windows right-click menu"))
+            g = self._group("Windows right-click menu")
             v = QVBoxLayout(g)
             self.full_menu = QCheckBox(tr("Show the full menu straight away (no “Show more options”)"))
             self.full_menu.setChecked(st["full_menu"])
@@ -6976,7 +7055,7 @@ class SettingsDialog(QDialog):
         else:
             self.full_menu = None
 
-        g = QGroupBox(tr("Command line"))
+        g = self._group("Command line")
         v = QVBoxLayout(g)
         lbl = QLabel(tr("Use DragWheel in Command Prompt or in your own scripts, e.g. "
                         "<b>dragwheel convert photo.heic --to jpg</b>. The button opens a Command Prompt in Downloads "
@@ -6988,7 +7067,7 @@ class SettingsDialog(QDialog):
         v.addWidget(b, 0, Qt.AlignLeft)
         lay.addWidget(g)
 
-        g = QGroupBox(tr("Help"))
+        g = self._group("Help")
         v = QVBoxLayout(g)
         row = QHBoxLayout()
         self.tour_start = QCheckBox(tr("Show the welcome tour every time DragWheel starts"))
@@ -7082,7 +7161,7 @@ class SettingsDialog(QDialog):
         lay.addLayout(btns)
 
         # updates
-        g4 = QGroupBox(tr("Updates"))
+        g4 = self._group("Updates")
         v4 = QVBoxLayout(g4)
         self.auto_update = QCheckBox(tr("Check for updates automatically (once a day)"))
         self.auto_update.setChecked(st["auto_update"])
@@ -7142,7 +7221,7 @@ class SettingsDialog(QDialog):
         page.setObjectName("page")
         lay = QVBoxLayout(page)
         lay.setContentsMargins(2, 6, 2, 2)
-        g = QGroupBox(tr("Wheel slices"))
+        g = self._group("Wheel slices")
         v = QVBoxLayout(g)
         lbl = QLabel(tr("Choose which slices each wheel shows and in what order."))
         lbl.setWordWrap(True)
@@ -7152,7 +7231,7 @@ class SettingsDialog(QDialog):
         v.addWidget(b, 0, Qt.AlignLeft)
         lay.addWidget(g)
 
-        g = QGroupBox(tr("Presets and chains"))
+        g = self._group("Presets and chains")
         v = QVBoxLayout(g)
         lbl = QLabel(tr("A preset is your favourite settings as one slice in Convert (e.g. WebP · quality 80 · max 1920 px). "
                         "A chain runs several steps as one slice in Tools (e.g. resize → WebP → ZIP)."))
@@ -7174,7 +7253,7 @@ class SettingsDialog(QDialog):
         lay.addWidget(g)
         self._fill_custom()
 
-        g = QGroupBox(tr("Your own slices"))
+        g = self._group("Your own slices")
         v = QVBoxLayout(g)
         lbl = QLabel(tr("Add your own commands to the Actions wheel (e.g. open in another app) in a simple settings file."))
         lbl.setWordWrap(True)
@@ -7187,7 +7266,7 @@ class SettingsDialog(QDialog):
         v.addLayout(row)
         lay.addWidget(g)
 
-        g = QGroupBox(tr("Move your setup to another PC"))
+        g = self._group("Move your setup to another PC")
         row = QHBoxLayout(g)
         b = QPushButton(tr("Export settings…"))
         b.clicked.connect(self._export)
@@ -8099,7 +8178,7 @@ class DragWheelApp(QObject):
         self._busy_timer.start()
 
         self.pending: list[str] = []
-        self.pending_timer = QTimer(self, singleShot=True, interval=350, timeout=self._flush_pending)
+        self.pending_timer = QTimer(self, singleShot=True, interval=600, timeout=self._flush_pending)
 
         self.tray = QSystemTrayIcon(app_icon())
         self.tray.activated.connect(lambda r: self.show_settings() if r == QSystemTrayIcon.Trigger else None)
@@ -8363,8 +8442,28 @@ class DragWheelApp(QObject):
         self.pending_timer.start()
 
     def _flush_pending(self):
+        """Explorer starts DragWheel once per file when you right-click many files, and they arrive one by one:
+        files that come in while that wheel is still open join it instead of replacing it."""
         paths, self.pending = list(dict.fromkeys(self.pending)), []
-        self.open_paths(paths)
+        now = time.monotonic()
+        if (self.wheel.is_open() and self.wheel.click_mode and self.wheel.paths
+                and now - getattr(self, "_last_batch", 0.0) < 8.0):
+            merged = list(dict.fromkeys(self.wheel.paths + [str(Path(p)) for p in paths if os.path.exists(p)]))
+            self.wheel.set_paths(merged)
+            self.wheel.update()
+            winsys.log(f"right-click batch: {len(merged)} files")
+        elif (getattr(self, "_batch_op", None) and now - self._batch_op[1] < 10.0
+              and now - getattr(self, "_last_batch", 0.0) < 10.0):
+            # you already chose a slice while the rest of the files were still arriving: they get it too
+            op = self._batch_op[0]
+            late = [str(Path(p)) for p in paths if os.path.exists(p)]
+            winsys.log(f"right-click batch: {len(late)} more files for {op.id}")
+            if late:
+                self.execute(op, late)
+        else:
+            self._batch_op = None
+            self.open_paths(paths)
+        self._last_batch = now
 
     def pick_files(self):
         files, _ = QFileDialog.getOpenFileNames(None, tr("Choose files to convert"))
@@ -8375,6 +8474,11 @@ class DragWheelApp(QObject):
     def execute(self, op: engine.Op, paths: list[str]):
         if op.id == "none":
             return
+        if (self.wheel.click_mode and time.monotonic() - getattr(self, "_last_batch", 0.0) < 10.0
+                and not op.ui and not op.ask and (op.group != "action" or op.id == "unblock")):
+            self._batch_op = (op, time.monotonic())        # files still arriving from a right-click get it too
+        else:
+            self._batch_op = None
         play_select()
         params = {}
         if getattr(op, "spec", None):
