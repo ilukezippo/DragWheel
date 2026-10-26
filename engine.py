@@ -775,6 +775,7 @@ def _link_log(msg):
 # YouTube live: some players' streams get "403 Forbidden" on segments after a few seconds (they need a token
 # DragWheel doesn't have). Players that did that are remembered for the session and skipped next time.
 LIVE_BAD_CLIENTS = set()
+LIVE_CLIENT_ORDER = ["tv", "android_vr", "web_safari"]   # players whose live streams need no extra token
 _LIVE_CLIENT_RANK = {"TVHTML5": 0, "TVHTML5_SIMPLY_EMBEDDED_PLAYER": 0, "IOS": 1, "ANDROID_VR": 2, "ANDROID": 2,
                      "WEB_SAFARI": 3, "MWEB": 4, "WEB": 5}
 
@@ -858,6 +859,9 @@ def resolve_link(url, quality=None, _updated=False) -> dict:
         cmd += ["--js-runtimes", f"quickjs:{qjs}"]
     import time as _t
     t0 = _t.monotonic()
+    host = (urlparse(url).hostname or "").lower()
+    youtube = host.endswith(("youtube.com", "youtu.be"))
+    per_client = {}
     r = subprocess.run(cmd + [url], capture_output=True, timeout=90, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
     err = r.stderr.decode("utf-8", "replace").strip().splitlines()
     info = {}
@@ -867,7 +871,35 @@ def resolve_link(url, quality=None, _updated=False) -> dict:
         except ValueError:
             info = {}
     live = bool(info.get("is_live") or info.get("live_status") == "is_live")
+    if youtube and live:
+        # a live stream: ask each of these players on its own (all at once), so DragWheel knows which player a
+        # stream came from and has the others ready to switch to straight away if YouTube refuses one
+        base = [c for c in cmd if c not in ("--extractor-args", _YT_CLIENTS)]
+        procs = {c: subprocess.Popen(base + ["--extractor-args", f"youtube:player_client={c}", url],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                     creationflags=NO_WINDOW) for c in LIVE_CLIENT_ORDER if c not in LIVE_BAD_CLIENTS}
+        for c, pr in procs.items():
+            try:
+                outp, _e = pr.communicate(timeout=60)
+                if pr.returncode == 0:
+                    per_client[c] = json.loads(outp.decode("utf-8", "replace") or "{}")
+            except Exception:
+                try:
+                    pr.kill()
+                except Exception:
+                    pass
     choice = _pick_formats(info, max_h, live) if info else {}
+    alts = []
+    if live and per_client:
+        for c in LIVE_CLIENT_ORDER:
+            ci = per_client.get(c)
+            ch = _pick_formats(ci, max_h, True) if ci else {}
+            if ch.get("url"):
+                alts.append(dict(ch, client=c))
+        good = [a for a in alts if a["client"] not in LIVE_BAD_CLIENTS] or alts
+        if good:
+            choice = good[0]
+            alts = [a for a in alts if a is not choice]
     if not choice.get("url"):
         errs = [x for x in err if x.startswith("ERROR")] or err
         last = (errs[-1] if errs else "Couldn't open this link").replace("ERROR: ", "")
@@ -881,9 +913,12 @@ def resolve_link(url, quality=None, _updated=False) -> dict:
     out = dict(choice, title=info.get("title") or url, page=info.get("webpage_url") or url)
     out["headers"] = {k: v for k, v in (out.get("headers") or {}).items()
                       if k.lower() in ("user-agent", "referer", "origin", "cookie", "accept-language")}
-    out["client"] = yt_client(out.get("url"))
+    out["client"] = out.get("client") or yt_client(out.get("url"))
     if live:
         out["live"] = True
+        out["alts"] = [{"url": a["url"], "headers": {k: v for k, v in (a.get("headers") or {}).items()
+                                                     if k.lower() in ("user-agent", "referer", "origin")},
+                        "height": a.get("height"), "client": a["client"]} for a in alts]
     _link_log(f"link opened in {_t.monotonic() - t0:.1f}s: {out.get('height')}p"
               + (f" live via {out['client'] or '?'}" if live else "") + (" (picture + sound apart)" if out.get("audio") else ""))
     return out

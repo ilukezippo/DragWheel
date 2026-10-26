@@ -2691,10 +2691,13 @@ class LiveRelay:
     """Plays a live stream through ffmpeg: ffmpeg follows the live playlist as it grows (Qt's player stops when
     the first ~30 s run out) and passes one endless stream to the float over a local address."""
 
-    def __init__(self, url, headers=None):
+    safe_http = False            # after YouTube refused a reused connection: one request per segment from then on
+
+    def __init__(self, url, headers=None, client=""):
         import http.server
         import subprocess
         relay = self
+        self.client = client or engine.yt_client(url)
         self.procs = []
         hdr = dict(headers or {})
         args = ["-hide_banner", "-loglevel", "warning", "-fflags", "+genpts"]
@@ -2708,7 +2711,10 @@ class LiveRelay:
         if extra:
             args += ["-headers", extra]
         if "m3u8" in url or "hls" in url:
-            args += ["-live_start_index", "-6", "-http_persistent", "1", "-http_multiple", "1"]
+            args += ["-live_start_index", "-6"]
+            args += (["-http_persistent", "0", "-http_multiple", "0"] if LiveRelay.safe_http
+                     else ["-http_persistent", "1", "-http_multiple", "1"])
+            args += ["-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "4"]
         cmd = [engine.ffmpeg(), *args, *LIVE_INPUT_EXTRA, "-i", url, "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
                *LIVE_OUTPUT, "pipe:1"]
 
@@ -2734,8 +2740,10 @@ class LiveRelay:
                         if "403 Forbidden" in line:
                             forbidden += 1
                             if forbidden == 3:             # this player's stream is refused: use another one
-                                client = engine.yt_client(url)
-                                engine.LIVE_BAD_CLIENTS.add(client)
+                                client = relay.client
+                                if client:
+                                    engine.LIVE_BAD_CLIENTS.add(client)
+                                LiveRelay.safe_http = True
                                 relay.forbidden = True
                                 winsys.log(f"live relay: YouTube refuses the {client or '?'} stream, switching player")
                                 try:
@@ -3700,7 +3708,7 @@ class FloatWindow(QWidget):
     def _start_relay(self):
         self._stop_relay()
         try:
-            self._relay = LiveRelay(self.path, (self.link or {}).get("headers"))
+            self._relay = LiveRelay(self.path, (self.link or {}).get("headers"), (self.link or {}).get("client", ""))
         except Exception as e:
             winsys.log(f"live relay failed: {e}")
             self._relay = None
@@ -3789,6 +3797,16 @@ class FloatWindow(QWidget):
         if spare and spare[1].get("client") in engine.LIVE_BAD_CLIENTS:
             spare = self._spare = None                   # made for a player YouTube now refuses
         relay = getattr(self, "_relay", None)
+        if relay is not None and relay.forbidden:
+            alts = [a for a in (self.link or {}).get("alts", []) if a.get("client") not in engine.LIVE_BAD_CLIENTS]
+            if alts:                                     # another player's stream is already known: switch now
+                nxt = dict(self.link, url=alts[0]["url"], headers=alts[0].get("headers") or {},
+                           client=alts[0].get("client", ""), alts=alts[1:])
+                winsys.log(f"float: live stream switched to the {nxt['client']} player")
+                relay.forbidden = False
+                self._live_reloads = []
+                self.restart_live(nxt)
+                return
         if relay is not None and relay.forbidden and not spare and _APP is not None:
             winsys.log("float: live stream re-opened with another player")
             relay.forbidden = False
