@@ -3086,8 +3086,36 @@ class FloatWindow(QWidget):
             self.move(tl)
         self.update()
 
+    def _has_content(self) -> bool:
+        return bool(self.link) or (self.kind != "empty" and bool(self.path))
+
     def _open_original(self):
+        if not self._has_content():                  # an empty float: Open picks a file to show in it
+            QTimer.singleShot(0, self._browse_file)  # once the menu has closed
+            return
         QDesktopServices.openUrl(QUrl(self.link["page"]) if self.link else QUrl.fromLocalFile(self.path))
+
+    def _browse_file(self):
+        """Choose a picture, video, song or document to show in this float."""
+        start = str(Path(self.path).parent) if self.path and not self.link else str(Path.home())
+        # floats never take the focus by themselves, so make DragWheel the foreground app first:
+        # otherwise Windows opens the file window behind everything else
+        self.activateWindow()
+        winsys.set_foreground(int(self.winId()))
+        f, _ = QFileDialog.getOpenFileName(self, tr("Open"), start)
+        if f:
+            self._load(f)
+            self._fade_to(1.0)
+            self.come_forward()
+            QTimer.singleShot(1600, self._maybe_hide_controls)
+
+    def _nothing_playing(self) -> bool:
+        if self.kind == "empty":
+            return True
+        if self.player is None or self.kind not in ("video", "audio"):
+            return False
+        from PySide6.QtMultimedia import QMediaPlayer
+        return self.player.playbackState() == QMediaPlayer.StoppedState and not getattr(self, "_busy", False)
 
     def _set_cover(self, data):
         """Use an album cover (PNG bytes or QImage) as the picture of an audio float."""
@@ -4114,6 +4142,10 @@ class FloatWindow(QWidget):
             self._fade_to(0.0)
 
     def mouseDoubleClickEvent(self, e):
+        if self._hit(e.position()) in ("body", "icon") and self._nothing_playing():
+            self._press = None
+            QTimer.singleShot(0, self._browse_file)                       # nothing showing or playing: double-click picks a file
+            return
         if self._hit(e.position()) == "body" and self.kind == "image":
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.path))
 
@@ -4176,7 +4208,7 @@ class FloatWindow(QWidget):
         m.addAction(tr("Open"), self._open_original)
         if self.link:
             m.addAction(tr("Copy"), lambda: QGuiApplication.clipboard().setText(self.link["page"]))
-        else:
+        elif self._has_content():
             m.addAction(tr("Show in Explorer"), lambda: winsys.reveal(self.path))
             m.addAction(tr("Copy path"), lambda: QGuiApplication.clipboard().setText(str(Path(self.path))))
         if self.link:

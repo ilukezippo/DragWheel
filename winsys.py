@@ -188,6 +188,17 @@ def bring_to_front(hwnd: int) -> None:
         log(f"bring to front: {e}")
 
 
+def set_foreground(hwnd: int) -> None:
+    """Make this window the foreground window (allowed right after the user clicked one of ours)."""
+    if not IS_WIN or not hwnd:
+        return
+    try:
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow(hwnd)
+    except Exception as e:
+        log(f"foreground: {e}")
+
+
 def root_window_at(x: int, y: int) -> int:
     """Top-level window under a screen point."""
     if not IS_WIN:
