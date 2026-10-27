@@ -92,6 +92,11 @@ def peek_key() -> str:
     return v
 
 
+# Windows language ids NSIS uses for each app language (Setup remembers its choice under "InstallerLanguage")
+INSTALLER_LANG_IDS = {"en": 1033, "ar": 1025, "fr": 1036, "es": 1034, "de": 1031, "it": 1040, "pt": 1046, "tr": 1055,
+                      "ru": 1049, "fa": 1065, "ur": 1056, "hi": 1081, "ja": 1041, "zh": 2052}
+
+
 def peek_hold() -> bool:
     """File preview: True = shown while the key is held, False = press to open, press again to close."""
     return settings().value("peek_hold", "false") == "true"
@@ -8396,7 +8401,7 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, APP, tr("Settings saved to {file}", file=f))
 
     # what Restore defaults keeps: things you made or played, not preferences
-    KEEP_ON_RESET = ("first_run_done", "installer", "last_update_check", "skip_version", "float_links", "float_recent",
+    KEEP_ON_RESET = ("first_run_done", "installer", "InstallerLanguage", "last_update_check", "skip_version", "float_links", "float_recent",
                      "float_pins", "float_resume", "recent_results", "custom_slices", "share_links", "language")
 
     def _restore_defaults(self):
@@ -8490,6 +8495,9 @@ class SettingsDialog(QDialog):
         self.app.watcher.refresh_settings()
         engine.OUTPUT_DIR = (self.out.text().strip() or None) if mode == "folder" else None
         s.setValue("language", self.lang.currentData())
+        lcid = INSTALLER_LANG_IDS.get(self.lang.currentData())
+        if lcid:
+            s.setValue("InstallerLanguage", str(lcid))     # the next Setup offers the same language first
         s.setValue("theme", self.theme_box.currentData())
         try:
             winsys.set_startup(self.startup.isChecked())
@@ -9210,6 +9218,8 @@ class DragWatcher(QObject):
             self.hook.start()
 
     def tick(self):
+        if time.monotonic() < winsys.SYNTH_UNTIL:
+            return                                     # DragWheel is clicking for you: held keys briefly read as up
         keys = mode_keys()
         combos = {spec: set(winsys.combo_vks(spec)) for spec in set(keys.values())}
         hooked = set(self._hook_clicks())
@@ -9392,10 +9402,11 @@ class DragWheelApp(QObject):
         self.watcher.volume_key.connect(self.on_volume_key, Qt.QueuedConnection)
         self.watcher.shaken.connect(self.on_shake)
         self.watcher.released.connect(self._close_peek)
-        self.watcher.peek_up.connect(self._close_peek)
+        self.watcher.peek_up.connect(self._peek_let_go)
         self.watcher.click_drag.connect(self.on_click_drag)
         self.watcher.start()
         self._peek = None
+        self._peek_held = False
         self.watch = FolderWatch(self)
         try:
             _tick_effect()                       # load the click sounds now
@@ -9607,6 +9618,11 @@ class DragWheelApp(QObject):
         if self._peek is not None:
             self._peek.hide()
 
+    def _peek_let_go(self):
+        """Hold to show: the key was let go — close it, or don't open it if it isn't up yet."""
+        self._peek_held = False
+        self._close_peek()
+
     def _fill_from_explorer(self):
         """Ask Explorer which files are being dragged, so the wheel works even if
         Windows never delivers the drag to it (security software, elevation, Qt quirks)."""
@@ -9683,7 +9699,8 @@ class DragWheelApp(QObject):
                 if not peek_hold():
                     self._peek.hide()
                 return
-            self._idle_paths(lambda paths: self._show_peek(paths))
+            self._peek_held = True
+            self._idle_paths(lambda paths: self._show_peek(paths) if self._peek_held or not peek_hold() else None)
             return
         if self.wheel.is_open():
             if mode == self.wheel.mode:

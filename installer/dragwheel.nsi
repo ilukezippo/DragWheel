@@ -52,6 +52,7 @@ VIAddVersionKey "LegalCopyright"  "MIT License"
 !define MUI_LANGDLL_REGISTRY_ROOT "HKCU"
 !define MUI_LANGDLL_REGISTRY_KEY "${SETTINGS_KEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "InstallerLanguage"
+!define MUI_CUSTOMFUNCTION_GUIINIT SetupGuiInit
 
 Var OldVersion   ; version already installed ("" on a fresh install)
 Var WelcomeHead
@@ -207,9 +208,8 @@ Section "!$(SecCoreName)" SecCore
 
   ; tell the app the installer already decided about the Explorer menu
   WriteRegStr HKCU "${SETTINGS_KEY}" "installer" "1"
-  ; app language follows the installer language on a first install; an update keeps the one chosen in Settings
-  ReadRegStr $0 HKCU "${SETTINGS_KEY}" "language"
-  ${If} $0 == ""
+  ; the app speaks the language you picked in Setup (a silent update keeps the one chosen in Settings)
+  ${IfNot} ${Silent}
     ${If} $LANGUAGE == ${LANG_ARABIC}
       WriteRegStr HKCU "${SETTINGS_KEY}" "language" "ar"
     ${ElseIf} $LANGUAGE == ${LANG_FRENCH}
@@ -319,7 +319,11 @@ Function .onInit
   StrCmp $R0 0 +3
     MessageBox MB_OK|MB_ICONEXCLAMATION "$(AlreadyRunning)"
     Abort
+FunctionEnd
 
+; Runs after the language is chosen and loaded (texts in .onInit are always in the first language),
+; so the "already installed" question and the welcome page are in the language you picked.
+Function SetupGuiInit
   ; already installed? -> this is an update
   ReadRegStr $OldVersion HKLM "${UNINST_KEY}" "DisplayVersion"
   ${If} $OldVersion == ""

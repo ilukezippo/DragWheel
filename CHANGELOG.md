@@ -2,6 +2,8 @@
 
 ## 1.2.1 — October 2026
 
+- Setup: the "already installed" question and the welcome page now use the language you pick, and DragWheel starts in that language; changing the language in Settings makes it Setup's first choice next time
+- Mouse hover: holding Shift or Ctrl in a wheel key no longer selects a range of files or opens a second wheel; *Hold to show* closes File preview even after a quick tap
 - **Key + click for a wheel key:** hold a key and click while setting a wheel key, e.g. Ctrl + right click; the click goes to DragWheel instead of opening Explorer's menu (right clicks work while dragging a file; left clicks with Mouse hover and File selection)
 - **File preview opens** (Settings → Wheel): *Press to open, press again to close* or *Hold to show, let go to close*
 - **Custom Slices** (was Your own slices, now under Wheel slices): add a slice that opens files in any app — browse for the app, pick which files it shows for, no commands to type (the slices file is still there under *Advanced…*)

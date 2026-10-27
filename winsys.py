@@ -567,12 +567,30 @@ def set_sendto(enabled: bool) -> None:
     _sendto(enabled)
 
 
+SYNTHETIC = 0x44570001          # marks input DragWheel sends itself, so the mouse hook leaves it alone
+SYNTH_UNTIL = 0.0               # until then, held keys may read as up (see click_at_cursor)
+
+
 def click_at_cursor() -> None:
-    """A left click where the mouse is (selects the file under it in Explorer or on the desktop)."""
+    """A plain left click where the mouse is (selects only the file under it in Explorer or on the desktop).
+    Keys you're holding (Shift, Ctrl…) are let go for the click and pressed again, so it doesn't add to the selection."""
+    global SYNTH_UNTIL
     if not IS_WIN:
         return
-    user32.mouse_event(0x0002, 0, 0, 0, 0)        # left down
-    user32.mouse_event(0x0004, 0, 0, 0, 0)        # left up
+    import time
+    SYNTH_UNTIL = time.monotonic() + 0.3
+    held = [vk for vk in (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C) if user32.GetAsyncKeyState(vk) & 0x8000]
+    ext = lambda vk: 1 if vk in (0xA3, 0xA5, 0x5B, 0x5C) else 0          # KEYEVENTF_EXTENDEDKEY
+    if any(vk in (0xA4, 0xA5, 0x5B, 0x5C) for vk in held):
+        user32.keybd_event(0xE8, 0, 0, SYNTHETIC)                       # so letting go of Alt/Win opens no menu
+        user32.keybd_event(0xE8, 0, 2, SYNTHETIC)
+    for vk in held:
+        user32.keybd_event(vk, 0, ext(vk) | 2, SYNTHETIC)               # key up
+    user32.mouse_event(0x0002, 0, 0, 0, SYNTHETIC)                      # left down
+    user32.mouse_event(0x0004, 0, 0, 0, SYNTHETIC)                      # left up
+    for vk in held:
+        user32.keybd_event(vk, 0, ext(vk), SYNTHETIC)                   # held again, as you still are
+    SYNTH_UNTIL = time.monotonic() + 0.25
 
 
 def other_keys_down(exclude) -> bool:
@@ -830,6 +848,8 @@ class WheelHook:
         def proc(n_code, w_param, l_param):
             if n_code == 0 and w_param in BUTTONS:
                 try:
+                    if ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents.dwExtraInfo == SYNTHETIC:
+                        return user32.CallNextHookEx(None, n_code, w_param, l_param)    # our own click
                     if key_click(w_param):
                         return 1
                 except Exception:
