@@ -2,6 +2,10 @@
 
 ## 1.2.1 — October 2026
 
+- **Custom Slices** (was Your own slices, now under Wheel slices): add a slice that opens files in any app — browse for the app, pick which files it shows for, no commands to type (the slices file is still there under *Advanced…*)
+- **Auto Convert** window has a **Save result as** choice: *Copy* (into a Converted folder, as before) or *Overwrite original* (the new file takes the original's place; the original goes to the Recycle Bin)
+- **Three more sound styles:** Steam, PlayStation and Xbox (original sounds in each console's spirit)
+- **The installer speaks every language DragWheel does:** French, Spanish, German, Italian, Portuguese, Turkish, Russian, Persian, Urdu, Hindi, Japanese and Chinese join English and Arabic, and the app starts in the language you pick there
 - **Any key or combination for each wheel:** click a wheel's key box and press what you like (Shift, Ctrl+Q, F8, the mouse's side buttons…); a key that is also part of a longer combination counts when you let it go; File preview (Space) has its own key box too
 - **Mouse Control** on the Wheel page: Mouse Shake, Scroll Wheel and Loading Spin with on/off switches and a line about each; choose whether a shake or a scroll opens Convert, Tools, Actions or File preview
 - Clearer names in Settings: *Wheel keys*, *Jobs*, *Auto Convert* (was Watch folders), *Startup*, *Enable notification sound*, *Enable wheel sound*, and an *Animations* section; every option is now an on/off switch

@@ -78,6 +78,18 @@ Var WelcomeBody
 
 !insertmacro MUI_LANGUAGE "English"
 !insertmacro MUI_LANGUAGE "Arabic"
+!insertmacro MUI_LANGUAGE "French"
+!insertmacro MUI_LANGUAGE "Spanish"
+!insertmacro MUI_LANGUAGE "German"
+!insertmacro MUI_LANGUAGE "Italian"
+!insertmacro MUI_LANGUAGE "PortugueseBR"
+!insertmacro MUI_LANGUAGE "Turkish"
+!insertmacro MUI_LANGUAGE "Russian"
+!insertmacro MUI_LANGUAGE "Farsi"
+!insertmacro MUI_LANGUAGEEX "lang" "Urdu"        ; NSIS has no Urdu: our own files in installer\lang
+!insertmacro MUI_LANGUAGE "Hindi"
+!insertmacro MUI_LANGUAGE "Japanese"
+!insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_RESERVEFILE_LANGDLL
 
 ; ---------------------------------------------------------------------------
@@ -200,6 +212,30 @@ Section "!$(SecCoreName)" SecCore
   ${If} $0 == ""
     ${If} $LANGUAGE == ${LANG_ARABIC}
       WriteRegStr HKCU "${SETTINGS_KEY}" "language" "ar"
+    ${ElseIf} $LANGUAGE == ${LANG_FRENCH}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "fr"
+    ${ElseIf} $LANGUAGE == ${LANG_SPANISH}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "es"
+    ${ElseIf} $LANGUAGE == ${LANG_GERMAN}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "de"
+    ${ElseIf} $LANGUAGE == ${LANG_ITALIAN}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "it"
+    ${ElseIf} $LANGUAGE == ${LANG_PORTUGUESEBR}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "pt"
+    ${ElseIf} $LANGUAGE == ${LANG_TURKISH}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "tr"
+    ${ElseIf} $LANGUAGE == ${LANG_RUSSIAN}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "ru"
+    ${ElseIf} $LANGUAGE == ${LANG_FARSI}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "fa"
+    ${ElseIf} $LANGUAGE == ${LANG_URDU}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "ur"
+    ${ElseIf} $LANGUAGE == ${LANG_HINDI}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "hi"
+    ${ElseIf} $LANGUAGE == ${LANG_JAPANESE}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "ja"
+    ${ElseIf} $LANGUAGE == ${LANG_SIMPCHINESE}
+      WriteRegStr HKCU "${SETTINGS_KEY}" "language" "zh"
     ${Else}
       WriteRegStr HKCU "${SETTINGS_KEY}" "language" "en"
     ${EndIf}
@@ -454,3 +490,5 @@ LangString NeedAdmin      ${LANG_ENGLISH} "${APPNAME} Setup needs administrator 
 LangString NeedAdmin      ${LANG_ARABIC}  "يحتاج مثبّت ${APPNAME} إلى صلاحيات المسؤول. انقر عليه بزر الفأرة الأيمن واختر «تشغيل كمسؤول»."
 LangString Need64         ${LANG_ENGLISH} "${APPNAME} needs 64-bit Windows 10 or 11."
 LangString Need64         ${LANG_ARABIC}  "يتطلب ${APPNAME} نظام Windows 10 أو 11 بإصدار 64 بت."
+
+!include "lang\strings.nsh"

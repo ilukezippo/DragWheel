@@ -2160,7 +2160,8 @@ def _play_wav(name, volume, pack=None) -> bool:
 
 
 SOUND_PACKS = [("classic", "Classic"), ("soft", "Soft"), ("glass", "Glass"), ("bubble", "Bubble"),
-               ("mechanical", "Mechanical"), ("retro", "Retro")]
+               ("mechanical", "Mechanical"), ("retro", "Retro"), ("steam", "Steam"), ("playstation", "PlayStation"),
+               ("xbox", "Xbox")]
 
 
 def sound_pack() -> str:
@@ -4836,8 +4837,8 @@ SETTINGS_PAGES = [
      ["Output", "Jobs", "Auto Convert"]),
     ("float", "Float", "The mini player for pictures, videos, music and links",
      ["Float"]),
-    ("customize", "Customize", "Choose the slices, and add presets, chains and your own commands",
-     ["Wheel slices", "Presets and chains", "Your own slices"]),
+    ("customize", "Customize", "Choose the slices, and add your own slices, presets and chains",
+     ["Wheel slices", "Custom Slices", "Presets and chains"]),
     ("advanced", "Advanced", "Command line, moving to another PC, help and crash reports",
      ["Command line", "Settings Config", "Help"]),
     ("about", "About", "", None),
@@ -6657,6 +6658,26 @@ def load_my_slices() -> list:
         return []
 
 
+def save_my_slices(lst):
+    """Write Custom Slices back to my-slices.json (the file stays hand-editable)."""
+    f = my_slices_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    head = "\n".join(line for line in MY_SLICES_TEMPLATE.splitlines() if line.startswith("//"))
+    f.write_text(head + "\n" + json.dumps(lst, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def slice_app(spec):
+    """(app path, once per file) when a slice is simply "open these files with an app", else None."""
+    import re
+    m = re.fullmatch(r'\s*"([^"]+)"\s+(?:"\{file\}"|\{file\}|\{files\})\s*', spec.get("command", ""))
+    if m:
+        return m.group(1), "{files}" not in spec["command"]
+    m = re.fullmatch(r'\s*(\S+)\s+(?:"\{file\}"|\{file\}|\{files\})\s*', spec.get("command", ""))
+    if m:
+        return m.group(1), "{files}" not in spec["command"]
+    return None
+
+
 def run_my_slice(spec, paths):
     import shlex  # noqa: F401  (quoting is done by hand for Windows)
     import subprocess
@@ -6755,6 +6776,7 @@ class FolderWatch(QObject):
         self.known = {}          # folder -> set of names seen
         self.waiting = {}        # path -> (size, stable checks)
         self.done = set()
+        self.overwrite = set()   # originals whose result should replace them
         self.timer = QTimer(self, interval=1000, timeout=self._check)
         self.reload()
 
@@ -6833,6 +6855,8 @@ class FolderWatch(QObject):
             if op.model and not engine.model_ready(op.model):
                 continue
             self.done.add(path)
+            if r.get("save") == "overwrite":
+                self.overwrite.add(path)         # result is made in "Converted", then takes the original's place
             out = Path(folder) / tr("Converted")
             out.mkdir(exist_ok=True)
             self.app.out_override[path] = str(out)
@@ -6849,12 +6873,100 @@ class FolderWatch(QObject):
                 self.app._start(op, [path], params)
 
 
+class CustomSliceDialog(QDialog):
+    """Add or change a Custom Slice: a name, the app that opens the files, and which files it shows for."""
+
+    def __init__(self, spec=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"{APP} — " + tr("Custom Slices"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
+        self.spec, self.old = None, dict(spec or {})
+        form = QFormLayout(self)
+        self.name = QLineEdit(self.old.get("name", ""))
+        self.name.setPlaceholderText(tr("e.g. Open in Photoshop"))
+        self.name.setMinimumWidth(340)
+        form.addRow(tr("Name"), self.name)
+        row = QHBoxLayout()
+        self.app_edit = QLineEdit()
+        self.app_edit.setPlaceholderText(tr("Choose the app…"))
+        row.addWidget(self.app_edit, 1)
+        b = QPushButton(tr("Browse…"))
+        b.clicked.connect(self._browse)
+        row.addWidget(b)
+        form.addRow(tr("App"), row)
+        self.kind = QComboBox()
+        self.kind.addItem(tr("All files"), ["*"])
+        for k, label in WHEEL_TYPES:
+            self.kind.addItem(tr(label), [k])
+        fors = self.old.get("for") or ["*"]
+        fors = [fors] if isinstance(fors, str) else list(fors)
+        i = self.kind.findData(fors)
+        if i < 0:
+            self.kind.addItem(", ".join(tr(dict(WHEEL_TYPES).get(f, f)) for f in fors), fors)
+            i = self.kind.count() - 1
+        self.kind.setCurrentIndex(i)
+        form.addRow(tr("Show for"), self.kind)
+        self.each = SwitchBox(tr("Open each file in its own window"))
+        form.addRow(self.each)
+        self.raw = None
+        app = slice_app(self.old) if self.old else None
+        if app:
+            self.app_edit.setText(app[0])
+            self.each.setChecked(app[1])
+        elif self.old:
+            self.raw = self.old.get("command", "")          # a hand-written command: keep it as it is
+            self.app_edit.setText(self.raw)
+            self.each.setChecked(bool(self.old.get("each", True)))
+        else:
+            self.each.setChecked(True)
+        note = QLabel(tr("The slice appears in the Actions wheel for those files."))
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        form.addRow(note)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(tr("Save"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+
+    def _browse(self):
+        start = self.app_edit.text() if os.path.exists(self.app_edit.text()) else os.environ.get("ProgramFiles", str(Path.home()))
+        f, _ = QFileDialog.getOpenFileName(self, tr("Choose the app…"), start,
+                                           tr("Apps") + " (*.exe *.bat *.cmd *.lnk);;" + tr("All files") + " (*)")
+        if f:
+            f = str(Path(f))
+            if f.lower().endswith(".lnk"):
+                f = winsys.shortcut_target(f) or f
+            self.raw = None
+            self.app_edit.setText(f)
+            if not self.name.text().strip():
+                self.name.setText(tr("Open in {app}", app=Path(f).stem))
+
+    def _ok(self):
+        name, app = self.name.text().strip(), self.app_edit.text().strip().strip('"')
+        if not app:
+            self.app_edit.setFocus()
+            return
+        if not name:
+            name = tr("Open in {app}", app=Path(app).stem)
+        each = self.each.isChecked()
+        if self.raw is not None and app == self.raw.strip().strip('"'):
+            cmd = self.raw
+        else:
+            cmd = f'"{app}" ' + ('"{file}"' if each else "{files}")
+        self.spec = {"name": name, "for": self.kind.currentData(), "command": cmd, "each": each}
+        self.accept()
+
+
 class WatchRuleDialog(QDialog):
     """Add a watch folder: which folder, which files, what to do."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"{APP} — " + tr("Watch a folder"))
+        self.setWindowTitle(f"{APP} — " + tr("Auto Convert"))
         self.setStyleSheet(i18n.css(DIALOG_CSS))
         form = QFormLayout(self)
         row = QHBoxLayout()
@@ -6872,7 +6984,16 @@ class WatchRuleDialog(QDialog):
         form.addRow(tr("When this arrives"), self.kind)
         self.op = QComboBox()
         form.addRow(tr("Do this"), self.op)
-        note = QLabel(tr("Results go to a “Converted” folder inside it. Files already there are left alone."))
+        self.save = QComboBox()
+        self.save.addItem(tr("Copy"), "copy")
+        self.save.addItem(tr("Overwrite original"), "overwrite")
+        form.addRow(tr("Save result as"), self.save)
+        note = QLabel()
+        self.save.currentIndexChanged.connect(lambda _i: note.setText(
+            tr("Results go to a “Converted” folder inside it. Files already there are left alone.")
+            if self.save.currentData() == "copy" else
+            tr("The new file takes the original's place; the original goes to the Recycle Bin. Files already there are left alone.")))
+        note.setText(tr("Results go to a “Converted” folder inside it. Files already there are left alone."))
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
         form.addRow(note)
@@ -6904,7 +7025,7 @@ class WatchRuleDialog(QDialog):
             return
         mode, oid = self.op.currentData()
         self.rule = {"folder": f, "cat": self.kind.currentData(), "mode": mode, "id": oid,
-                     "label": self.op.currentText(), "on": True}
+                     "label": self.op.currentText(), "on": True, "save": self.save.currentData()}
         self.accept()
 
 
@@ -7954,7 +8075,8 @@ class SettingsDialog(QDialog):
         self.watch_list.clear()
         for r in watch_folders():
             kind = dict(WHEEL_TYPES).get(r.get("cat"), r.get("cat", ""))
-            self.watch_list.addItem(f"{r.get('folder')}   ·   {tr(kind)} → {r.get('label')}")
+            how = tr("Overwrite original") if r.get("save") == "overwrite" else tr("Copy")
+            self.watch_list.addItem(f"{r.get('folder')}   ·   {tr(kind)} → {r.get('label')}   ·   {how}")
 
     def _add_watch(self):
         d = WatchRuleDialog(self)
@@ -8101,6 +8223,30 @@ class SettingsDialog(QDialog):
         v.addWidget(b, 0, Qt.AlignLeft)
         lay.addWidget(g)
 
+        g = self._group("Custom Slices")
+        v = QVBoxLayout(g)
+        lbl = QLabel(tr("Open files with any app right from the Actions wheel — pick the app and the files it's for."))
+        lbl.setWordWrap(True)
+        v.addWidget(lbl)
+        self.mine_list = QListWidget()
+        self.mine_list.setFixedHeight(84)
+        self.mine_list.itemDoubleClicked.connect(lambda _it: self._edit_mine())
+        v.addWidget(self.mine_list)
+        row = QHBoxLayout()
+        for label, fn in ((tr("Add…"), lambda: self._edit_mine(new=True)), (tr("Edit"), self._edit_mine),
+                          (tr("Remove"), self._remove_mine)):
+            bt = QPushButton(label)
+            bt.clicked.connect(fn)
+            row.addWidget(bt)
+        row.addStretch(1)
+        bt = QPushButton(tr("Advanced…"))
+        bt.setToolTip(tr("Edit the slices file by hand (commands with {file}, {folder} and more)"))
+        bt.clicked.connect(self._edit_my_slices)
+        row.addWidget(bt)
+        v.addLayout(row)
+        lay.addWidget(g)
+        self._fill_mine()
+
         g = self._group("Presets and chains")
         v = QVBoxLayout(g)
         lbl = QLabel(tr("A preset is your favourite settings as one slice in Convert (e.g. WebP · quality 80 · max 1920 px). "
@@ -8108,7 +8254,7 @@ class SettingsDialog(QDialog):
         lbl.setWordWrap(True)
         v.addWidget(lbl)
         self.custom_list = QListWidget()
-        self.custom_list.setMinimumHeight(110)
+        self.custom_list.setFixedHeight(84)
         self.custom_list.itemDoubleClicked.connect(lambda _it: self._edit_custom())
         v.addWidget(self.custom_list)
         row = QHBoxLayout()
@@ -8123,18 +8269,6 @@ class SettingsDialog(QDialog):
         lay.addWidget(g)
         self._fill_custom()
 
-        g = self._group("Your own slices")
-        v = QVBoxLayout(g)
-        lbl = QLabel(tr("Add your own commands to the Actions wheel (e.g. open in another app) in a simple settings file."))
-        lbl.setWordWrap(True)
-        v.addWidget(lbl)
-        row = QHBoxLayout()
-        b = QPushButton(tr("Edit my slices…"))
-        b.clicked.connect(self._edit_my_slices)
-        row.addWidget(b)
-        row.addStretch(1)
-        v.addLayout(row)
-        lay.addWidget(g)
 
         g = self._group("Settings Config")
         row = QHBoxLayout(g)
@@ -8190,6 +8324,38 @@ class SettingsDialog(QDialog):
             return
         save_custom_slices([x for x in custom_slices() if x.get("uid") != it.data(Qt.UserRole)])
         self._fill_custom()
+
+    def _fill_mine(self):
+        self.mine_list.clear()
+        for spec in load_my_slices():
+            fors = spec.get("for") or ["*"]
+            fors = [fors] if isinstance(fors, str) else fors
+            kinds = tr("All files") if "*" in fors else ", ".join(tr(dict(WHEEL_TYPES).get(f, f)) for f in fors)
+            app = slice_app(spec)
+            how = Path(app[0]).stem if app else spec["command"]
+            self.mine_list.addItem(f"{spec['name']}   ·   {kinds}   ·   {how}")
+
+    def _edit_mine(self, new=False):
+        lst = load_my_slices()
+        i = self.mine_list.currentRow()
+        if not new and not (0 <= i < len(lst)):
+            return
+        d = CustomSliceDialog(None if new else lst[i], self)
+        if d.exec() == QDialog.Accepted and d.spec:
+            if new:
+                lst.append(d.spec)
+            else:
+                lst[i] = d.spec
+            save_my_slices(lst)
+            self._fill_mine()
+
+    def _remove_mine(self):
+        lst = load_my_slices()
+        i = self.mine_list.currentRow()
+        if 0 <= i < len(lst):
+            lst.pop(i)
+            save_my_slices(lst)
+            self._fill_mine()
 
     def _edit_my_slices(self):
         f = my_slices_file()
@@ -10068,6 +10234,8 @@ class DragWheelApp(QObject):
         mode = settings().value("output_mode", "next")
         outs = [Path(o) for o in outs if o]
         if worker.paths and worker.paths[0] in self.watch.done:
+            if worker.paths[0] in self.watch.overwrite:
+                return self._watch_overwrite(worker.paths[0], outs)
             return outs                                  # watch folders keep results in their own folder
         if not outs or mode not in ("replace", "clipboard"):
             return outs
@@ -10125,6 +10293,30 @@ class DragWheelApp(QObject):
                 winsys.log(f"replace failed for {a}: {e}")
                 final.append(b)
         return final
+
+    def _watch_overwrite(self, original, outs):
+        """Auto Convert set to 'Overwrite original': the result takes the original's place (original to the Recycle Bin)."""
+        self.watch.overwrite.discard(original)
+        a = Path(original)
+        if len(outs) != 1 or outs[0].is_dir():
+            return outs                                  # several results: keep them in "Converted"
+        b = outs[0]
+        try:
+            target = a.with_suffix(b.suffix)
+            if target.exists() and target != a:
+                target = engine.unique_path(target)
+            self.watch.done.add(str(target))             # don't convert our own result again
+            winsys.recycle(str(a))
+            shutil.move(str(b), str(target))
+            try:
+                b.parent.rmdir()                         # "Converted" only if it is now empty
+            except OSError:
+                pass
+            winsys.log(f"auto convert: {a.name} overwritten by {target.name}")
+            return [target]
+        except Exception as e:
+            winsys.log(f"auto convert overwrite failed for {a}: {e}")
+            return outs
 
     # ---- updates
     def _auto_update_check(self):

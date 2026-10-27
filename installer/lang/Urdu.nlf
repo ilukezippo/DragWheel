@@ -1,0 +1,191 @@
+﻿# Header, don't edit
+NLF v6
+# Start editing here
+# Language ID
+1056
+# Font and size - dash (-) means default
+-
+-
+# Codepage - dash (-) means ASCII code page
+1256
+# RTL - anything else than RTL means LTR
+RTL
+# Translation by ..... (any credits should go here)
+# ^Branding
+Nullsoft Install System %s
+# ^SetupCaption
+$(^Name) سیٹ اپ
+# ^UninstallCaption
+$(^Name) ان انسٹال
+# ^LicenseSubCaption
+: لائسنس معاہدہ
+# ^ComponentsSubCaption
+: انسٹالیشن کے اختیارات
+# ^DirSubCaption
+: انسٹالیشن فولڈر
+# ^InstallingSubCaption
+: انسٹال ہو رہا ہے
+# ^CompletedSubCaption
+: مکمل
+# ^UnComponentsSubCaption
+: ان انسٹالیشن کے اختیارات
+# ^UnDirSubCaption
+: ان انسٹالیشن فولڈر
+# ^ConfirmSubCaption
+: تصدیق
+# ^UninstallingSubCaption
+: ان انسٹال ہو رہا ہے
+# ^UnCompletedSubCaption
+: مکمل
+# ^BackBtn
+< &پیچھے
+# ^NextBtn
+&اگلا >
+# ^AgreeBtn
+میں &متفق ہوں
+# ^AcceptBtn
+میں لائسنس معاہدے کی شرائط &قبول کرتا ہوں
+# ^DontAcceptBtn
+میں لائسنس معاہدے کی شرائط &قبول نہیں کرتا
+# ^InstallBtn
+&انسٹال کریں
+# ^UninstallBtn
+&ان انسٹال کریں
+# ^CancelBtn
+منسوخ
+# ^CloseBtn
+&بند کریں
+# ^BrowseBtn
+&براؤز...
+# ^ShowDetailsBtn
+&تفصیلات دکھائیں
+# ^ClickNext
+جاری رکھنے کے لیے اگلا پر کلک کریں۔
+# ^ClickInstall
+انسٹالیشن شروع کرنے کے لیے انسٹال کریں پر کلک کریں۔
+# ^ClickUninstall
+ان انسٹالیشن شروع کرنے کے لیے ان انسٹال کریں پر کلک کریں۔
+# ^Name
+نام
+# ^Completed
+مکمل
+# ^LicenseText
+$(^NameDA) انسٹال کرنے سے پہلے لائسنس معاہدہ پڑھ لیں۔ اگر آپ تمام شرائط قبول کرتے ہیں تو میں متفق ہوں پر کلک کریں۔
+# ^LicenseTextCB
+$(^NameDA) انسٹال کرنے سے پہلے لائسنس معاہدہ پڑھ لیں۔ اگر آپ تمام شرائط قبول کرتے ہیں تو نیچے دیے گئے خانے پر کلک کریں۔ $_CLICK
+# ^LicenseTextRB
+$(^NameDA) انسٹال کرنے سے پہلے لائسنس معاہدہ پڑھ لیں۔ اگر آپ تمام شرائط قبول کرتے ہیں تو نیچے پہلا اختیار منتخب کریں۔ $_CLICK
+# ^UnLicenseText
+$(^NameDA) ان انسٹال کرنے سے پہلے لائسنس معاہدہ پڑھ لیں۔ اگر آپ تمام شرائط قبول کرتے ہیں تو میں متفق ہوں پر کلک کریں۔
+# ^UnLicenseTextCB
+$(^NameDA) ان انسٹال کرنے سے پہلے لائسنس معاہدہ پڑھ لیں۔ اگر آپ تمام شرائط قبول کرتے ہیں تو نیچے دیے گئے خانے پر کلک کریں۔ $_CLICK
+# ^UnLicenseTextRB
+$(^NameDA) ان انسٹال کرنے سے پہلے لائسنس معاہدہ پڑھ لیں۔ اگر آپ تمام شرائط قبول کرتے ہیں تو نیچے پہلا اختیار منتخب کریں۔ $_CLICK
+# ^Custom
+حسب منشا
+# ^ComponentsText
+جو اجزاء انسٹال کرنا چاہتے ہیں انہیں منتخب کریں اور جو نہیں چاہتے ان کا نشان ہٹا دیں۔ $_CLICK
+# ^ComponentsSubText1
+انسٹال کی قسم منتخب کریں:
+# ^ComponentsSubText2_NoInstTypes
+انسٹال کرنے کے لیے اجزاء منتخب کریں:
+# ^ComponentsSubText2
+یا وہ اختیاری اجزاء منتخب کریں جو آپ انسٹال کرنا چاہتے ہیں:
+# ^UnComponentsText
+جو اجزاء ان انسٹال کرنا چاہتے ہیں انہیں منتخب کریں اور جو نہیں چاہتے ان کا نشان ہٹا دیں۔ $_CLICK
+# ^UnComponentsSubText1
+ان انسٹال کی قسم منتخب کریں:
+# ^UnComponentsSubText2_NoInstTypes
+ان انسٹال کرنے کے لیے اجزاء منتخب کریں:
+# ^UnComponentsSubText2
+یا وہ اختیاری اجزاء منتخب کریں جو آپ ان انسٹال کرنا چاہتے ہیں:
+# ^DirText
+سیٹ اپ $(^NameDA) کو درج ذیل فولڈر میں انسٹال کرے گا۔ کسی اور فولڈر میں انسٹال کرنے کے لیے براؤز پر کلک کر کے دوسرا فولڈر منتخب کریں۔ $_CLICK
+# ^DirSubText
+منزل کا فولڈر
+# ^DirBrowseText
+$(^NameDA) انسٹال کرنے کے لیے فولڈر منتخب کریں:
+# ^UnDirText
+سیٹ اپ $(^NameDA) کو درج ذیل فولڈر سے ان انسٹال کرے گا۔ کسی اور فولڈر سے ان انسٹال کرنے کے لیے براؤز پر کلک کر کے دوسرا فولڈر منتخب کریں۔ $_CLICK
+# ^UnDirSubText
+""
+# ^UnDirBrowseText
+وہ فولڈر منتخب کریں جس سے $(^NameDA) ان انسٹال کرنا ہے:
+# ^SpaceAvailable
+"دستیاب جگہ: "
+# ^SpaceRequired
+"درکار جگہ: "
+# ^UninstallingText
+$(^NameDA) درج ذیل فولڈر سے ان انسٹال کیا جائے گا۔ $_CLICK
+# ^UninstallingSubText
+یہاں سے ان انسٹال ہو رہا ہے:
+# ^FileError
+فائل لکھنے کے لیے کھولنے میں خرابی: \r\n\r\n$0\r\n\r\nانسٹالیشن روکنے کے لیے Abort،\r\nدوبارہ کوشش کے لیے Retry، یا\r\nیہ فائل چھوڑنے کے لیے Ignore پر کلک کریں۔
+# ^FileError_NoIgnore
+فائل لکھنے کے لیے کھولنے میں خرابی: \r\n\r\n$0\r\n\r\nدوبارہ کوشش کے لیے Retry، یا\r\nانسٹالیشن روکنے کے لیے Cancel پر کلک کریں۔
+# ^CantWrite
+"لکھا نہیں جا سکا: "
+# ^CopyFailed
+کاپی ناکام
+# ^CopyTo
+"کاپی: "
+# ^Registering
+"رجسٹر ہو رہا ہے: "
+# ^Unregistering
+"رجسٹریشن ختم: "
+# ^SymbolNotFound
+"علامت نہیں ملی: "
+# ^CouldNotLoad
+"لوڈ نہیں ہو سکا: "
+# ^CreateFolder
+"فولڈر بنائیں: "
+# ^CreateShortcut
+"شارٹ کٹ بنائیں: "
+# ^CreatedUninstaller
+"ان انسٹالر بنایا: "
+# ^Delete
+"فائل حذف کریں: "
+# ^DeleteOnReboot
+"ری بوٹ پر حذف کریں: "
+# ^ErrorCreatingShortcut
+"شارٹ کٹ بنانے میں خرابی: "
+# ^ErrorCreating
+"بنانے میں خرابی: "
+# ^ErrorDecompressing
+ڈیٹا کھولنے میں خرابی! کیا انسٹالر خراب ہے؟
+# ^ErrorRegistering
+DLL رجسٹر کرنے میں خرابی
+# ^ExecShell
+"ExecShell: "
+# ^Exec
+"چلائیں: "
+# ^Extract
+"نکالیں: "
+# ^ErrorWriting
+"نکالیں: فائل میں لکھنے میں خرابی "
+# ^InvalidOpcode
+انسٹالر خراب ہے: غلط opcode
+# ^NoOLE
+"OLE نہیں ملا: "
+# ^OutputFolder
+"آؤٹ پٹ فولڈر: "
+# ^RemoveFolder
+"فولڈر ہٹائیں: "
+# ^RenameOnReboot
+"ری بوٹ پر نام بدلیں: "
+# ^Rename
+"نام بدلیں: "
+# ^Skipped
+"چھوڑ دیا: "
+# ^CopyDetails
+تفصیلات کلپ بورڈ پر کاپی کریں
+# ^LogInstall
+انسٹال کے عمل کا لاگ رکھیں
+# ^Byte
+B
+# ^Kilo
+ K
+# ^Mega
+ M
+# ^Giga
+ G

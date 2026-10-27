@@ -1043,3 +1043,17 @@ def recycle(path: str) -> None:
     if r != 0:
         raise OSError(f"Recycle Bin: error {r}")
 
+
+
+def shortcut_target(lnk: str) -> str | None:
+    """The program a Windows shortcut (.lnk) points to, or None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        ps = f"(New-Object -ComObject WScript.Shell).CreateShortcut('{lnk.replace(chr(39), chr(39) * 2)}').TargetPath"
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, timeout=10,
+                           creationflags=0x08000000)
+        t = r.stdout.decode("utf-8", "replace").strip()
+        return t if t and os.path.exists(t) else None
+    except Exception:
+        return None
