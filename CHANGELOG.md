@@ -5,9 +5,11 @@
 - **Any key or combination for each wheel:** click a wheel's key box and press what you like (Shift, Ctrl+Q, F8, the mouse's side buttons…); a key that is also part of a longer combination counts when you let it go; File preview (Space) has its own key box too
 - **Mouse Control** on the Wheel page: Mouse Shake, Scroll Wheel and Loading Spin with on/off switches and a line about each; choose whether a shake or a scroll opens Convert, Tools, Actions or File preview
 - Clearer names in Settings: *Wheel keys*, *Jobs*, *Auto Convert* (was Watch folders), *Startup*, *Enable notification sound*, *Enable wheel sound*, and an *Animations* section; every option is now an on/off switch
-- **Trigger on** has new choices: *File drag (recommended)*, *Mouse hover* (point at a file in Explorer or on the desktop and tap the key) and *File selection* (select files and tap the key); dragging always works, and this replaces Ctrl + Alt + Space
+- **Trigger on** has new choices: *File drag (recommended)*, *Mouse hover* (point at a file in Explorer or on the desktop and tap the key) and *File selection* (select files and tap the key); the wheel keys and File preview follow the choice you make, and this replaces Ctrl + Alt + Space
 - A key can belong to only one wheel: giving it to another one sets the first to None
-- **Opening and closing animation** can be different (Settings → Wheel → Animations)
+- **Opening and closing animation** can be different (Settings → Wheel → Animations), with six new styles: Zoom, Pop, Drop, Rise, Flip and Swirl
+- **Six new themes:** Midnight, Ocean, Forest, Grape, Rose and Sand, each with its own accent colour
+- **Show in taskbar:** each float gets a taskbar button, so it's easy to get back to (Settings → Float)
 - Shorter Float options: *Play files and links instantly*, *Always on top*, *Ctrl+Enter opens a file in Float*, *Stop playing while loading*, *Remove float border*, *Enable multimedia logos on screen*
 - **Right-click menu** in Settings → General: the context menu, Send To and the Windows 11 context menu are separate switches
 - The wheel's buttons show the key under the wheel's name, so long names (like the mouse's side buttons) fit; the welcome tour fits them too
@@ -31,7 +33,7 @@
 - **Recently played:** a new list on the float's menu with the links and files you played, to play again, save, or remove
 - *Play copied link* is now called *Paste link* (and *Paste link to Float* on the desktop's right-click menu)
 - **Playback speed** for videos and music in Float (right-click → Speed: 0.5× to 2×)
-- Folders, programs and other files in Float show just their icon and name, without the dark background or frame (can be turned off in Settings → Float)
+- Folders, programs and other files in Float show just their icon and name — no background, frame or highlight, even when you point at them (can be turned off in Settings → Float)
 - An empty float: *Open* and double-click choose a file (the window now comes to the front); *Show in Explorer* and *Copy path* only show when something is open
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
 - **JPEG** slice next to JPG for pictures (same format, .jpeg name); Settings → Wheel slices lists every format of a type

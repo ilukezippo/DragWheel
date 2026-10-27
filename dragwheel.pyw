@@ -49,6 +49,15 @@ ACCENT_2 = QColor("#ffb347")
 ON_ACCENT = QColor("#1c1c1e")
 
 
+def sync_accent():
+    """The theme's accent colour, used by everything that's painted (changed in place, so it's everywhere)."""
+    try:
+        ACCENT.setRgba(QColor(theme.hexc("accent")).rgba())
+        ON_ACCENT.setRgba(QColor(theme.hexc("on_accent")).rgba())
+    except Exception:
+        pass
+
+
 def C(name):
     """Current theme colour (see theme.py)."""
     return theme.color(name)
@@ -1421,7 +1430,9 @@ class ModelDownload(QRunnable):
 # ============================================================================
 # The wheel
 # ============================================================================
-WHEEL_ANIMS = [("bloom", "Bloom"), ("circle", "Circle"), ("fade", "Fade"), ("spin", "Spin"), ("none", "None")]
+WHEEL_ANIMS = [("bloom", "Bloom"), ("circle", "Circle"), ("fade", "Fade"), ("spin", "Spin"), ("zoom", "Zoom"),
+               ("pop", "Pop"), ("drop", "Drop"), ("rise", "Rise"), ("flip", "Flip"), ("swirl", "Swirl"),
+               ("none", "None")]
 
 
 def wheel_anim() -> str:
@@ -1848,6 +1859,26 @@ class Wheel(QWidget):
                 p.rotate(-28 * (1 - t))
                 p.scale(sc, sc)
                 p.translate(-c)
+                p.setOpacity(t)
+            elif self._style in ("zoom", "pop", "flip", "swirl"):
+                if self._style == "zoom":                 # grows from small, with a little overshoot
+                    sx = sy = max(0.05, 0.45 + 0.55 * _ease_back(t))
+                    rot = 0
+                elif self._style == "pop":                # lands from slightly bigger
+                    sx = sy = 1.18 - 0.18 * t
+                    rot = 0
+                elif self._style == "flip":               # turns around like a card
+                    sx, sy, rot = max(0.04, t), 1.0, 0
+                else:                                     # spins in from small
+                    sx = sy = max(0.05, 0.3 + 0.7 * t)
+                    rot = -160 * (1 - t)
+                p.translate(c)
+                p.rotate(rot)
+                p.scale(sx, sy)
+                p.translate(-c)
+                p.setOpacity(min(1.0, t * 1.3))
+            elif self._style in ("drop", "rise"):         # slides into place from above / below
+                p.translate(0, (-46 if self._style == "drop" else 46) * (1 - t) ** 2)
                 p.setOpacity(t)
             else:
                 p.setOpacity(t)
@@ -3312,7 +3343,9 @@ class FloatWindow(QWidget):
         on_top = settings().value("float_on_top", "true") == "true"
         if pin is not None:
             on_top = bool(pin.get("on_top", on_top))
-        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | (Qt.WindowStaysOnTopHint if on_top else Qt.Widget))
+        taskbar = settings().value("float_taskbar", "true") == "true"
+        super().__init__(None, Qt.FramelessWindowHint | (Qt.Window if taskbar else Qt.Tool)
+                         | (Qt.WindowStaysOnTopHint if on_top else Qt.Widget))
         self.on_top = on_top
         self._vol_open = False
         self._vol_drag = False
@@ -3434,6 +3467,10 @@ class FloatWindow(QWidget):
             self.move(tl)                                # stay exactly where it is
         self._pin_changed()
         self.setToolTip(f"{link['page'] if link else path}\n" + tr("Drag to move · drag ⠿ to drop the file · double-click to open · scroll to resize"))
+        try:
+            self.setWindowTitle((self.display_name() if (path or link) else tr("Open Float")) or APP)   # the taskbar button
+        except Exception:
+            self.setWindowTitle(APP)
         self.update()
 
     def set_rate(self, rate):
@@ -4178,6 +4215,15 @@ class FloatWindow(QWidget):
         return "body"
 
     # ---------------------------------------------------------------- fading controls
+    def set_taskbar(self, on):
+        """Show this float as a button on the taskbar (so it's easy to get back to), or not."""
+        geo, vis = self.geometry(), self.isVisible()
+        self.setWindowFlag(Qt.Tool, not on)
+        self.setWindowFlag(Qt.Window, True)
+        self.setGeometry(geo)
+        if vis:
+            self.show()
+
     def set_on_top(self, on):
         self.on_top = bool(on)
         geo = self.geometry()
@@ -4277,10 +4323,8 @@ class FloatWindow(QWidget):
         clip.addRoundedRect(r, self.RADIUS, self.RADIUS)
         p.setClipPath(clip)
         bare = self.kind == "other" and not self.link and settings().value("float_icon_only", "true") == "true"
-        if bare:                                            # just the icon; a light panel only while you point at it
-            bg = QColor(C("panel"))
-            bg.setAlphaF(0.85 * self.ctrl)
-            p.fillRect(r, bg)
+        if bare:                                            # just the icon and its name: no panel, frame or highlight
+            p.fillRect(r, QColor(0, 0, 0, 1))               # (all but invisible, so the float still takes the mouse)
         else:
             p.fillRect(r, QColor(0, 0, 0) if self.kind == "video" else C("panel"))
         media = self.kind in ("image", "video") or self.art
@@ -4308,7 +4352,7 @@ class FloatWindow(QWidget):
                        tr("or press Ctrl+V to play a copied link · right-click for saved links"))
         else:                                               # icon, centred; highlights on hover
             ir = self._icon_rect()
-            if self.hover == "icon":
+            if self.hover == "icon" and not bare:
                 hl = QColor(ACCENT)
                 hl.setAlpha(46)
                 p.setPen(QPen(ACCENT, 1.5))
@@ -4398,8 +4442,8 @@ class FloatWindow(QWidget):
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), self.RADIUS, self.RADIUS)
         else:
             col = QColor(ACCENT if (self.hover and self.hover != "icon") else C("line"))
-            if bare:                                        # icon only: the frame shows only while you point at it
-                col.setAlphaF(col.alphaF() * self.ctrl)
+            if bare:                                        # icon only: never a frame
+                col.setAlphaF(0.0)
             if col.alphaF() > 0.01:
                 p.setPen(QPen(col, 1.2))
                 p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
@@ -7287,6 +7331,7 @@ class SettingsDialog(QDialog):
             "ctrl_open": self.ctrl_open.isChecked(),
             "media_osd": self.media_osd.isChecked(),
             "icon_only": self.icon_only.isChecked(),
+            "taskbar": self.taskbar.isChecked(),
             "anim": self.anim.currentData(),
             "anim_close": self.anim_close.currentData(),
             "anim_same": self.anim_same.isChecked(),
@@ -7324,6 +7369,7 @@ class SettingsDialog(QDialog):
             "ctrl_open": s.value("float_ctrl_open", "true") == "true",
             "media_osd": s.value("media_osd", "true") == "true",
             "icon_only": s.value("float_icon_only", "true") == "true",
+            "taskbar": s.value("float_taskbar", "true") == "true",
             "anim": wheel_anim(),
             "anim_close": settings().value("wheel_anim_close", wheel_anim()),
             "anim_same": settings().value("anim_same", "true") == "true",
@@ -7530,9 +7576,8 @@ class SettingsDialog(QDialog):
         self.lang.currentIndexChanged.connect(self._language_changed)
         f0.addRow(tr("App language"), self.lang)
         self.theme_box = QComboBox()
-        for code, label in (("system", tr("System default")), ("dark", tr("Dark")), ("light", tr("Light")),
-                            ("contrast", tr("High contrast"))):
-            self.theme_box.addItem(label, code)
+        for code, label in theme.NAMES:
+            self.theme_box.addItem(tr(label), code)
         self.theme_box.setCurrentIndex(max(0, self.theme_box.findData(theme.mode())))
         self.theme_box.currentIndexChanged.connect(self._theme_changed)
         f0.addRow(tr("Theme"), self.theme_box)
@@ -7563,8 +7608,8 @@ class SettingsDialog(QDialog):
             self.detect.addItem(label, k)
         self.detect.setCurrentIndex(max(0, self.detect.findData(st["detect"])))
         f1.addRow(tr("Trigger on"), self.detect)
-        tip = QLabel(tr("Mouse hover: point at a file in File Explorer or on the desktop and tap the key. "
-                        "File selection: select files and tap the key.") + " " + tr("Dragging a file always works."))
+        tip = QLabel(tr("File drag: tap the key while dragging a file. Mouse hover: point at a file in File Explorer "
+                        "or on the desktop and tap the key. File selection: select files and tap the key."))
         tip.setObjectName("dim")
         tip.setWordWrap(True)
         f1.addRow("", tip)
@@ -7678,6 +7723,9 @@ class SettingsDialog(QDialog):
         self.link_stops = SwitchBox(tr("Stop playing while loading"))
         self.link_stops.setChecked(st["link_stops"])
         vf.addWidget(self.link_stops)
+        self.taskbar = SwitchBox(tr("Show in taskbar"))
+        self.taskbar.setChecked(st["taskbar"])
+        vf.addWidget(self.taskbar)
         self.icon_only = SwitchBox(tr("Remove float border"))
         self.icon_only.setChecked(st["icon_only"])
         vf.addWidget(self.icon_only)
@@ -8135,7 +8183,11 @@ class SettingsDialog(QDialog):
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
         s.setValue("float_icon_only", "true" if self.icon_only.isChecked() else "false")
+        tb_changed = (s.value("float_taskbar", "true") == "true") != self.taskbar.isChecked()
+        s.setValue("float_taskbar", "true" if self.taskbar.isChecked() else "false")
         for w in getattr(self.app, "floats", []):
+            if tb_changed:
+                w.set_taskbar(self.taskbar.isChecked())
             w.update()
         s.setValue("wheel_anim", self.anim.currentData())
         s.setValue("wheel_anim_close", self.anim_close.currentData())
@@ -8872,7 +8924,8 @@ class DragWatcher(QObject):
                 pv = getattr(self, "peek_vks", [winsys.VK_SPACE])
                 space = bool(pv) and all(winsys.key_down(v) for v in pv) and (
                     len(pv) > 1 or pv[0] in (0x10, 0x11, 0x12) or not (winsys.key_down(0x11) or winsys.key_down(0x12)))
-                if space and not self.space_prev and self.peek_enabled and winsys.file_drag_active():
+                if (space and not self.space_prev and self.peek_enabled and getattr(self, "trigger", "drag") == "drag"
+                        and winsys.file_drag_active()):
                     self.peek.emit()
                 self.space_prev = space
                 if self.shake_enabled and not self.shook and self._shake(pos):
@@ -8892,7 +8945,7 @@ class DragWatcher(QObject):
                         fire = held.get(name) and not self.prev.get(name)
                     if not held.get(name) and not self.prev.get(name):
                         self.spoiled.discard(name)
-                    if fire and (any_drag or winsys.file_drag_active()):
+                    if fire and getattr(self, "trigger", "drag") == "drag" and (any_drag or winsys.file_drag_active()):
                         self.tapped.emit(m)
                     if fire or (not held.get(name) and self.prev.get(name)):
                         self.spoiled.discard(name)
@@ -8907,7 +8960,11 @@ class DragWatcher(QObject):
         # Trigger on hover / selection: a clean tap of a wheel key (nothing else pressed meanwhile, no click)
         if getattr(self, "trigger", "drag") != "drag":
             clean = getattr(self, "clean", {})
-            for m, name in keys.items():
+            pv = getattr(self, "peek_vks", [])
+            if pv:                                     # File preview follows the same choice
+                combos["__peek__"] = set(pv)
+                held["__peek__"] = all(winsys.key_down(v) for v in pv)
+            for m, name in list(keys.items()) + ([("peek", "__peek__")] if pv else []):
                 vks = combos.get(name)
                 if not vks:
                     continue
@@ -9121,6 +9178,7 @@ class DragWheelApp(QObject):
 
     def apply_theme(self):
         theme.set_mode(settings().value("theme", "system"))
+        sync_accent()
         self.toast.restyle()
         for c in self.toast.cards:
             c.update()
@@ -9264,6 +9322,12 @@ class DragWheelApp(QObject):
 
     def on_idle_tap(self, mode):
         """Trigger on hover / selection: the wheel for the file under the mouse, or the files selected."""
+        if mode == "peek":
+            if self._peek is not None and self._peek.isVisible():
+                self._peek.hide()
+                return
+            self._idle_paths(lambda paths: self._show_peek(paths))
+            return
         if self.wheel.is_open():
             if mode == self.wheel.mode:
                 self.wheel.dismiss()
@@ -9271,6 +9335,15 @@ class DragWheelApp(QObject):
                 play_tick()
                 self.wheel.set_mode(mode)
             return
+        self._idle_paths(lambda paths: self.wheel.popup(mode, paths, click_mode=True))
+
+    def _show_peek(self, paths):
+        if self._peek is None:
+            self._peek = PeekWindow()
+        self._peek.peek(paths)
+
+    def _idle_paths(self, then):
+        """The file under the mouse (Mouse hover) or the files selected (File selection), handed to `then`."""
         trig = trigger_mode()
         if trig == "select":
             hwnd = winsys.foreground_hwnd()
@@ -9279,7 +9352,7 @@ class DragWheelApp(QObject):
             paths = [p for p in winsys.explorer_selection(hwnd) if p and os.path.exists(p)]
             winsys.log(f"selection tap: {len(paths)} file(s)")
             if paths:
-                self.wheel.popup(mode, paths, click_mode=True)
+                then(paths)
         elif trig == "hover":
             pos = winsys.cursor_pos()
             root = winsys.root_window_at(*pos)
@@ -9291,7 +9364,7 @@ class DragWheelApp(QObject):
                 paths = [p for p in winsys.explorer_selection(root) if p and os.path.exists(p)]
                 winsys.log(f"hover tap: {len(paths)} file(s)")
                 if paths:
-                    self.wheel.popup(mode, paths[:1] if len(paths) > 1 else paths, click_mode=True)
+                    then(paths[:1])
             QTimer.singleShot(180, after)
 
     def on_hotkey(self):
@@ -10395,6 +10468,7 @@ def main():
 
     i18n.set_language(settings().value("language", ""))
     theme.set_mode(settings().value("theme", "system"))
+    sync_accent()
     qapp.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
     qapp.setFont(QFont(i18n.ui_font(), 9))
 
