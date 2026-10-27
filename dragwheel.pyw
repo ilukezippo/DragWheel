@@ -67,6 +67,11 @@ def mode_keys() -> dict[str, str]:
     return {m: s.value(f"keys/{m}", DEFAULT_KEYS[m]) for m in MODES}
 
 
+def key_label(spec: str) -> str:
+    """'Ctrl+Q' as shown to you (each part translated)."""
+    return " + ".join(tr(p) for p in (spec or "None").split("+") if p) or tr("None")
+
+
 # ============================================================================
 # Files: batch rename, checksum, shred, send to phone
 # ============================================================================
@@ -1771,9 +1776,10 @@ class Wheel(QWidget):
         else:
             # modifier taps switch wheels, like during a drag
             keys = mode_keys()
-            name = {Qt.Key_Shift: "Shift", Qt.Key_Control: "Ctrl", Qt.Key_Alt: "Alt"}.get(k)
+            pressed = qt_key_name(k)
             for m, kname in keys.items():
-                if name == kname:
+                vks = winsys.combo_vks(kname)
+                if pressed and vks and pressed in kname.split("+") and all(winsys.key_down(v) for v in vks):
                     if m == self.mode:
                         self.dismiss()                 # the same key again closes the wheel
                     else:
@@ -1915,7 +1921,7 @@ class Wheel(QWidget):
             f.setWeight(QFont.DemiBold)
             p.setFont(f)
             p.setPen(ON_ACCENT if active else C("text"))
-            p.drawText(r, Qt.AlignCenter, tr(MODE_LABEL[m]) if keys[m] == "None" else f"{tr(keys[m])}  ·  {tr(MODE_LABEL[m])}")
+            p.drawText(r, Qt.AlignCenter, tr(MODE_LABEL[m]) if keys[m] == "None" else f"{key_label(keys[m])}  ·  {tr(MODE_LABEL[m])}")
         p.end()
 
     @staticmethod
@@ -4655,6 +4661,9 @@ QGroupBox#section{background:$surface;color:$text;font:600 10pt 'Segoe UI';borde
 margin-top:30px;padding:14px 12px 12px 12px}
 QGroupBox#section::title{subcontrol-origin:margin;subcontrol-position:top left;left:4px;top:4px;padding:0 2px}
 QGroupBox#section QLabel,QGroupBox#section QCheckBox{background:transparent}
+QPushButton#keycap{background:$bg;color:$text;border:1px solid $border;border-radius:6px;padding:6px 10px;
+font:600 10pt 'Segoe UI';text-align:left} QPushButton#keycap:hover{border-color:$accent}
+QPushButton#keycap:focus{border-color:$accent}
 """
 
 DIALOG_CSS = """
@@ -6065,6 +6074,114 @@ def message(title, html):
 # Settings
 # ============================================================================
 KEY_NAMES = ["Shift", "Ctrl", "Alt", "CapsLock", "None"]
+_KEY_ORDER = ["Ctrl", "Shift", "Alt", "Win"]
+
+
+def qt_key_name(k) -> str | None:
+    """A Qt key as DragWheel names it ('Shift', 'Q', 'F8', ...), or None for keys that can't be used."""
+    named = {Qt.Key_Shift: "Shift", Qt.Key_Control: "Ctrl", Qt.Key_Alt: "Alt", Qt.Key_Meta: "Win",
+             Qt.Key_CapsLock: "CapsLock", Qt.Key_Tab: "Tab", Qt.Key_Space: "Space", Qt.Key_Insert: "Insert",
+             Qt.Key_Delete: "Delete", Qt.Key_Home: "Home", Qt.Key_End: "End", Qt.Key_PageUp: "PageUp",
+             Qt.Key_PageDown: "PageDown", Qt.Key_Left: "Left", Qt.Key_Right: "Right", Qt.Key_Up: "Up",
+             Qt.Key_Down: "Down", Qt.Key_Backspace: "Backspace", Qt.Key_Return: "Enter", Qt.Key_Enter: "Enter",
+             Qt.Key_QuoteLeft: "`", Qt.Key_Minus: "-", Qt.Key_Equal: "=", Qt.Key_BracketLeft: "[",
+             Qt.Key_BracketRight: "]", Qt.Key_Semicolon: ";", Qt.Key_Apostrophe: "'", Qt.Key_Comma: ",",
+             Qt.Key_Period: ".", Qt.Key_Slash: "/", Qt.Key_Backslash: "\\"}
+    k = int(k)
+    if k in {int(a): b for a, b in named.items()}:
+        return {int(a): b for a, b in named.items()}[k]
+    if int(Qt.Key_A) <= k <= int(Qt.Key_Z) or int(Qt.Key_0) <= k <= int(Qt.Key_9):
+        return chr(k)
+    if int(Qt.Key_F1) <= k <= int(Qt.Key_F24):
+        return f"F{k - int(Qt.Key_F1) + 1}"
+    return None
+
+
+def combo_text(names) -> str:
+    names = list(dict.fromkeys(names))
+    names.sort(key=lambda n: (_KEY_ORDER.index(n) if n in _KEY_ORDER else 9))
+    return "+".join(names)
+
+
+class KeyCapture(QPushButton):
+    """Click, then press any key or combination (Ctrl+Q, F8, the mouse's side buttons…). Esc cancels."""
+    changed = Signal(str)
+
+    def __init__(self, spec="None", parent=None):
+        super().__init__(parent)
+        self.spec = spec or "None"
+        self._listening = False
+        self._down, self._combo = set(), []
+        self.setCheckable(False)
+        self.setAutoDefault(False)
+        self.setObjectName("keycap")
+        self.setMinimumWidth(220)
+        self.setCursor(Qt.PointingHandCursor)
+        self.clicked.connect(self._listen)
+        self._show()
+
+    def _show(self):
+        if self._listening:
+            self.setText(key_label(combo_text(self._combo)) + " …" if self._combo else tr("Press a key or a combination…"))
+        else:
+            self.setText(key_label(self.spec))
+
+    def _listen(self):
+        self._listening, self._down, self._combo = True, set(), []
+        self.setFocus()
+        self.grabKeyboard()
+        self._show()
+
+    def _finish(self, spec=None):
+        self.releaseKeyboard()
+        self._listening = False
+        if spec is not None and spec != self.spec:
+            self.spec = spec
+            self.changed.emit(spec)
+        self._show()
+
+    def set_spec(self, spec):
+        self.spec = spec or "None"
+        self._show()
+
+    def keyPressEvent(self, e):
+        if not self._listening:
+            return super().keyPressEvent(e)
+        if e.key() == Qt.Key_Escape:
+            self._finish()
+            return
+        if e.isAutoRepeat():
+            return
+        name = qt_key_name(e.key())
+        if name:
+            self._down.add(name)
+            if name not in self._combo:
+                self._combo.append(name)
+            self._show()
+
+    def keyReleaseEvent(self, e):
+        if not self._listening or e.isAutoRepeat():
+            return
+        name = qt_key_name(e.key())
+        self._down.discard(name)
+        if not self._down and self._combo:          # everything let go: that's the combination
+            self._finish(combo_text(self._combo))
+
+    def mousePressEvent(self, e):
+        if self._listening:
+            extra = {Qt.MiddleButton: "MiddleMouse", Qt.BackButton: "Mouse4", Qt.ForwardButton: "Mouse5"}.get(e.button())
+            if extra:
+                self._finish(combo_text(self._combo + [extra]))
+                return
+            if e.button() == Qt.LeftButton and not self._combo:
+                self._finish()                          # clicked again: keep what it was
+                return
+        super().mousePressEvent(e)
+
+    def focusOutEvent(self, e):
+        if self._listening:
+            self._finish()
+        super().focusOutEvent(e)
 
 
 # ============================================================================
@@ -6817,7 +6934,7 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------------ state
     def _state(self) -> dict:
         return {
-            "keys": {m: cb.currentData() for m, cb in self.key_boxes.items()},
+            "keys": {m: cb.spec for m, cb in self.key_boxes.items()},
             "detect": self.detect.currentIndex(),
             "scroll": self.scroll.isChecked(),
             "out": self.out.text(),
@@ -7064,12 +7181,20 @@ class SettingsDialog(QDialog):
         f1 = QFormLayout(g1)
         self.key_boxes = {}
         for m in MODES:
-            cb = QComboBox()
-            for k in KEY_NAMES:
-                cb.addItem(tr(k), k)
-            cb.setCurrentIndex(KEY_NAMES.index(st["keys"][m]))
-            f1.addRow(tr(MODE_LABEL[m]), cb)
-            self.key_boxes[m] = cb
+            cap = KeyCapture(st["keys"][m])
+            none = QPushButton(tr("None"))
+            none.setToolTip(tr("No key for this wheel"))
+            none.clicked.connect(lambda _=False, c=cap: c.set_spec("None"))
+            row = QHBoxLayout()
+            row.addWidget(cap, 1)
+            row.addWidget(none)
+            f1.addRow(tr(MODE_LABEL[m]), row)
+            self.key_boxes[m] = cap
+        hint = QLabel(tr("Click a key box, then press any key or combination, e.g. Shift, Ctrl+Q or F8. "
+                         "The mouse's side buttons work too."))
+        hint.setObjectName("dim")
+        hint.setWordWrap(True)
+        f1.addRow(hint)
         self.detect = QComboBox()
         self.detect.addItems([tr("File drags only (recommended)"), tr("Any mouse drag")])
         self.detect.setCurrentIndex(st["detect"])
@@ -7583,7 +7708,7 @@ class SettingsDialog(QDialog):
         QDialog.reject(self)                       # close without undoing the imported language/theme
 
     def save(self):
-        keys = {m: cb.currentData() for m, cb in self.key_boxes.items()}
+        keys = {m: cb.spec for m, cb in self.key_boxes.items()}
         used = [k for k in keys.values() if k != "None"]
         if len(set(used)) < len(used):
             QMessageBox.warning(self, APP, tr("Each wheel needs a different key."))
@@ -8179,7 +8304,7 @@ class TourDialog(QDialog):
         self.app = app
         keys = mode_keys()
         shake = keys["convert"] == "None"
-        key = tr("Shake") if shake else tr(keys["convert"])
+        key = tr("Shake") if shake else key_label(keys["convert"])
         self.setWindowTitle(tr("Welcome to {app}", app=APP))
         self.setWindowIcon(app_icon())
         self.setStyleSheet(i18n.css(DIALOG_CSS) + f"QLabel#step{{padding:8px 10px;border-radius:10px;color:{theme.hexc('dim')}}}"
@@ -8255,6 +8380,7 @@ class DragWatcher(QObject):
         self.down_at = None
         self.dragging = False
         self.prev = {}
+        self.spoiled = set()     # combinations interrupted by a longer one (see tick)
         self.hotkey_latch = False
         self.source_hwnd = 0     # top-level window the drag started in
         self.esc_prev = False
@@ -8293,7 +8419,13 @@ class DragWatcher(QObject):
 
     def tick(self):
         keys = mode_keys()
-        held = {name: winsys.key_down(winsys.VK[name]) for name in set(keys.values()) if name in winsys.VK}
+        combos = {spec: set(winsys.combo_vks(spec)) for spec in set(keys.values())}
+        combos = {k: v for k, v in combos.items() if v}
+        down = {vk: winsys.key_down(vk) for vk in set().union(*combos.values())} if combos else {}
+        held = {spec: all(down[v] for v in vks) for spec, vks in combos.items()}
+        # a key that's part of a longer combination (Ctrl, when another wheel is Ctrl+Q) counts when it's let go
+        # without the rest of that combination having been pressed
+        subset = {spec for spec, vks in combos.items() if any(vks < o for o in combos.values())}
         lmb = winsys.mouse_down()
 
         # global hotkey: Ctrl+Alt+Space
@@ -8330,10 +8462,22 @@ class DragWatcher(QObject):
                     if winsys.file_drag_active() or int(settings().value("detect_any", 0)) == 1:
                         self.shaken.emit()
                 any_drag = int(settings().value("detect_any", 0)) == 1
+                for spec in combos:                         # was a longer combination pressed meanwhile?
+                    if any(held.get(o) for o in combos if combos[spec] < combos[o]):
+                        self.spoiled.add(spec)
                 for m, name in keys.items():
-                    if held.get(name) and not self.prev.get(name):
-                        if any_drag or winsys.file_drag_active():
-                            self.tapped.emit(m)
+                    if name not in combos:
+                        continue
+                    if name in subset:
+                        fire = (not held.get(name) and self.prev.get(name) and name not in self.spoiled)
+                    else:
+                        fire = held.get(name) and not self.prev.get(name)
+                    if not held.get(name) and not self.prev.get(name):
+                        self.spoiled.discard(name)
+                    if fire and (any_drag or winsys.file_drag_active()):
+                        self.tapped.emit(m)
+                    if fire or (not held.get(name) and self.prev.get(name)):
+                        self.spoiled.discard(name)
         else:
             if self.down_at is not None and self.dragging:
                 self.released.emit()
@@ -8467,7 +8611,7 @@ class DragWheelApp(QObject):
     def _build_tray_menu(self):
         ck = mode_keys()["convert"]
         self.tray.setToolTip(tr("{app} — drag a file and shake the mouse", app=APP) if ck == "None"
-                             else tr("{app} — drag a file, tap {key}", app=APP, key=tr(ck)))
+                             else tr("{app} — drag a file, tap {key}", app=APP, key=key_label(ck)))
         menu = QMenu()
         self._first_action = menu.addAction(tr("Convert files…"), self.pick_files)
         menu.addAction(tr("Save image from clipboard"), self.save_clipboard_image)
@@ -9487,7 +9631,7 @@ class DragWheelApp(QObject):
         self._tour = d
 
     def show_help(self):
-        k = {m: tr(v) for m, v in mode_keys().items()}
+        k = {m: key_label(v) for m, v in mode_keys().items()}
         message(tr("{app} — How it works", app=APP), tr("HELP_HTML", app=APP, convert=k["convert"],
                                                          tool=k["tool"], action=k["action"])
                 + "<br><br>" + tr("HELP_SCROLL"))
@@ -9866,7 +10010,7 @@ def main():
         app.queue_paths(paths)
     elif "--tray" not in flags and not first_run:
         app.tray.showMessage(APP, tr("Running in the tray. Drag a file and shake the mouse.") if mode_keys()["convert"] == "None"
-                             else tr("Running in the tray. Drag a file and tap {key}.", key=tr(mode_keys()["convert"])),
+                             else tr("Running in the tray. Drag a file and tap {key}.", key=key_label(mode_keys()["convert"])),
                              app_icon(), 3000)
     return qapp.exec()
 

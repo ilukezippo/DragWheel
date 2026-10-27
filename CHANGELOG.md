@@ -2,6 +2,7 @@
 
 ## 1.2.1 — October 2026
 
+- **Any key or combination for each wheel:** click a wheel's key box and press what you like (Shift, Ctrl+Q, F8, the mouse's side buttons…); a key that is also part of a longer combination counts when you let it go
 - **New Settings layout:** clear pages down the side (General, Wheel, Sounds & notifications, Files & jobs, Float, Customize, Advanced, About) with each section on its own card; Segoe UI everywhere, more room next to tick boxes, and buttons no longer stay lit after you click them
 - **Actions for all file types at once:** in Customize → Choose slices, the Actions wheel can be arranged once for every type of file
 - "Last checked" for updates shows the time with AM/PM

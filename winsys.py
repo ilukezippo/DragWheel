@@ -9,7 +9,22 @@ from pathlib import Path
 
 IS_WIN = sys.platform == "win32"
 
-VK = {"Shift": 0x10, "Ctrl": 0x11, "Alt": 0x12, "CapsLock": 0x14}
+VK = {"Shift": 0x10, "Ctrl": 0x11, "Alt": 0x12, "CapsLock": 0x14, "Win": 0x5B, "Tab": 0x09, "Space": 0x20,
+      "Insert": 0x2D, "Delete": 0x2E, "Home": 0x24, "End": 0x23, "PageUp": 0x21, "PageDown": 0x22,
+      "Left": 0x25, "Up": 0x26, "Right": 0x27, "Down": 0x28, "Backspace": 0x08, "Enter": 0x0D,
+      "MiddleMouse": 0x04, "Mouse4": 0x05, "Mouse5": 0x06, "`": 0xC0, "-": 0xBD, "=": 0xBB,
+      "[": 0xDB, "]": 0xDD, ";": 0xBA, "'": 0xDE, ",": 0xBC, ".": 0xBE, "/": 0xBF, "\\": 0xDC,
+      **{chr(c): c for c in range(0x41, 0x5B)}, **{str(d): 0x30 + d for d in range(10)},
+      **{f"F{n}": 0x6F + n for n in range(1, 25)}, **{f"Num{d}": 0x60 + d for d in range(10)}}
+
+
+def combo_vks(spec: str) -> list[int]:
+    """'Ctrl+Q' -> the virtual keys that must all be down; [] for None or an unknown key."""
+    if not spec or spec == "None":
+        return []
+    parts = [p for p in spec.split("+") if p] if spec != "+" else ["+"]
+    vks = [VK.get(p) for p in parts]
+    return [] if None in vks else vks
 VK_LBUTTON = 0x01
 VK_SPACE = 0x20
 VK_ESCAPE = 0x1B
