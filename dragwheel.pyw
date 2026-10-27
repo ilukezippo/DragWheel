@@ -67,6 +67,13 @@ def mode_keys() -> dict[str, str]:
     return {m: s.value(f"keys/{m}", DEFAULT_KEYS[m]) for m in MODES}
 
 
+def trigger_mode() -> str:
+    """When a wheel key opens the wheel: "drag" (while dragging a file), "hover" (also when pointing at a file),
+    "select" (also for the files selected in Explorer)."""
+    v = settings().value("trigger_mode", "drag")
+    return v if v in ("drag", "hover", "select") else "drag"
+
+
 def peek_key() -> str:
     """The key that shows Quick preview while dragging (Space unless you chose another, or turned it off)."""
     s = settings()
@@ -4369,8 +4376,12 @@ class FloatWindow(QWidget):
             p.setPen(QPen(ACCENT, 3))
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), self.RADIUS, self.RADIUS)
         else:
-            p.setPen(QPen(ACCENT if (self.hover and self.hover != "icon") else C("line"), 1.2))
-            p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
+            col = QColor(ACCENT if (self.hover and self.hover != "icon") else C("line"))
+            if bare:                                        # icon only: the frame shows only while you point at it
+                col.setAlphaF(col.alphaF() * self.ctrl)
+            if col.alphaF() > 0.01:
+                p.setPen(QPen(col, 1.2))
+                p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
 
     def _paint_subtitle(self, p, text):
         size = max(10, min(22, self.height() / 18))
@@ -4729,7 +4740,7 @@ class FloatWindow(QWidget):
 # Settings: the pages down the left side and which sections each one shows (by their English names)
 SETTINGS_PAGES = [
     ("general", "General", "Language, look, and how DragWheel starts with Windows",
-     ["Appearance", "Startup and Explorer", "Windows right-click menu"]),
+     ["Appearance", "Startup", "Right-click menu"]),
     ("wheel", "Wheel", "The keys and gestures that open the wheel while you drag a file",
      ["Wheel keys", "Mouse Control", "Animations"]),
     ("sounds", "Sounds & notifications", "What you see and hear when a job finishes",
@@ -6325,6 +6336,10 @@ class ToggleSwitch(QPushButton):
 
     def _slide(self, on):
         self._anim.stop()
+        if not self.isVisible():                        # set up before it's shown: no sliding
+            self._pos = 1.0 if on else 0.0
+            self.update()
+            return
         self._anim.setStartValue(self._pos)
         self._anim.setEndValue(1.0 if on else 0.0)
         self._anim.start()
@@ -6346,6 +6361,38 @@ class ToggleSwitch(QPushButton):
         p.setBrush(QColor("#ffffff") if self.isChecked() else C("text"))
         p.drawEllipse(QRectF(x, r.top() + 3, d, d))
         p.end()
+
+
+class SwitchBox(QWidget):
+    """A flip switch with its words next to it; used like a tick box (isChecked, setChecked, toggled)."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 2, 0, 2)
+        row.setSpacing(12)
+        self.sw = ToggleSwitch(False)
+        self.label = QLabel(text)
+        self.label.setWordWrap(True)
+        self.label.setStyleSheet("font-size:10pt")
+        row.addWidget(self.sw, 0, Qt.AlignVCenter)
+        row.addWidget(self.label, 1)
+        self.toggled = self.sw.toggled
+        self.isChecked = self.sw.isChecked
+        self.setChecked = self.sw.setChecked
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and self.isEnabled():
+            self.sw.toggle()
+
+    def setText(self, text):
+        self.label.setText(text)
+
+    def changeEvent(self, e):
+        if e.type() == QEvent.EnabledChange:
+            self.sw.setEnabled(self.isEnabled())
+            self.label.setEnabled(self.isEnabled())
+        super().changeEvent(e)
 
 
 def setting_row(switch, title, desc, extra=None) -> QHBoxLayout:
@@ -7206,13 +7253,13 @@ class SettingsDialog(QDialog):
     def _state(self) -> dict:
         return {
             "keys": {m: cb.spec for m, cb in self.key_boxes.items()},
-            "detect": self.detect.currentIndex(),
+            "detect": self.detect.currentData(),
             "scroll": self.scroll.isChecked(),
             "out": self.out.text(),
             "out_mode": self.out_mode.currentData(),
             "startup": self.startup.isChecked(),
             "menu": self.menu.isChecked(),
-            "hotkey": self.hotkey.isChecked(),
+            "sendto": self.sendto.isChecked(),
             "auto_update": self.auto_update.isChecked(),
             "autoplay": self.autoplay.isChecked(),
             "on_top": self.on_top.isChecked(),
@@ -7241,13 +7288,13 @@ class SettingsDialog(QDialog):
         s = settings()
         return {
             "keys": {**mode_keys(), "peek": peek_key()},
-            "detect": int(s.value("detect_any", 0)),
+            "detect": trigger_mode(),
             "scroll": s.value("scroll", "true") == "true",
             "out": s.value("output_dir", ""),
             "out_mode": s.value("output_mode", "folder" if s.value("output_dir", "") else "next"),
             "startup": winsys.startup_enabled(),
             "menu": winsys.context_menu_enabled(),
-            "hotkey": s.value("hotkey", "true") == "true",
+            "sendto": winsys.sendto_enabled(),
             "auto_update": s.value("check_updates", "true") == "true",
             "autoplay": s.value("float_autoplay", "true") == "true",
             "on_top": s.value("float_on_top", "true") == "true",
@@ -7477,9 +7524,16 @@ class SettingsDialog(QDialog):
         hint.setWordWrap(True)
         f1.addRow(hint)
         self.detect = QComboBox()
-        self.detect.addItems([tr("File drags only (recommended)"), tr("Any mouse drag")])
-        self.detect.setCurrentIndex(st["detect"])
+        for k, label in (("drag", tr("File drag")), ("hover", tr("File drag or mouse hover")),
+                         ("select", tr("File drag or file selection"))):
+            self.detect.addItem(label, k)
+        self.detect.setCurrentIndex(max(0, self.detect.findData(st["detect"])))
         f1.addRow(tr("Trigger on"), self.detect)
+        tip = QLabel(tr("Mouse hover: point at a file in File Explorer or on the desktop and tap the key. "
+                        "File selection: select files and tap the key."))
+        tip.setObjectName("dim")
+        tip.setWordWrap(True)
+        f1.addRow("", tip)
         lay.addWidget(g1)
 
         # Mouse Control: shake, scroll and the busy circle, each with a switch and a line about it
@@ -7566,22 +7620,22 @@ class SettingsDialog(QDialog):
 
         gf = self._group("Float")
         vf = QVBoxLayout(gf)
-        self.autoplay = QCheckBox(tr("Play videos and music as soon as they open in Float"))
+        self.autoplay = SwitchBox(tr("Play videos and music as soon as they open in Float"))
         self.autoplay.setChecked(st["autoplay"])
         vf.addWidget(self.autoplay)
-        self.on_top = QCheckBox(tr("Keep floats on top of other windows"))
+        self.on_top = SwitchBox(tr("Keep floats on top of other windows"))
         self.on_top.setChecked(st["on_top"])
         vf.addWidget(self.on_top)
-        self.ctrl_open = QCheckBox(tr("Hold Ctrl and double-click a file, or press Ctrl+Enter, to open it in Float"))
+        self.ctrl_open = SwitchBox(tr("Hold Ctrl and double-click a file, or press Ctrl+Enter, to open it in Float"))
         self.ctrl_open.setChecked(st["ctrl_open"])
         vf.addWidget(self.ctrl_open)
-        self.link_stops = QCheckBox(tr("When a float plays a new link, stop what it was playing until the link is ready"))
+        self.link_stops = SwitchBox(tr("When a float plays a new link, stop what it was playing until the link is ready"))
         self.link_stops.setChecked(st["link_stops"])
         vf.addWidget(self.link_stops)
-        self.icon_only = QCheckBox(tr("Show only the icon for other files (folders, programs…), without a background"))
+        self.icon_only = SwitchBox(tr("Show only the icon for other files (folders, programs…), without a background"))
         self.icon_only.setChecked(st["icon_only"])
         vf.addWidget(self.icon_only)
-        self.media_osd = QCheckBox(tr("Show a big sign on screen (play, pause, next, volume…) when the keyboard's media keys control a float"))
+        self.media_osd = SwitchBox(tr("Show a big sign on screen (play, pause, next, volume…) when the keyboard's media keys control a float"))
         self.media_osd.setChecked(st["media_osd"])
         vf.addWidget(self.media_osd)
         self.media_osd_when = QComboBox()
@@ -7597,17 +7651,34 @@ class SettingsDialog(QDialog):
         vf.addLayout(row)
         lay.addWidget(gf)
 
-        g3 = self._group("Startup and Explorer")
+        g3 = self._group("Startup")
         v3 = QVBoxLayout(g3)
-        self.startup = QCheckBox(tr("Start {app} when I sign in", app=APP))
+        self.startup = SwitchBox(tr("Start {app} when I sign in", app=APP))
         self.startup.setChecked(st["startup"])
-        self.menu = QCheckBox(tr("Add {app} to the Explorer right-click menu and Send To", app=APP))
-        self.menu.setChecked(st["menu"])
-        self.hotkey = QCheckBox(tr("Ctrl + Alt + Space opens the wheel for files selected in Explorer"))
-        self.hotkey.setChecked(st["hotkey"])
-        for w in (self.startup, self.menu, self.hotkey):
-            v3.addWidget(w)
+        v3.addWidget(self.startup)
         lay.addWidget(g3)
+
+        g = self._group("Right-click menu")
+        v = QVBoxLayout(g)
+        self.menu = SwitchBox(tr("Add {app} to the context menu", app=APP))
+        self.menu.setChecked(st["menu"])
+        v.addWidget(self.menu)
+        self.sendto = SwitchBox(tr("Add {app} to Send To", app=APP))
+        self.sendto.setChecked(st["sendto"])
+        v.addWidget(self.sendto)
+        if winsys.windows_11():
+            self.full_menu = SwitchBox(tr("Add {app} to the Windows 11 context menu", app=APP))
+            self.full_menu.setChecked(st["full_menu"])
+            v.addWidget(self.full_menu)
+            lbl = QLabel(tr("Windows 11 hides DragWheel and other apps under “Show more options”. This turns on Windows' own "
+                            "full menu for your account (like Windows 10). Explorer restarts to apply it."))
+            lbl.setWordWrap(True)
+            lbl.setObjectName("dim")
+            lbl.setContentsMargins(58, 0, 0, 0)
+            v.addWidget(lbl)
+        else:
+            self.full_menu = None
+        lay.addWidget(g)
         lay.addStretch(1)
         return page
 
@@ -7621,15 +7692,15 @@ class SettingsDialog(QDialog):
         lay.setContentsMargins(2, 6, 2, 2)
         g = self._group("When a job finishes")
         v = QVBoxLayout(g)
-        self.finish_anim = QCheckBox(tr("Animate the tick on the notification"))
+        self.finish_anim = SwitchBox(tr("Animate the tick on the notification"))
         self.finish_anim.setChecked(st["finish_anim"])
         v.addWidget(self.finish_anim)
-        self.finish_sound = QCheckBox(tr("Play notification sounds"))
+        self.finish_sound = SwitchBox(tr("Enable notification sound"))
         self.finish_sound.setChecked(st["finish_sound"])
         v.addWidget(self.finish_sound)
         from PySide6.QtWidgets import QSlider
         row = QHBoxLayout()
-        self.tick_sound = QCheckBox(tr("Click sounds on the wheel (moving and choosing)"))
+        self.tick_sound = SwitchBox(tr("Enable wheel sound"))
         self.tick_sound.setChecked(st["tick_sound"])
         row.addWidget(self.tick_sound)
         row.addSpacing(12)
@@ -7684,20 +7755,6 @@ class SettingsDialog(QDialog):
         lay.addWidget(g)
         self._fill_watch()
 
-        if winsys.windows_11():
-            g = self._group("Windows right-click menu")
-            v = QVBoxLayout(g)
-            self.full_menu = QCheckBox(tr("Show the full menu straight away (no “Show more options”)"))
-            self.full_menu.setChecked(st["full_menu"])
-            v.addWidget(self.full_menu)
-            lbl = QLabel(tr("Windows 11 hides DragWheel and other apps under “Show more options”. This turns on Windows' own "
-                            "full menu for your account (like Windows 10). Explorer restarts to apply it."))
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
-            v.addWidget(lbl)
-            lay.addWidget(g)
-        else:
-            self.full_menu = None
 
         g = self._group("Command line")
         v = QVBoxLayout(g)
@@ -7714,7 +7771,7 @@ class SettingsDialog(QDialog):
         g = self._group("Help")
         v = QVBoxLayout(g)
         row = QHBoxLayout()
-        self.tour_start = QCheckBox(tr("Show the welcome tour every time DragWheel starts"))
+        self.tour_start = SwitchBox(tr("Show the welcome tour every time DragWheel starts"))
         self.tour_start.setChecked(st["tour_start"])
         row.addWidget(self.tour_start)
         row.addStretch(1)
@@ -7722,7 +7779,7 @@ class SettingsDialog(QDialog):
         b.clicked.connect(lambda: self.app.show_tour(parent=self))
         row.addWidget(b)
         v.addLayout(row)
-        self.crash_reports = QCheckBox(tr("When something goes wrong, offer to send a crash report (you see it first)"))
+        self.crash_reports = SwitchBox(tr("When something goes wrong, offer to send a crash report (you see it first)"))
         self.crash_reports.setChecked(st["crash_reports"])
         v.addWidget(self.crash_reports)
         row = QHBoxLayout()
@@ -7816,7 +7873,7 @@ class SettingsDialog(QDialog):
         # updates
         g4 = self._group("Updates")
         v4 = QVBoxLayout(g4)
-        self.auto_update = QCheckBox(tr("Check for updates automatically (once a day)"))
+        self.auto_update = SwitchBox(tr("Check for updates automatically (once a day)"))
         self.auto_update.setChecked(st["auto_update"])
         v4.addWidget(self.auto_update)
         row4 = QHBoxLayout()
@@ -8019,11 +8076,12 @@ class SettingsDialog(QDialog):
         s = settings()
         for m, k in keys.items():
             s.setValue(f"keys/{m}", k)
-        s.setValue("detect_any", self.detect.currentIndex())
+        s.setValue("trigger_mode", self.detect.currentData())
+        s.setValue("detect_any", 0)
         mode = self.out_mode.currentData()
         s.setValue("output_mode", mode)
         s.setValue("output_dir", self.out.text().strip() if mode == "folder" else "")
-        s.setValue("hotkey", "true" if self.hotkey.isChecked() else "false")
+        s.setValue("hotkey", "false")                    # replaced by "Trigger on: file selection"
         s.setValue("scroll", "true" if self.scroll.isChecked() else "false")
         s.setValue("check_updates", "true" if self.auto_update.isChecked() else "false")
         s.setValue("float_autoplay", "true" if self.autoplay.isChecked() else "false")
@@ -8059,7 +8117,7 @@ class SettingsDialog(QDialog):
         try:
             winsys.set_startup(self.startup.isChecked())
             winsys.set_context_menu(self.menu.isChecked(), paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
-                                    float_label=tr("Open Float"))
+                                    float_label=tr("Open Float"), sendto=self.sendto.isChecked())
         except Exception as e:
             QMessageBox.warning(self, APP, tr("Couldn't update Windows integration:") + f"\n{e}")
         self.accept()
@@ -8673,6 +8731,7 @@ class DragWatcher(QObject):
     tapped = Signal(str)     # mode
     released = Signal()
     hotkey = Signal()
+    idle_tap = Signal(str)   # a wheel key tapped on its own, not while dragging (Trigger on: hover / selection)
     moved = Signal()         # every tick while a drag is in progress
     scrolled = Signal(int)   # wheel delta while dragging (from the hook thread, delivered queued)
     cancelled = Signal()     # Esc pressed during a drag
@@ -8702,8 +8761,9 @@ class DragWatcher(QObject):
 
     def refresh_settings(self):
         s = settings()
+        self.trigger = trigger_mode()
         self.scroll_enabled = s.value("scroll", "true") == "true"
-        self.any_drag = int(s.value("detect_any", 0)) == 1
+        self.any_drag = False
         self.ctrl_float = s.value("float_ctrl_open", "true") == "true"
         self.shake_enabled = s.value("shake", "true") == "true"
         self.peek_vks = winsys.combo_vks(peek_key())
@@ -8769,9 +8829,9 @@ class DragWatcher(QObject):
                 self.space_prev = space
                 if self.shake_enabled and not self.shook and self._shake(pos):
                     self.shook = True
-                    if winsys.file_drag_active() or int(settings().value("detect_any", 0)) == 1:
+                    if winsys.file_drag_active() or False:
                         self.shaken.emit()
-                any_drag = int(settings().value("detect_any", 0)) == 1
+                any_drag = False
                 for spec in combos:                         # was a longer combination pressed meanwhile?
                     if any(held.get(o) for o in combos if combos[spec] < combos[o]):
                         self.spoiled.add(spec)
@@ -8796,6 +8856,22 @@ class DragWatcher(QObject):
             self.trail = []
             self.shook = False
             self.space_prev = False
+        # Trigger on hover / selection: a clean tap of a wheel key (nothing else pressed meanwhile, no click)
+        if getattr(self, "trigger", "drag") != "drag":
+            clean = getattr(self, "clean", {})
+            for m, name in keys.items():
+                vks = combos.get(name)
+                if not vks:
+                    continue
+                if held.get(name) and not self.prev.get(name):
+                    clean[name] = not lmb
+                elif held.get(name) and clean.get(name) and (lmb or winsys.other_keys_down(vks)):
+                    clean[name] = False
+                elif not held.get(name) and self.prev.get(name):
+                    if clean.get(name) and not lmb and not self.dragging:
+                        self.idle_tap.emit(m)
+                    clean[name] = False
+            self.clean = clean
         self.prev = held
 
     def _shake(self, pos) -> bool:
@@ -8858,6 +8934,7 @@ class DragWheelApp(QObject):
         self.watcher.tapped.connect(self.on_tap)
         self.watcher.released.connect(self.on_release)
         self.watcher.hotkey.connect(self.on_hotkey)
+        self.watcher.idle_tap.connect(self.on_idle_tap)
         self.watcher.moved.connect(self.on_drag_move)
         self.watcher.scrolled.connect(self.on_scroll)
         self.watcher.ctrl_open.connect(self.on_ctrl_open)
@@ -9134,6 +9211,40 @@ class DragWheelApp(QObject):
                 self.toast.show_msg(tr("Couldn't read the dragged file"),
                                     tr("Try again, or select it and press Ctrl+Alt+Space"), "err", 5000)
             w.dismiss()
+
+    EXPLORER_CLASSES = ("CabinetWClass", "ExploreWClass", "Progman", "WorkerW")
+
+    def on_idle_tap(self, mode):
+        """Trigger on hover / selection: the wheel for the file under the mouse, or the files selected."""
+        if self.wheel.is_open():
+            if mode == self.wheel.mode:
+                self.wheel.dismiss()
+            else:
+                play_tick()
+                self.wheel.set_mode(mode)
+            return
+        trig = trigger_mode()
+        if trig == "select":
+            hwnd = winsys.foreground_hwnd()
+            if winsys.window_class(hwnd) not in self.EXPLORER_CLASSES:
+                return
+            paths = [p for p in winsys.explorer_selection(hwnd) if p and os.path.exists(p)]
+            winsys.log(f"selection tap: {len(paths)} file(s)")
+            if paths:
+                self.wheel.popup(mode, paths, click_mode=True)
+        elif trig == "hover":
+            pos = winsys.cursor_pos()
+            root = winsys.root_window_at(*pos)
+            if winsys.window_class(root) not in self.EXPLORER_CLASSES:
+                return
+            winsys.click_at_cursor()                   # selects the file under the mouse
+
+            def after():
+                paths = [p for p in winsys.explorer_selection(root) if p and os.path.exists(p)]
+                winsys.log(f"hover tap: {len(paths)} file(s)")
+                if paths:
+                    self.wheel.popup(mode, paths[:1] if len(paths) > 1 else paths, click_mode=True)
+            QTimer.singleShot(180, after)
 
     def on_hotkey(self):
         if self.wheel.is_open():                   # Ctrl+Alt+Space again closes it
@@ -10316,7 +10427,7 @@ def main():
         if settings().value("installer", "") != "1":   # the installer already applied the user's choice
             try:
                 winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
-                                    float_label=tr("Open Float"))
+                                    float_label=tr("Open Float"), sendto=True)
             except Exception:
                 pass
         pass

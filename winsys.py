@@ -499,7 +499,9 @@ BG_MENU = r"Software\Classes\Directory\Background\shell\DragWheel"   # right-cli
 
 
 def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image here",
-                     link_label: str = "Play copied link in Float", float_label: str = "Open Float") -> None:
+                     link_label: str = "Paste link to Float", float_label: str = "Open Float", sendto=None) -> None:
+    """The DragWheel entries of Explorer's right-click menu. Send To is separate: sendto=True/False sets it,
+    None leaves it as it is."""
     if not IS_WIN:
         return
     import winreg
@@ -541,7 +543,8 @@ def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image her
                     winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
                 except FileNotFoundError:
                     pass
-    _sendto(enabled)
+    if sendto is not None:
+        _sendto(bool(sendto))
 
 
 def context_menu_enabled() -> bool:
@@ -553,6 +556,40 @@ def context_menu_enabled() -> bool:
         return True
     except OSError:
         return False
+
+
+def sendto_enabled() -> bool:
+    return (Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "SendTo"
+            / "Send to Phone using DragWheel.lnk").exists()
+
+
+def set_sendto(enabled: bool) -> None:
+    _sendto(enabled)
+
+
+def click_at_cursor() -> None:
+    """A left click where the mouse is (selects the file under it in Explorer or on the desktop)."""
+    if not IS_WIN:
+        return
+    user32.mouse_event(0x0002, 0, 0, 0, 0)        # left down
+    user32.mouse_event(0x0004, 0, 0, 0, 0)        # left up
+
+
+def other_keys_down(exclude) -> bool:
+    """Is any key (or mouse button) other than these being held?"""
+    if not IS_WIN:
+        return False
+    ex = set(exclude)
+    for vk in range(0x01, 0xFF):
+        if vk in ex or vk in (0x10, 0x11, 0x12) and any(v in ex for v in (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5)):
+            continue
+        if vk in (0xA0, 0xA1) and 0x10 in ex or vk in (0xA2, 0xA3) and 0x11 in ex or vk in (0xA4, 0xA5) and 0x12 in ex:
+            continue                                   # left/right versions of a key that's in the combination
+        if vk in (0x14, 0x90, 0x91, 0xFF, 0x07, 0x0A, 0x0B, 0x0E, 0x0F, 0x16, 0x1A, 0x3A):
+            continue                                   # lock keys report "down" while switched on
+        if user32.GetAsyncKeyState(vk) & 0x8000:
+            return True
+    return False
 
 
 def _sendto(enabled: bool) -> None:
