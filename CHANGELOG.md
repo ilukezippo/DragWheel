@@ -23,7 +23,7 @@
 - **PDF to Word that looks the same:** every line stays where it was, in the same font, size and weight, tables become real Word tables, and lines, logos and pictures stay behind the text; Arabic is written as proper right-to-left text you can edit
 - A second **PDF to Word (flowing text)** slice keeps the old way, for documents you want to rewrite freely (Microsoft Word's own PDF import when Word is installed)
 - **Animation speed** slider next to the wheel animation in Settings (opening and closing)
-- New subtle sounds when the wheel opens and closes (with the click sounds and their volume)
+- New subtle sounds when the wheel opens and closes (with the click sounds and their volume, shown as a percentage)
 - Changing the language or theme: Settings fades out, changes, and fades back in (no flash)
 - **Unblock** on the Actions wheel: removes Windows' "This file came from another computer" mark from downloaded files (and everything inside a folder)
 - **Drag a web page into a float:** drag the site icon from the browser's address bar (or a link or tab) onto a float to play that video there
