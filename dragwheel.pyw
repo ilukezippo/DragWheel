@@ -1429,6 +1429,14 @@ def wheel_anim() -> str:
     return v if v in dict(WHEEL_ANIMS) else "bloom"
 
 
+def wheel_anim_close() -> str:
+    """How the wheel goes away: the opening style, unless you chose another one."""
+    if settings().value("anim_same", "true") == "true":
+        return wheel_anim()
+    v = settings().value("wheel_anim_close", "fade")
+    return v if v in dict(WHEEL_ANIMS) else "fade"
+
+
 def anim_speed() -> float:
     """Animation speed from Settings: 100 = normal, 25 = four times slower, 250 = 2.5 times faster."""
     try:
@@ -1623,6 +1631,8 @@ class Wheel(QWidget):
         self.pill_timer.stop()
         if self.is_open():
             QTimer.singleShot(40, lambda: play_wheel_sound("close"))   # after a drop, the choice sound wins
+        if self.isVisible() and not self._closing:
+            self._style = wheel_anim_close()
         if self.isVisible() and self._style != "none" and not self._closing:
             self._closing = True                       # keep drawing what was there while it goes away
             self._animate(0.0)
@@ -4306,6 +4316,16 @@ class FloatWindow(QWidget):
                 p.drawRoundedRect(ir.adjusted(-12, -12, 12, 12), 16, 16)
             p.drawPixmap(ir.toRect(), self.src.scaled(int(ir.width()), int(ir.height()),
                                                        Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            if bare:                                        # the name under the icon, readable on any background
+                nf = QFont(i18n.ui_font(), 9, QFont.DemiBold)
+                p.setFont(nf)
+                nr = QRectF(6, ir.bottom() + 4, self.width() - 12, 34)
+                txt = QFontMetrics(nf).elidedText(self.display_name(), Qt.ElideMiddle, int(nr.width()))
+                p.setPen(QColor(0, 0, 0, 170))
+                for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1), (0, 1.5)):
+                    p.drawText(nr.translated(dx, dy), Qt.AlignHCenter | Qt.AlignTop, txt)
+                p.setPen(QColor("#ffffff"))
+                p.drawText(nr, Qt.AlignHCenter | Qt.AlignTop, txt)
         # ---- subtitles (above the controls when they are showing)
         if self.kind == "video" and self.player:
             text = self._current_subtitle()
@@ -4347,9 +4367,10 @@ class FloatWindow(QWidget):
                 p.drawText(QRectF(left, self.height() - 38, tw, 28), Qt.AlignVCenter | Qt.AlignLeft, t)
                 left += tw
             name_r = QRectF(left, self.height() - 38, self._grip_rect().left() - left - 6, 28)
-            p.setPen(fg)
-            p.drawText(name_r, Qt.AlignVCenter | Qt.AlignLeft,
-                       QFontMetrics(f).elidedText(self.display_name(), Qt.ElideMiddle, int(max(0, name_r.width()))))
+            if not bare:                                    # (a bare icon has its name under it all the time)
+                p.setPen(fg)
+                p.drawText(name_r, Qt.AlignVCenter | Qt.AlignLeft,
+                           QFontMetrics(f).elidedText(self.display_name(), Qt.ElideMiddle, int(max(0, name_r.width()))))
             gr = self._grip_rect()
             p.setPen(Qt.NoPen)
             p.setBrush(ACCENT if self.hover == "grip" else (QColor(255, 255, 255, 46) if media else C("grip")))
@@ -7267,6 +7288,8 @@ class SettingsDialog(QDialog):
             "media_osd": self.media_osd.isChecked(),
             "icon_only": self.icon_only.isChecked(),
             "anim": self.anim.currentData(),
+            "anim_close": self.anim_close.currentData(),
+            "anim_same": self.anim_same.isChecked(),
             "shake_opens": self.shake_opens.currentData(),
             "scroll_opens": self.scroll_opens.currentData(),
             "anim_speed": self.anim_speed.value(),
@@ -7302,6 +7325,8 @@ class SettingsDialog(QDialog):
             "media_osd": s.value("media_osd", "true") == "true",
             "icon_only": s.value("float_icon_only", "true") == "true",
             "anim": wheel_anim(),
+            "anim_close": settings().value("wheel_anim_close", wheel_anim()),
+            "anim_same": settings().value("anim_same", "true") == "true",
             "shake_opens": s.value("shake_opens", "convert"),
             "scroll_opens": s.value("scroll_opens", "convert"),
             "anim_speed": int(round(anim_speed() * 100)),
@@ -7473,6 +7498,14 @@ class SettingsDialog(QDialog):
         widest = max(self.stack.widget(i).widget().sizeHint().width() for i in range(self.stack.count()))
         self.resize(min(scr.width() - 40, max(900, widest + 236 + 70)), min(scr.height() - 80, 720))
 
+    def _key_taken(self, owner, spec):
+        """One key does one thing: a key you give to this wheel is taken off any other."""
+        if spec == "None":
+            return
+        for m, box in self.key_boxes.items():
+            if m != owner and box.spec == spec:
+                box.set_spec("None")
+
     def _group(self, key):
         """A section card; its English name says which page of Settings it goes on (SETTINGS_PAGES)."""
         g = QGroupBox(tr(key))
@@ -7518,19 +7551,20 @@ class SettingsDialog(QDialog):
             row.addWidget(none)
             f1.addRow(tr(MODE_LABEL[m]) if m != "peek" else tr("File preview"), row)
             self.key_boxes[m] = cap
+            cap.changed.connect(lambda spec, me=m: self._key_taken(me, spec))
         hint = QLabel(tr("Click a key box, then press any key or combination, e.g. Shift, Ctrl+Q or F8. "
                          "The mouse's side buttons work too."))
         hint.setObjectName("dim")
         hint.setWordWrap(True)
         f1.addRow(hint)
         self.detect = QComboBox()
-        for k, label in (("drag", tr("File drag")), ("hover", tr("File drag or mouse hover")),
-                         ("select", tr("File drag or file selection"))):
+        for k, label in (("drag", tr("File drag (recommended)")), ("hover", tr("Mouse hover")),
+                         ("select", tr("File selection"))):
             self.detect.addItem(label, k)
         self.detect.setCurrentIndex(max(0, self.detect.findData(st["detect"])))
         f1.addRow(tr("Trigger on"), self.detect)
         tip = QLabel(tr("Mouse hover: point at a file in File Explorer or on the desktop and tap the key. "
-                        "File selection: select files and tap the key."))
+                        "File selection: select files and tap the key.") + " " + tr("Dragging a file always works."))
         tip.setObjectName("dim")
         tip.setWordWrap(True)
         f1.addRow("", tip)
@@ -7566,14 +7600,26 @@ class SettingsDialog(QDialog):
         ga = self._group("Animations")
         f1 = QFormLayout(ga)
         self.anim = QComboBox()
+        self.anim_close = QComboBox()
         for k, label in WHEEL_ANIMS:
             self.anim.addItem(tr(label), k)
+            self.anim_close.addItem(tr(label), k)
         self.anim.setCurrentIndex(max(0, self.anim.findData(st["anim"])))
+        self.anim_close.setCurrentIndex(max(0, self.anim_close.findData(st["anim_close"])))
+        self.anim_same = SwitchBox(tr("Same style for opening and closing"))
+        self.anim_same.setChecked(st["anim_same"])
+        f1.addRow(self.anim_same)
+        f1.addRow(tr("Opening"), self.anim)
+        self.close_row_label = QLabel(tr("Closing"))
+        f1.addRow(self.close_row_label, self.anim_close)
+
+        def same_changed(on):
+            self.anim_close.setVisible(not on)
+            self.close_row_label.setVisible(not on)
+        self.anim_same.toggled.connect(same_changed)
+        same_changed(st["anim_same"])
         from PySide6.QtWidgets import QSlider
         arow = QHBoxLayout()
-        arow.addWidget(self.anim)
-        arow.addSpacing(12)
-        arow.addWidget(QLabel(tr("Speed")))
         self.anim_speed = QSlider(Qt.Horizontal)
         self.anim_speed.setRange(25, 250)
         self.anim_speed.setSingleStep(5)
@@ -7592,7 +7638,7 @@ class SettingsDialog(QDialog):
         arow.addWidget(self.anim_speed)
         arow.addWidget(self.anim_speed_lbl)
         arow.addStretch(1)
-        f1.addRow(tr("Style"), arow)
+        f1.addRow(tr("Speed"), arow)
         lay.addWidget(ga)
 
         g2 = self._group("Output")
@@ -7620,22 +7666,22 @@ class SettingsDialog(QDialog):
 
         gf = self._group("Float")
         vf = QVBoxLayout(gf)
-        self.autoplay = SwitchBox(tr("Play videos and music as soon as they open in Float"))
+        self.autoplay = SwitchBox(tr("Play files and links instantly"))
         self.autoplay.setChecked(st["autoplay"])
         vf.addWidget(self.autoplay)
-        self.on_top = SwitchBox(tr("Keep floats on top of other windows"))
+        self.on_top = SwitchBox(tr("Always on top"))
         self.on_top.setChecked(st["on_top"])
         vf.addWidget(self.on_top)
-        self.ctrl_open = SwitchBox(tr("Hold Ctrl and double-click a file, or press Ctrl+Enter, to open it in Float"))
+        self.ctrl_open = SwitchBox(tr("Ctrl+Enter opens a file in Float"))
         self.ctrl_open.setChecked(st["ctrl_open"])
         vf.addWidget(self.ctrl_open)
-        self.link_stops = SwitchBox(tr("When a float plays a new link, stop what it was playing until the link is ready"))
+        self.link_stops = SwitchBox(tr("Stop playing while loading"))
         self.link_stops.setChecked(st["link_stops"])
         vf.addWidget(self.link_stops)
-        self.icon_only = SwitchBox(tr("Show only the icon for other files (folders, programs…), without a background"))
+        self.icon_only = SwitchBox(tr("Remove float border"))
         self.icon_only.setChecked(st["icon_only"])
         vf.addWidget(self.icon_only)
-        self.media_osd = SwitchBox(tr("Show a big sign on screen (play, pause, next, volume…) when the keyboard's media keys control a float"))
+        self.media_osd = SwitchBox(tr("Enable multimedia logos on screen"))
         self.media_osd.setChecked(st["media_osd"])
         vf.addWidget(self.media_osd)
         self.media_osd_when = QComboBox()
@@ -8092,6 +8138,8 @@ class SettingsDialog(QDialog):
         for w in getattr(self.app, "floats", []):
             w.update()
         s.setValue("wheel_anim", self.anim.currentData())
+        s.setValue("wheel_anim_close", self.anim_close.currentData())
+        s.setValue("anim_same", "true" if self.anim_same.isChecked() else "false")
         s.setValue("shake_opens", self.shake_opens.currentData())
         s.setValue("scroll_opens", self.scroll_opens.currentData())
         s.setValue("anim_speed", self.anim_speed.value())
