@@ -4839,7 +4839,7 @@ SETTINGS_PAGES = [
     ("customize", "Customize", "Choose the slices, and add presets, chains and your own commands",
      ["Wheel slices", "Presets and chains", "Your own slices"]),
     ("advanced", "Advanced", "Command line, moving to another PC, help and crash reports",
-     ["Command line", "Move your setup to another PC", "Help"]),
+     ["Command line", "Settings Config", "Help"]),
     ("about", "About", "", None),
 ]
 
@@ -8136,13 +8136,16 @@ class SettingsDialog(QDialog):
         v.addLayout(row)
         lay.addWidget(g)
 
-        g = self._group("Move your setup to another PC")
+        g = self._group("Settings Config")
         row = QHBoxLayout(g)
         b = QPushButton(tr("Export settings…"))
         b.clicked.connect(self._export)
         row.addWidget(b)
         b = QPushButton(tr("Import settings…"))
         b.clicked.connect(self._import)
+        row.addWidget(b)
+        b = QPushButton(tr("Restore defaults…"))
+        b.clicked.connect(self._restore_defaults)
         row.addWidget(b)
         row.addStretch(1)
         lay.addWidget(g)
@@ -8202,6 +8205,27 @@ class SettingsDialog(QDialog):
         if f:
             export_settings(f)
             QMessageBox.information(self, APP, tr("Settings saved to {file}", file=f))
+
+    # what Restore defaults keeps: things you made or played, not preferences
+    KEEP_ON_RESET = ("first_run_done", "installer", "last_update_check", "skip_version", "float_links", "float_recent",
+                     "float_pins", "float_resume", "recent_results", "custom_slices", "share_links", "language")
+
+    def _restore_defaults(self):
+        if QMessageBox.question(self, APP, tr("Put every setting back to how DragWheel comes? Your saved links, "
+                                              "presets, chains and your own slices are kept.")) != QMessageBox.Yes:
+            return
+        s = settings()
+        keep = {k: s.value(k) for k in self.KEEP_ON_RESET if s.contains(k)}
+        s.clear()
+        for k, v in keep.items():
+            s.setValue(k, v)
+        s.sync()
+        winsys.log("settings restored to defaults")
+        self.app.apply_language()
+        self.app.apply_theme()
+        self.app.watcher.refresh_settings()
+        QDialog.reject(self)
+        QTimer.singleShot(150, self.app.show_settings)    # open again, now showing the defaults
 
     def _import(self):
         f, _ = QFileDialog.getOpenFileName(self, tr("Import settings…"), str(Path.home()), "JSON (*.json)")

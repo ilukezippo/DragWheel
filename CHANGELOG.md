@@ -29,6 +29,7 @@
 - **Unblock** on the Actions wheel: removes Windows' "This file came from another computer" mark from downloaded files (and everything inside a folder)
 - **Drag a web page into a float:** drag the site icon from the browser's address bar (or a link or tab) onto a float to play that video there
 - **Paste a file into a float:** copy a video or song in Explorer (Ctrl+C) or "Copy as path", then press Ctrl+V on a float to play it
+- **Restore defaults** in Settings → Advanced → Settings Config (was "Move your setup to another PC"), next to Export and Import; your saved links, presets, chains and own slices are kept
 - **Open the log** and **Show the log folder** at the bottom of Settings → Advanced → Help
 - **Saved links are yours to choose:** links are saved only when you add them (*Save this link* on a float, or *Add…* in Manage saved links); the menu shows your last five, all of them in *Manage saved links…*, where you can rename, reorder, add, remove or clear them
 - **Recently played:** a new list on the float's menu with the links and files you played, to play again, save, or remove
