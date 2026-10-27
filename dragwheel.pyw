@@ -4360,11 +4360,13 @@ class FloatWindow(QWidget):
                 p.drawRoundedRect(ir.adjusted(-12, -12, 12, 12), 16, 16)
             p.drawPixmap(ir.toRect(), self.src.scaled(int(ir.width()), int(ir.height()),
                                                        Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            if bare:                                        # the name under the icon, readable on any background
-                nf = QFont(i18n.ui_font(), 9, QFont.DemiBold)
+            if bare and settings().value("float_hide_name", "false") != "true":   # the name under the icon
+                nf = QFont("Segoe UI", 9, QFont.Bold)
                 p.setFont(nf)
                 nr = QRectF(6, ir.bottom() + 4, self.width() - 12, 34)
-                txt = QFontMetrics(nf).elidedText(self.display_name(), Qt.ElideMiddle, int(nr.width()))
+                pp = Path(self.path or "")
+                label = pp.name if pp.is_dir() or not pp.suffix else pp.stem      # no ".zip", ".exe"…
+                txt = QFontMetrics(nf).elidedText(label, Qt.ElideRight, int(nr.width()))
                 p.setPen(QColor(0, 0, 0, 170))
                 for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1), (0, 1.5)):
                     p.drawText(nr.translated(dx, dy), Qt.AlignHCenter | Qt.AlignTop, txt)
@@ -7332,6 +7334,7 @@ class SettingsDialog(QDialog):
             "media_osd": self.media_osd.isChecked(),
             "icon_only": self.icon_only.isChecked(),
             "taskbar": self.taskbar.isChecked(),
+            "hide_name": self.hide_name.isChecked(),
             "anim": self.anim.currentData(),
             "anim_close": self.anim_close.currentData(),
             "anim_same": self.anim_same.isChecked(),
@@ -7370,6 +7373,7 @@ class SettingsDialog(QDialog):
             "media_osd": s.value("media_osd", "true") == "true",
             "icon_only": s.value("float_icon_only", "true") == "true",
             "taskbar": s.value("float_taskbar", "true") == "true",
+            "hide_name": s.value("float_hide_name", "false") == "true",
             "anim": wheel_anim(),
             "anim_close": settings().value("wheel_anim_close", wheel_anim()),
             "anim_same": settings().value("anim_same", "true") == "true",
@@ -7729,6 +7733,11 @@ class SettingsDialog(QDialog):
         self.icon_only = SwitchBox(tr("Remove float border"))
         self.icon_only.setChecked(st["icon_only"])
         vf.addWidget(self.icon_only)
+        self.hide_name = SwitchBox(tr("Hide name"))
+        self.hide_name.setChecked(st["hide_name"])
+        vf.addWidget(self.hide_name)
+        self.icon_only.toggled.connect(self.hide_name.setEnabled)
+        self.hide_name.setEnabled(st["icon_only"])
         self.media_osd = SwitchBox(tr("Enable multimedia logos on screen"))
         self.media_osd.setChecked(st["media_osd"])
         vf.addWidget(self.media_osd)
@@ -8183,6 +8192,7 @@ class SettingsDialog(QDialog):
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
         s.setValue("float_icon_only", "true" if self.icon_only.isChecked() else "false")
+        s.setValue("float_hide_name", "true" if self.hide_name.isChecked() else "false")
         tb_changed = (s.value("float_taskbar", "true") == "true") != self.taskbar.isChecked()
         s.setValue("float_taskbar", "true" if self.taskbar.isChecked() else "false")
         for w in getattr(self.app, "floats", []):
