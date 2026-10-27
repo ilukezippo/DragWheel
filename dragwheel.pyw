@@ -2119,7 +2119,7 @@ _LAST_SELECT = 0.0
 _WAV_CACHE = {}
 
 
-def _play_wav(name, volume) -> bool:
+def _play_wav(name, volume, pack=None) -> bool:
     """Windows: play a short DragWheel sound without Qt's audio engine (which can stall the app for seconds
     when sounds are started and stopped quickly, e.g. sweeping over the wheel's slices). The volume is baked
     into a small copy of the sound, made once per volume level."""
@@ -2131,13 +2131,14 @@ def _play_wav(name, volume) -> bool:
         import winsound
         import array
         vol = max(0, min(100, int(volume)))
-        key = (name, vol)
+        pack = pack or sound_pack()
+        key = (name, vol, pack)
         path = _WAV_CACHE.get(key)
         if path is None or not os.path.exists(path):
             folder = Path(tempfile.gettempdir()) / "DragWheel sounds"
             folder.mkdir(parents=True, exist_ok=True)
-            path = str(folder / f"{name}-{vol}.wav")
-            with wave.open(asset(f"sounds/{name}.wav"), "rb") as src:
+            path = str(folder / f"{name}-{pack}-{vol}.wav")
+            with wave.open(sound_file(name, pack), "rb") as src:
                 params = src.getparams()
                 frames = src.readframes(src.getnframes())
             if params.sampwidth == 2:
@@ -2158,25 +2159,34 @@ def _play_wav(name, volume) -> bool:
         return False
 
 
+SOUND_PACKS = [("classic", "Classic"), ("soft", "Soft"), ("glass", "Glass"), ("bubble", "Bubble"),
+               ("mechanical", "Mechanical"), ("retro", "Retro")]
+
+
+def sound_pack() -> str:
+    v = settings().value("sound_pack", "classic")
+    return v if v in dict(SOUND_PACKS) else "classic"
+
+
+def sound_file(name, pack=None) -> str:
+    """The .wav for 'tick', 'select', 'open' or 'close' in the chosen sound style."""
+    pack = pack or sound_pack()
+    if pack != "classic":
+        f = asset(f"sounds/{name}-{pack}.wav")
+        if os.path.exists(f):
+            return f
+    return asset(f"sounds/{name}.wav")
+
+
 def _tick_effect(name="tick"):
-    """Loaded once at start-up, so even the first click plays straight away."""
-    global _TICK, _SELECT
+    """Qt's player for a wheel sound (only used where Windows' own player isn't available)."""
     from PySide6.QtMultimedia import QSoundEffect
-    if name in ("open", "close"):
-        if name not in _EFFECTS:
-            fx = QSoundEffect()
-            fx.setSource(QUrl.fromLocalFile(asset(f"sounds/{name}.wav")))
-            _EFFECTS[name] = fx
-        return _EFFECTS[name]
-    if name == "select":
-        if _SELECT is None:
-            _SELECT = QSoundEffect()
-            _SELECT.setSource(QUrl.fromLocalFile(asset("sounds/select.wav")))
-        return _SELECT
-    if _TICK is None:
-        _TICK = QSoundEffect()
-        _TICK.setSource(QUrl.fromLocalFile(asset("sounds/tick.wav")))
-    return _TICK
+    key = (name, sound_pack())
+    if key not in _EFFECTS:
+        fx = QSoundEffect()
+        fx.setSource(QUrl.fromLocalFile(sound_file(name)))
+        _EFFECTS[key] = fx
+    return _EFFECTS[key]
 
 
 def play_wheel_sound(name):
@@ -7344,6 +7354,7 @@ class SettingsDialog(QDialog):
             "media_osd": self.media_osd.isChecked(),
             "icon_only": self.icon_only.isChecked(),
             "taskbar": self.taskbar.isChecked(),
+            "sound_pack": self.sound_pack.currentData(),
             "hide_name": self.hide_name.isChecked(),
             "anim": self.anim.currentData(),
             "anim_close": self.anim_close.currentData(),
@@ -7383,6 +7394,7 @@ class SettingsDialog(QDialog):
             "media_osd": s.value("media_osd", "true") == "true",
             "icon_only": s.value("float_icon_only", "true") == "true",
             "taskbar": s.value("float_taskbar", "true") == "true",
+            "sound_pack": sound_pack(),
             "hide_name": s.value("float_hide_name", "false") == "true",
             "anim": wheel_anim(),
             "anim_close": settings().value("wheel_anim_close", wheel_anim()),
@@ -7839,6 +7851,30 @@ class SettingsDialog(QDialog):
         row.addWidget(self.tick_volume_lbl)
         row.addStretch(1)
         v.addLayout(row)
+        row = QHBoxLayout()
+        row.setContentsMargins(58, 0, 0, 0)
+        row.addWidget(QLabel(tr("Sound style")))
+        self.sound_pack = QComboBox()
+        for k, label in SOUND_PACKS:
+            self.sound_pack.addItem(tr(label), k)
+        self.sound_pack.setCurrentIndex(max(0, self.sound_pack.findData(st["sound_pack"])))
+        self.sound_pack.setMinimumWidth(160)
+        row.addWidget(self.sound_pack)
+        hear = QPushButton(tr("Listen"))
+
+        def preview():
+            pack, vol = self.sound_pack.currentData(), self.tick_volume.value()
+            for i, (nm, ms) in enumerate((("open", 0), ("tick", 380), ("tick", 560), ("select", 820), ("close", 1250))):
+                QTimer.singleShot(ms, lambda nm=nm: _play_wav(nm, vol * (0.8 if nm in ("open", "close") else 1), pack))
+        hear.clicked.connect(preview)
+        self.sound_pack.currentIndexChanged.connect(lambda _i: preview())
+        row.addWidget(hear)
+        self.tick_sound.toggled.connect(self.sound_pack.setEnabled)
+        self.tick_sound.toggled.connect(hear.setEnabled)
+        self.sound_pack.setEnabled(st["tick_sound"])
+        hear.setEnabled(st["tick_sound"])
+        row.addStretch(1)
+        v.addLayout(row)
         lay.addWidget(g)
 
         g = self._group("Jobs")
@@ -8223,6 +8259,7 @@ class SettingsDialog(QDialog):
         s.setValue("anim_speed", self.anim_speed.value())
         s.setValue("job_mode", self.job_mode.currentData())
         s.setValue("tick_volume", self.tick_volume.value())
+        s.setValue("sound_pack", self.sound_pack.currentData())
         s.setValue("peek", "false" if keys.get("peek", "None") == "None" else "true")
         for key, box in (("shake", self.shake), ("finish_anim", self.finish_anim),
                          ("finish_sound", self.finish_sound), ("tour_at_start", self.tour_start),
