@@ -4361,9 +4361,12 @@ class FloatWindow(QWidget):
             p.drawPixmap(ir.toRect(), self.src.scaled(int(ir.width()), int(ir.height()),
                                                        Qt.KeepAspectRatio, Qt.SmoothTransformation))
             if bare and settings().value("float_hide_name", "false") != "true":   # the name under the icon
-                nf = QFont("Segoe UI", 9, QFont.Bold)
+                pt = max(7.0, min(22.0, ir.width() * 0.085))     # grows and shrinks with the icon
+                nf = QFont("Segoe UI")
+                nf.setPointSizeF(pt)
+                nf.setBold(True)
                 p.setFont(nf)
-                nr = QRectF(6, ir.bottom() + 4, self.width() - 12, 34)
+                nr = QRectF(6, ir.bottom() + pt * 0.4, self.width() - 12, pt * 3)
                 pp = Path(self.path or "")
                 label = pp.name if pp.is_dir() or not pp.suffix else pp.stem      # no ".zip", ".exe"…
                 txt = QFontMetrics(nf).elidedText(label, Qt.ElideRight, int(nr.width()))
