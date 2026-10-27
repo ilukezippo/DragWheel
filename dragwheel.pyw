@@ -92,6 +92,11 @@ def peek_key() -> str:
     return v
 
 
+def peek_hold() -> bool:
+    """File preview: True = shown while the key is held, False = press to open, press again to close."""
+    return settings().value("peek_hold", "false") == "true"
+
+
 def key_label(spec: str) -> str:
     """'Ctrl+Q' as shown to you (each part translated)."""
     return " + ".join(tr(p) for p in (spec or "None").split("+") if p) or tr("None")
@@ -2160,12 +2165,13 @@ def _play_wav(name, volume, pack=None) -> bool:
 
 
 SOUND_PACKS = [("classic", "Classic"), ("soft", "Soft"), ("glass", "Glass"), ("bubble", "Bubble"),
-               ("mechanical", "Mechanical"), ("retro", "Retro"), ("steam", "Steam"), ("playstation", "PlayStation"),
-               ("xbox", "Xbox")]
+               ("mechanical", "Mechanical"), ("retro", "Retro"), ("velvet", "Velvet"), ("crystal", "Crystal"),
+               ("pulse", "Pulse")]
 
 
 def sound_pack() -> str:
     v = settings().value("sound_pack", "classic")
+    v = {"steam": "velvet", "playstation": "crystal", "xbox": "pulse"}.get(v, v)    # names in early 1.2.1 builds
     return v if v in dict(SOUND_PACKS) else "classic"
 
 
@@ -6374,6 +6380,7 @@ def message(title, html):
 # ============================================================================
 KEY_NAMES = ["Shift", "Ctrl", "Alt", "CapsLock", "None"]
 _KEY_ORDER = ["Ctrl", "Shift", "Alt", "Win"]
+_CLICK_ORDER = ["LeftClick", "RightClick", "MiddleMouse", "Mouse4", "Mouse5"]
 
 
 def qt_key_name(k) -> str | None:
@@ -6398,7 +6405,8 @@ def qt_key_name(k) -> str | None:
 
 def combo_text(names) -> str:
     names = list(dict.fromkeys(names))
-    names.sort(key=lambda n: (_KEY_ORDER.index(n) if n in _KEY_ORDER else 9))
+    names.sort(key=lambda n: (_KEY_ORDER.index(n) if n in _KEY_ORDER else 20 + _CLICK_ORDER.index(n)
+                              if n in _CLICK_ORDER else 9))
     return "+".join(names)
 
 
@@ -6536,10 +6544,12 @@ class KeyCapture(QPushButton):
         self._listening, self._down, self._combo = True, set(), []
         self.setFocus()
         self.grabKeyboard()
+        self.grabMouse()                                # a click anywhere: key + click, or cancel
         self._show()
 
     def _finish(self, spec=None):
         self.releaseKeyboard()
+        self.releaseMouse()
         self._listening = False
         if spec is not None and spec != self.spec:
             self.spec = spec
@@ -6579,9 +6589,15 @@ class KeyCapture(QPushButton):
             if extra:
                 self._finish(combo_text(self._combo + [extra]))
                 return
-            if e.button() == Qt.LeftButton and not self._combo:
-                self._finish()                          # clicked again: keep what it was
+            click = {Qt.LeftButton: "LeftClick", Qt.RightButton: "RightClick"}.get(e.button())
+            if click and self._down:                    # a key held + left or right click
+                self._finish(combo_text(self._combo + [click]))
                 return
+            if e.button() == Qt.LeftButton:
+                self._finish()                          # clicked without a key: keep what it was
+                return
+            if e.button() == Qt.RightButton:
+                return                                  # a right click on its own can't open a wheel
         super().mousePressEvent(e)
 
     def focusOutEvent(self, e):
@@ -7462,6 +7478,7 @@ class SettingsDialog(QDialog):
         return {
             "keys": {m: cb.spec for m, cb in self.key_boxes.items()},
             "detect": self.detect.currentData(),
+            "peek_hold": bool(self.peek_hold.currentData()),
             "scroll": self.scroll.isChecked(),
             "out": self.out.text(),
             "out_mode": self.out_mode.currentData(),
@@ -7502,6 +7519,7 @@ class SettingsDialog(QDialog):
         return {
             "keys": {**mode_keys(), "peek": peek_key()},
             "detect": trigger_mode(),
+            "peek_hold": peek_hold(),
             "scroll": s.value("scroll", "true") == "true",
             "out": s.value("output_dir", ""),
             "out_mode": s.value("output_mode", "folder" if s.value("output_dir", "") else "next"),
@@ -7745,10 +7763,15 @@ class SettingsDialog(QDialog):
             self.key_boxes[m] = cap
             cap.changed.connect(lambda spec, me=m: self._key_taken(me, spec))
         hint = QLabel(tr("Click a key box, then press any key or combination, e.g. Shift, Ctrl+Q or F8. "
-                         "The mouse's side buttons work too."))
+                         "The mouse's side buttons work too, or hold a key and click (e.g. Ctrl + right click)."))
         hint.setObjectName("dim")
         hint.setWordWrap(True)
         f1.addRow(hint)
+        self.peek_hold = QComboBox()
+        self.peek_hold.addItem(tr("Press to open, press again to close"), False)
+        self.peek_hold.addItem(tr("Hold to show, let go to close"), True)
+        self.peek_hold.setCurrentIndex(1 if st["peek_hold"] else 0)
+        f1.addRow(tr("File preview opens"), self.peek_hold)
         self.detect = QComboBox()
         for k, label in (("drag", tr("File drag (recommended)")), ("hover", tr("Mouse hover")),
                          ("select", tr("File selection"))):
@@ -8422,6 +8445,7 @@ class SettingsDialog(QDialog):
         for m, k in keys.items():
             s.setValue(f"keys/{m}", k)
         s.setValue("trigger_mode", self.detect.currentData())
+        s.setValue("peek_hold", "true" if self.peek_hold.currentData() else "false")
         s.setValue("detect_any", 0)
         mode = self.out_mode.currentData()
         s.setValue("output_mode", mode)
@@ -9092,6 +9116,8 @@ class DragWatcher(QObject):
     peek = Signal()          # Space tapped while dragging (Quick preview)
     volume_key = Signal(int)  # a volume key or knob step (from the hook thread)
     shaken = Signal()        # the mouse was shaken while dragging
+    peek_up = Signal()       # File preview key let go (File preview set to "hold to show")
+    click_drag = Signal(str)  # a wheel key + right click while dragging (from the hook thread)
 
     def __init__(self):
         super().__init__()
@@ -9111,6 +9137,10 @@ class DragWatcher(QObject):
                                      on_ctrl_double=lambda hwnd: self.ctrl_open.emit(int(hwnd)),
                                      ctrl_double_enabled=lambda: getattr(self, "ctrl_float", False))
         self.hook.on_volume_key = lambda vk: self.volume_key.emit(vk)
+        self.hook.on_click = self._on_click
+        self._click_specs = []   # (mode, other keys, button) for wheel keys that end in a mouse click
+        self._click_pending = None   # (mode, keys) — fires when those keys are let go (Trigger on hover / selection)
+        self._hold_keys = None       # keys holding File preview open (hold to show)
 
     def refresh_settings(self):
         s = settings()
@@ -9121,6 +9151,47 @@ class DragWatcher(QObject):
         self.shake_enabled = s.value("shake", "true") == "true"
         self.peek_vks = winsys.combo_vks(peek_key())
         self.peek_enabled = bool(self.peek_vks)
+        self.peek_hold = s.value("peek_hold", "false") == "true"
+
+    # ---- wheel key + mouse click (Ctrl + right click…): seen by the mouse hook, so the click never reaches Explorer
+    CLICKS = (0x01, 0x02)
+
+    def _hook_clicks(self):
+        """Buttons the hook handles: during a file drag the left button is already down, so only right clicks."""
+        return (0x02,) if getattr(self, "trigger", "drag") == "drag" else self.CLICKS
+
+    def _on_click(self, btn, down):
+        """On the hook thread: True = this click belongs to a wheel key, keep it from Windows."""
+        if not down or btn not in self._hook_clicks():
+            return False
+        for mode, others, b in list(self._click_specs):
+            if b != btn or not others or not all(winsys.key_down(v) for v in others):
+                continue
+            if getattr(self, "trigger", "drag") == "drag":
+                if not self.dragging:
+                    continue
+                self.click_drag.emit(mode)
+                if mode == "peek" and self.peek_hold:
+                    self._hold_keys = others
+                return True
+            if self.dragging:
+                continue
+            if mode == "peek" and self.peek_hold:
+                self.idle_tap.emit("peek")             # shown now, closed when the keys are let go
+                self._hold_keys = others
+            else:
+                self._click_pending = (mode, others)   # after the keys are let go (so they don't change the selection)
+            return True
+        return False
+
+    def _update_click_specs(self, keys):
+        specs = []
+        for mode, spec in list(keys.items()) + [("peek", peek_key())]:
+            vks = winsys.combo_vks(spec)
+            btns = [v for v in vks if v in self._hook_clicks()]
+            if btns:
+                specs.append((mode, [v for v in vks if v not in self.CLICKS], btns[-1]))
+        self._click_specs = specs
 
     # called on the hook thread — keep it tiny
     def _drag_qualifies(self):
@@ -9141,7 +9212,15 @@ class DragWatcher(QObject):
     def tick(self):
         keys = mode_keys()
         combos = {spec: set(winsys.combo_vks(spec)) for spec in set(keys.values())}
-        combos = {k: v for k, v in combos.items() if v}
+        hooked = set(self._hook_clicks())
+        combos = {k: v for k, v in combos.items() if v and not v & hooked}    # key + click: the mouse hook handles those
+        self._update_click_specs(keys)
+        if self._click_pending and not any(winsys.key_down(v) for v in self._click_pending[1]):
+            mode, self._click_pending = self._click_pending[0], None
+            self.idle_tap.emit(mode)
+        if self._hold_keys is not None and not any(winsys.key_down(v) for v in self._hold_keys):
+            self._hold_keys = None
+            self.peek_up.emit()
         down = {vk: winsys.key_down(vk) for vk in set().union(*combos.values())} if combos else {}
         held = {spec: all(down[v] for v in vks) for spec, vks in combos.items()}
         # a key that's part of a longer combination (Ctrl, when another wheel is Ctrl+Q) counts when it's let go
@@ -9175,11 +9254,15 @@ class DragWatcher(QObject):
                     self.cancelled.emit()
                 self.esc_prev = esc
                 pv = getattr(self, "peek_vks", [winsys.VK_SPACE])
+                if set(pv) & hooked:
+                    pv = []                            # File preview is a key + click: the mouse hook handles it
                 space = bool(pv) and all(winsys.key_down(v) for v in pv) and (
                     len(pv) > 1 or pv[0] in (0x10, 0x11, 0x12) or not (winsys.key_down(0x11) or winsys.key_down(0x12)))
                 if (space and not self.space_prev and self.peek_enabled and getattr(self, "trigger", "drag") == "drag"
                         and winsys.file_drag_active()):
                     self.peek.emit()
+                elif not space and self.space_prev and self.peek_hold and getattr(self, "trigger", "drag") == "drag":
+                    self.peek_up.emit()                # hold to show: let go closes it
                 self.space_prev = space
                 if self.shake_enabled and not self.shook and self._shake(pos):
                     self.shook = True
@@ -9214,19 +9297,27 @@ class DragWatcher(QObject):
         if getattr(self, "trigger", "drag") != "drag":
             clean = getattr(self, "clean", {})
             pv = getattr(self, "peek_vks", [])
-            if pv:                                     # File preview follows the same choice
+            if pv and not set(pv) & hooked:            # File preview follows the same choice
                 combos["__peek__"] = set(pv)
                 held["__peek__"] = all(winsys.key_down(v) for v in pv)
+            else:
+                pv = []
             for m, name in list(keys.items()) + ([("peek", "__peek__")] if pv else []):
                 vks = combos.get(name)
                 if not vks:
                     continue
+                hold = m == "peek" and self.peek_hold
                 if held.get(name) and not self.prev.get(name):
                     clean[name] = not lmb
-                elif held.get(name) and clean.get(name) and (lmb or winsys.other_keys_down(vks)):
+                    if hold and clean[name] and not self.dragging and not winsys.other_keys_down(vks):
+                        self.idle_tap.emit(m)          # hold to show: open on press…
+                        clean[name] = "open"
+                elif held.get(name) and clean.get(name) is True and (lmb or winsys.other_keys_down(vks)):
                     clean[name] = False
                 elif not held.get(name) and self.prev.get(name):
-                    if clean.get(name) and not lmb and not self.dragging:
+                    if clean.get(name) == "open":
+                        self.peek_up.emit()            # …and close on release
+                    elif clean.get(name) and not lmb and not self.dragging and not hold:
                         self.idle_tap.emit(m)
                     clean[name] = False
             self.clean = clean
@@ -9301,6 +9392,8 @@ class DragWheelApp(QObject):
         self.watcher.volume_key.connect(self.on_volume_key, Qt.QueuedConnection)
         self.watcher.shaken.connect(self.on_shake)
         self.watcher.released.connect(self._close_peek)
+        self.watcher.peek_up.connect(self._close_peek)
+        self.watcher.click_drag.connect(self.on_click_drag)
         self.watcher.start()
         self._peek = None
         self.watch = FolderWatch(self)
@@ -9485,10 +9578,20 @@ class DragWheelApp(QObject):
         self._fill_from_explorer()
         QTimer.singleShot(0, self.wheel.begin_anim)
 
+    def on_click_drag(self, mode):
+        """A wheel key + right click while dragging a file."""
+        if not winsys.file_drag_active():
+            return
+        if mode == "peek":
+            self.on_peek()
+        else:
+            self.on_tap(mode)
+
     def on_peek(self):
         """Space while dragging: show (or hide) a quick preview of the file being dragged."""
         if self._peek is not None and self._peek.isVisible():
-            self._peek.hide()
+            if not peek_hold():
+                self._peek.hide()                    # press to open, press again to close
             return
         paths = self.wheel.paths if self.wheel.is_open() and self.wheel.paths else []
         if not paths:
@@ -9577,7 +9680,8 @@ class DragWheelApp(QObject):
         """Trigger on hover / selection: the wheel for the file under the mouse, or the files selected."""
         if mode == "peek":
             if self._peek is not None and self._peek.isVisible():
-                self._peek.hide()
+                if not peek_hold():
+                    self._peek.hide()
                 return
             self._idle_paths(lambda paths: self._show_peek(paths))
             return

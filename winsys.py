@@ -12,7 +12,7 @@ IS_WIN = sys.platform == "win32"
 VK = {"Shift": 0x10, "Ctrl": 0x11, "Alt": 0x12, "CapsLock": 0x14, "Win": 0x5B, "Tab": 0x09, "Space": 0x20,
       "Insert": 0x2D, "Delete": 0x2E, "Home": 0x24, "End": 0x23, "PageUp": 0x21, "PageDown": 0x22,
       "Left": 0x25, "Up": 0x26, "Right": 0x27, "Down": 0x28, "Backspace": 0x08, "Enter": 0x0D,
-      "MiddleMouse": 0x04, "Mouse4": 0x05, "Mouse5": 0x06, "`": 0xC0, "-": 0xBD, "=": 0xBB,
+      "LeftClick": 0x01, "RightClick": 0x02, "MiddleMouse": 0x04, "Mouse4": 0x05, "Mouse5": 0x06, "`": 0xC0, "-": 0xBD, "=": 0xBB,
       "[": 0xDB, "]": 0xDD, ";": 0xBA, "'": 0xDE, ",": 0xBC, ".": 0xBE, "/": 0xBF, "\\": 0xDC,
       **{chr(c): c for c in range(0x41, 0x5B)}, **{str(d): 0x30 + d for d in range(10)},
       **{f"F{n}": 0x6F + n for n in range(1, 25)}, **{f"Num{d}": 0x60 + d for d in range(10)}}
@@ -751,6 +751,8 @@ class WheelHook:
         self.ctrl_double_enabled = ctrl_double_enabled
         self._first = None                            # (time, x, y) of the first Ctrl-click
         self.on_volume_key = None                     # called (on the hook thread) for every volume key press
+        self.on_click = None                          # on_click(button vk, down) -> True keeps the click from Windows
+        self._eat_click_up = set()                    # buttons whose release is kept too
         self._eat_up = False
         self._thread = None
         self._tid = 0
@@ -812,7 +814,26 @@ class WheelHook:
             self._first = (info.time, info.pt.x, info.pt.y)
             return False
 
+        BUTTONS = {0x0201: (0x01, True), 0x0202: (0x01, False), 0x0204: (0x02, True), 0x0205: (0x02, False)}
+
+        def key_click(w_param):
+            """A wheel key + click (e.g. Ctrl + right click): handled by DragWheel, kept from the window under it."""
+            btn, down = BUTTONS[w_param]
+            if not down and btn in self._eat_click_up:
+                self._eat_click_up.discard(btn)
+                return True
+            if down and self.on_click is not None and self.on_click(btn, True):
+                self._eat_click_up.add(btn)
+                return True
+            return False
+
         def proc(n_code, w_param, l_param):
+            if n_code == 0 and w_param in BUTTONS:
+                try:
+                    if key_click(w_param):
+                        return 1
+                except Exception:
+                    pass
             if n_code == 0 and w_param in (WM_LBUTTONDOWN, WM_LBUTTONUP):
                 try:
                     info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
