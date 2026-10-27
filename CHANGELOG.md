@@ -41,6 +41,7 @@
 - Fixed: choosing a saved link could play a different one (the link on the clipboard), and a renamed live link showed the video's own title again; the same fix applies to Recent results and the QR menu in the tray
 - **Smoother live streams:** live videos now come from YouTube's mobile-web player first, whose live stream keeps playing (the stream used before was refused by YouTube every ~30 seconds); other players are asked at the same time, so if YouTube starts refusing one, the float switches to another in a moment instead of reloading for 12 seconds; the stream is also fetched one request at a time after a refusal, and reconnects by itself after network hiccups
 - Fixed: the wheel couldn't be used while Settings was open
+- Fixed: resizing a float past its smallest or largest size moved it around instead of stopping
 - Fixed: moving a dragged file quickly over the wheel could freeze DragWheel for a few seconds (the click sounds now play without Qt's audio engine)
 - Fixed: links reopened after an update or at Windows start were not added to Saved links
 - Fixed: right-clicking a float playing a link could fail (Repeat menu)

@@ -4662,10 +4662,17 @@ class FloatWindow(QWidget):
             self.update()
             return
         step = 1.1 if e.angleDelta().y() > 0 else 1 / 1.1
-        center = self.frameGeometry().center()
+        g0 = self.geometry()
         self._apply_size(self.width() * step, (self._height_for(self.width() * step) if self.aspect
                                                 else self.height() * step))
-        self.move(center - QPoint(self.width() // 2, self.height() // 2))
+        dw, dh = self.width() - g0.width(), self.height() - g0.height()
+        if dw or dh:                                 # grow or shrink around the middle; at a limit it stays put
+            self._grow_left = getattr(self, "_grow_left", 0.0) + dw / 2
+            self._grow_top = getattr(self, "_grow_top", 0.0) + dh / 2
+            mx, my = int(self._grow_left), int(self._grow_top)    # whole pixels, the rest kept for next time
+            self._grow_left -= mx
+            self._grow_top -= my
+            self.move(g0.x() - mx, g0.y() - my)
 
     def keyPressEvent(self, e):
         if e.matches(QKeySequence.Paste):
