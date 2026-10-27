@@ -3,6 +3,9 @@
 ## 1.2.1 — October 2026
 
 - **Any key or combination for each wheel:** click a wheel's key box and press what you like (Shift, Ctrl+Q, F8, the mouse's side buttons…); a key that is also part of a longer combination counts when you let it go; File preview (Space) has its own key box too
+- **Mouse Control** on the Wheel page: Mouse Shake, Scroll Wheel and Loading Spin with on/off switches and a line about each; choose whether a shake or a scroll opens Convert, Tools, Actions or File preview
+- Clearer names in Settings: *Wheel keys*, *Jobs*, *Auto Convert* (was Watch folders) and an *Animations* section
+- The wheel's buttons show the key under the wheel's name, so long names (like the mouse's side buttons) fit; the welcome tour fits them too
 - **New Settings layout:** clear pages down the side (General, Wheel, Sounds & notifications, Files & jobs, Float, Customize, Advanced, About) with each section on its own card, new page icons and bolder page names; Segoe UI everywhere, more room next to tick boxes, buttons no longer stay lit after you click them, and lists show one clean highlight
 - **Actions for all file types at once:** in Customize → Choose slices, the Actions wheel can be arranged once for every type of file
 - "Last checked" for updates shows the time with AM/PM
@@ -28,6 +31,8 @@
 - Fixed: right-clicking many files at once (Explorer starts DragWheel once per file) now gathers all of them into one wheel, and a slice you already chose is applied to files that arrive late; Unblock also handles very long paths and read-only files
 - Fixed: choosing a saved link could play a different one (the link on the clipboard), and a renamed live link showed the video's own title again; the same fix applies to Recent results and the QR menu in the tray
 - **Smoother live streams:** live videos now come from YouTube's mobile-web player first, whose live stream keeps playing (the stream used before was refused by YouTube every ~30 seconds); other players are asked at the same time, so if YouTube starts refusing one, the float switches to another in a moment instead of reloading for 12 seconds; the stream is also fetched one request at a time after a refusal, and reconnects by itself after network hiccups
+- Fixed: the wheel couldn't be used while Settings was open
+- Fixed: moving a dragged file quickly over the wheel could freeze DragWheel for a few seconds (the click sounds now play without Qt's audio engine)
 - Fixed: links reopened after an update or at Windows start were not added to Saved links
 - Fixed: right-clicking a float playing a link could fail (Repeat menu)
 - Fixed: a crash repeating many times a second is written to the log only once

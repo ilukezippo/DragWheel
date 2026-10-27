@@ -882,4 +882,4 @@ for _code, _vals in _sp121.T.items():
     assert len(_vals) == len(_sp121.KEYS), _code
     T[_code].update(dict(zip(_sp121.KEYS, _vals)))
 
-EN.update({"MiddleMouse": "Middle mouse button", "Mouse4": "Mouse back button", "Mouse5": "Mouse forward button"})
+EN.update({"MiddleMouse": "Middle click", "Mouse4": "Mouse back", "Mouse5": "Mouse forward"})

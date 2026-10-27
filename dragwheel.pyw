@@ -1441,7 +1441,7 @@ class Wheel(QWidget):
     R_MID = 158
     R_OUT = 246
     PAD = 18
-    PILL_H = 34
+    PILL_H = 40
 
     def __init__(self, app: "DragWheelApp"):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -1539,8 +1539,11 @@ class Wheel(QWidget):
 
     # ------------------------------------------------------------- content
     def set_mode(self, mode):
+        t0 = time.monotonic()
         self.mode = mode
         self.ops = self.app.ops_for(mode, self.paths) if self.paths else []
+        if time.monotonic() - t0 > 0.3:
+            winsys.log(f"wheel: switching to {mode} took {time.monotonic() - t0:.1f}s")
         self.hover = -1
         if self.isVisible():
             self._keep_on_screen()                    # more slices = a bigger ring
@@ -1930,7 +1933,19 @@ class Wheel(QWidget):
             f.setWeight(QFont.DemiBold)
             p.setFont(f)
             p.setPen(ON_ACCENT if active else C("text"))
-            p.drawText(r, Qt.AlignCenter, tr(MODE_LABEL[m]) if keys[m] == "None" else f"{key_label(keys[m])}  ·  {tr(MODE_LABEL[m])}")
+            inner = r.adjusted(10, 3, -10, -3)
+            if keys[m] == "None":
+                p.drawText(inner, Qt.AlignCenter, tr(MODE_LABEL[m]))
+            else:                                       # the wheel's name, and its key under it (made to fit)
+                top = QRectF(inner.left(), inner.top(), inner.width(), inner.height() * 0.55)
+                bot = QRectF(inner.left(), top.bottom() - 1, inner.width(), inner.height() * 0.45)
+                p.drawText(top, Qt.AlignHCenter | Qt.AlignBottom, tr(MODE_LABEL[m]))
+                fk = QFont(i18n.ui_font(), 7)
+                p.setFont(fk)
+                col = QColor(ON_ACCENT if active else C("dim"))
+                p.setPen(col)
+                p.drawText(bot, Qt.AlignHCenter | Qt.AlignTop,
+                           QFontMetrics(fk).elidedText(key_label(keys[m]), Qt.ElideRight, int(bot.width())))
         p.end()
 
     @staticmethod
@@ -2053,6 +2068,48 @@ _EFFECTS = {}
 _LAST_SELECT = 0.0
 
 
+_WAV_CACHE = {}
+
+
+def _play_wav(name, volume) -> bool:
+    """Windows: play a short DragWheel sound without Qt's audio engine (which can stall the app for seconds
+    when sounds are started and stopped quickly, e.g. sweeping over the wheel's slices). The volume is baked
+    into a small copy of the sound, made once per volume level."""
+    if not winsys.IS_WIN:
+        return False
+    try:
+        import tempfile
+        import wave
+        import winsound
+        import array
+        vol = max(0, min(100, int(volume)))
+        key = (name, vol)
+        path = _WAV_CACHE.get(key)
+        if path is None or not os.path.exists(path):
+            folder = Path(tempfile.gettempdir()) / "DragWheel sounds"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = str(folder / f"{name}-{vol}.wav")
+            with wave.open(asset(f"sounds/{name}.wav"), "rb") as src:
+                params = src.getparams()
+                frames = src.readframes(src.getnframes())
+            if params.sampwidth == 2:
+                a = array.array("h", frames)
+                k = vol / 100
+                a = array.array("h", (int(x * k) for x in a))
+                frames = a.tobytes()
+            with wave.open(path, "wb") as out:
+                out.setparams(params)
+                out.writeframes(frames)
+            _WAV_CACHE[key] = path
+        if vol == 0:
+            return True
+        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        return True
+    except Exception as e:
+        winsys.log(f"sound {name}: {e}")
+        return False
+
+
 def _tick_effect(name="tick"):
     """Loaded once at start-up, so even the first click plays straight away."""
     global _TICK, _SELECT
@@ -2080,10 +2137,12 @@ def play_wheel_sound(name):
         return
     if name == "close" and time.monotonic() - _LAST_SELECT < 0.8:
         return                                   # choosing a slice already made its own sound
+    vol = int(int(settings().value("tick_volume", 70)) * 0.8)
+    if _play_wav(name, vol):
+        return
     try:
         fx = _tick_effect(name)
-        fx.setVolume(max(0, min(100, int(settings().value("tick_volume", 70)))) / 100 * 0.8)
-        fx.stop()
+        fx.setVolume(max(0, min(100, vol)) / 100)
         fx.play()
     except Exception as e:
         winsys.log(f"{name} sound: {e}")
@@ -2095,9 +2154,12 @@ def play_select():
     _LAST_SELECT = time.monotonic()
     if settings().value("tick_sound", "true") != "true":
         return
+    vol = int(settings().value("tick_volume", 70))
+    if _play_wav("select", vol):
+        return
     try:
         fx = _tick_effect("select")
-        fx.setVolume(max(0, min(100, int(settings().value("tick_volume", 70)))) / 100)
+        fx.setVolume(max(0, min(100, vol)) / 100)
         fx.play()
     except Exception as e:
         winsys.log(f"select sound: {e}")
@@ -2107,10 +2169,12 @@ def play_tick(force=False):
     """The click when the highlight moves to another slice (Settings → Everyday, with its own volume)."""
     if settings().value("tick_sound", "true") != "true" and not force:
         return
+    vol = int(settings().value("tick_volume", 70))
+    if _play_wav("tick", vol):
+        return
     try:
         fx = _tick_effect()
-        fx.setVolume(max(0, min(100, int(settings().value("tick_volume", 70)))) / 100)
-        fx.stop()
+        fx.setVolume(max(0, min(100, vol)) / 100)
         fx.play()
     except Exception as e:
         winsys.log(f"tick sound: {e}")
@@ -4645,11 +4709,11 @@ SETTINGS_PAGES = [
     ("general", "General", "Language, look, and how DragWheel starts with Windows",
      ["Appearance", "Startup and Explorer", "Windows right-click menu"]),
     ("wheel", "Wheel", "The keys and gestures that open the wheel while you drag a file",
-     ["Wheel keys — tap while dragging a file", "While dragging a file"]),
+     ["Wheel keys", "Mouse Control", "Animations"]),
     ("sounds", "Sounds & notifications", "What you see and hear when a job finishes",
      ["When a job finishes"]),
     ("files", "Files & jobs", "Where results go, and how several jobs run",
-     ["Output", "While DragWheel is working", "Watch folders"]),
+     ["Output", "Jobs", "Auto Convert"]),
     ("float", "Float", "The mini player for pictures, videos, music and links",
      ["Float"]),
     ("customize", "Customize", "Choose the slices, and add presets, chains and your own commands",
@@ -6217,6 +6281,77 @@ def combo_text(names) -> str:
     return "+".join(names)
 
 
+class ToggleSwitch(QPushButton):
+    """An on/off switch (like Windows Settings) that works like a tick box: isChecked(), setChecked(), toggled."""
+
+    def __init__(self, on=False, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setChecked(bool(on))
+        self.setAutoDefault(False)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(46, 26)
+        self.setStyleSheet("QPushButton{background:transparent;border:none;padding:0}")
+        self._pos = 1.0 if on else 0.0
+        self._anim = QVariantAnimation(self, duration=140)
+        self._anim.valueChanged.connect(self._moved)
+        self.toggled.connect(self._slide)
+
+    def _moved(self, v):
+        self._pos = float(v)
+        self.update()
+
+    def _slide(self, on):
+        self._anim.stop()
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(1, 2, self.width() - 2, self.height() - 4)
+        on = self._pos
+        track = QColor(ACCENT) if self.isChecked() else C("button")
+        if not self.isEnabled():
+            track.setAlphaF(0.4)
+        p.setPen(QPen(ACCENT if self.isChecked() else C("line"), 1))
+        p.setBrush(track)
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        d = r.height() - 6
+        x = r.left() + 3 + on * (r.width() - 6 - d)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#ffffff") if self.isChecked() else C("text"))
+        p.drawEllipse(QRectF(x, r.top() + 3, d, d))
+        p.end()
+
+
+def setting_row(switch, title, desc, extra=None) -> QHBoxLayout:
+    """[switch]  Title (bold) with a short description under it  ………  [extra control]"""
+    row = QHBoxLayout()
+    row.setSpacing(12)
+    row.addWidget(switch, 0, Qt.AlignTop)
+    col = QVBoxLayout()
+    col.setSpacing(1)
+    t = QLabel(title)
+    t.setStyleSheet("font-weight:700;font-size:10.5pt")
+    d = QLabel(desc)
+    d.setObjectName("dim")
+    d.setWordWrap(True)
+    col.addWidget(t)
+    col.addWidget(d)
+    row.addLayout(col, 1)
+    if extra is not None:
+        lbl = QLabel(tr("Opens"))
+        lbl.setObjectName("dim")
+        row.addWidget(lbl, 0, Qt.AlignVCenter)
+        extra.setMinimumWidth(150)
+        row.addWidget(extra, 0, Qt.AlignVCenter)
+        switch.toggled.connect(extra.setEnabled)
+        extra.setEnabled(switch.isChecked())
+    return row
+
+
 class KeyCapture(QPushButton):
     """Click, then press any key or combination (Ctrl+Q, F8, the mouse's side buttons…). Esc cancels."""
     changed = Signal(str)
@@ -7062,6 +7197,8 @@ class SettingsDialog(QDialog):
             "ctrl_open": self.ctrl_open.isChecked(),
             "media_osd": self.media_osd.isChecked(),
             "anim": self.anim.currentData(),
+            "shake_opens": self.shake_opens.currentData(),
+            "scroll_opens": self.scroll_opens.currentData(),
             "anim_speed": self.anim_speed.value(),
             "shake": self.shake.isChecked(),
             "tour_start": self.tour_start.isChecked(),
@@ -7094,6 +7231,8 @@ class SettingsDialog(QDialog):
             "ctrl_open": s.value("float_ctrl_open", "true") == "true",
             "media_osd": s.value("media_osd", "true") == "true",
             "anim": wheel_anim(),
+            "shake_opens": s.value("shake_opens", "convert"),
+            "scroll_opens": s.value("scroll_opens", "convert"),
             "anim_speed": int(round(anim_speed() * 100)),
             "shake": s.value("shake", "true") == "true",
             "tour_start": s.value("tour_at_start", "true") == "true",
@@ -7295,7 +7434,7 @@ class SettingsDialog(QDialog):
         f0.addRow(tr("Theme"), self.theme_box)
         lay.addWidget(g0)
 
-        g1 = self._group("Wheel keys — tap while dragging a file")
+        g1 = self._group("Wheel keys")
         f1 = QFormLayout(g1)
         self.key_boxes = {}
         for m in MODES + ["peek"]:
@@ -7317,9 +7456,37 @@ class SettingsDialog(QDialog):
         self.detect.addItems([tr("File drags only (recommended)"), tr("Any mouse drag")])
         self.detect.setCurrentIndex(st["detect"])
         f1.addRow(tr("Trigger on"), self.detect)
-        self.scroll = QCheckBox(tr("Scroll the mouse wheel while dragging to open the wheel and move between slices"))
-        self.scroll.setChecked(st["scroll"])
-        f1.addRow(self.scroll)
+        lay.addWidget(g1)
+
+        # Mouse Control: shake, scroll and the busy circle, each with a switch and a line about it
+        gm = self._group("Mouse Control")
+        vm = QVBoxLayout(gm)
+        vm.setSpacing(12)
+        opens = [(m, tr(MODE_LABEL[m])) for m in MODES] + [("peek", tr("File preview"))]
+
+        def opens_box(value):
+            cb = QComboBox()
+            for k, label in opens:
+                cb.addItem(label, k)
+            cb.setCurrentIndex(max(0, cb.findData(value)))
+            return cb
+        self.shake = ToggleSwitch(st["shake"])
+        self.shake_opens = opens_box(st["shake_opens"])
+        vm.addLayout(setting_row(self.shake, tr("Mouse Shake"),
+                                 tr("Shake the mouse while dragging a file to open the wheel without pressing a key."),
+                                 self.shake_opens))
+        self.scroll = ToggleSwitch(st["scroll"])
+        self.scroll_opens = opens_box(st["scroll_opens"])
+        vm.addLayout(setting_row(self.scroll, tr("Scroll Wheel"),
+                                 tr("Scroll the mouse wheel while dragging to open the wheel, then scroll to move between slices."),
+                                 self.scroll_opens))
+        self.cursor_busy = ToggleSwitch(st["cursor_busy"])
+        vm.addLayout(setting_row(self.cursor_busy, tr("Loading Spin"),
+                                 tr("A small spinning circle next to the mouse pointer while DragWheel is working.")))
+        lay.addWidget(gm)
+
+        ga = self._group("Animations")
+        f1 = QFormLayout(ga)
         self.anim = QComboBox()
         for k, label in WHEEL_ANIMS:
             self.anim.addItem(tr(label), k)
@@ -7347,8 +7514,8 @@ class SettingsDialog(QDialog):
         arow.addWidget(self.anim_speed)
         arow.addWidget(self.anim_speed_lbl)
         arow.addStretch(1)
-        f1.addRow(tr("Animations"), arow)
-        lay.addWidget(g1)
+        f1.addRow(tr("Style"), arow)
+        lay.addWidget(ga)
 
         g2 = self._group("Output")
         f2 = QFormLayout(g2)
@@ -7425,13 +7592,6 @@ class SettingsDialog(QDialog):
         page.setObjectName("page")
         lay = QVBoxLayout(page)
         lay.setContentsMargins(2, 6, 2, 2)
-        g = self._group("While dragging a file")
-        v = QVBoxLayout(g)
-        self.shake = QCheckBox(tr("Shake the mouse to open the wheel (instead of tapping a key)"))
-        self.shake.setChecked(st["shake"])
-        v.addWidget(self.shake)
-        lay.addWidget(g)
-
         g = self._group("When a job finishes")
         v = QVBoxLayout(g)
         self.finish_anim = QCheckBox(tr("Animate the tick on the notification"))
@@ -7464,11 +7624,8 @@ class SettingsDialog(QDialog):
         v.addLayout(row)
         lay.addWidget(g)
 
-        g = self._group("While DragWheel is working")
+        g = self._group("Jobs")
         v = QVBoxLayout(g)
-        self.cursor_busy = QCheckBox(tr("Show a small spinning circle next to the mouse pointer"))
-        self.cursor_busy.setChecked(st["cursor_busy"])
-        v.addWidget(self.cursor_busy)
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("Several jobs")))
         self.job_mode = QComboBox()
@@ -7479,7 +7636,7 @@ class SettingsDialog(QDialog):
         v.addLayout(row)
         lay.addWidget(g)
 
-        g = self._group("Watch folders")
+        g = self._group("Auto Convert")
         v = QVBoxLayout(g)
         lbl = QLabel(tr("Anything that lands in these folders is converted by itself, e.g. every HEIC photo in Downloads becomes a JPG."))
         lbl.setWordWrap(True)
@@ -7847,6 +8004,8 @@ class SettingsDialog(QDialog):
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
         s.setValue("wheel_anim", self.anim.currentData())
+        s.setValue("shake_opens", self.shake_opens.currentData())
+        s.setValue("scroll_opens", self.scroll_opens.currentData())
         s.setValue("anim_speed", self.anim_speed.value())
         s.setValue("job_mode", self.job_mode.currentData())
         s.setValue("tick_volume", self.tick_volume.value())
@@ -8381,13 +8540,15 @@ class TourCanvas(QWidget):
         p.restore()
         # the key
         pressed = 1.25 <= t < 1.6
-        key = QRectF(30, 26, 92, 40)
+        kf = QFont("Segoe UI", 11, QFont.DemiBold)
+        label = QFontMetrics(kf).elidedText(self.key, Qt.ElideRight, 220)
+        key = QRectF(30, 26, max(92, QFontMetrics(kf).horizontalAdvance(label) + 30), 40)
         p.setPen(QPen(ACCENT if pressed else C("line"), 2))
         p.setBrush(ACCENT if pressed else C("panel"))
         p.drawRoundedRect(key.translated(0, 3 if pressed else 0), 8, 8)
         p.setPen(ON_ACCENT if pressed else C("text"))
-        p.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
-        p.drawText(key.translated(0, 3 if pressed else 0), Qt.AlignCenter, self.key)
+        p.setFont(kf)
+        p.drawText(key.translated(0, 3 if pressed else 0), Qt.AlignCenter, label)
         # the finished notification
         if 4.1 <= t < 6.8:
             a = ease((t - 4.1) / 0.3) if t < 6.4 else 1 - ease((t - 6.4) / 0.4)
@@ -8673,7 +8834,7 @@ class DragWheelApp(QObject):
         self.watcher.cancelled.connect(self.on_drag_cancel)
         self.watcher.peek.connect(self.on_peek)
         self.watcher.volume_key.connect(self.on_volume_key, Qt.QueuedConnection)
-        self.watcher.shaken.connect(lambda: self.on_tap("convert") if not self.wheel.is_open() else None)
+        self.watcher.shaken.connect(self.on_shake)
         self.watcher.released.connect(self._close_peek)
         self.watcher.start()
         self._peek = None
@@ -8886,10 +9047,22 @@ class DragWheelApp(QObject):
         if paths and not self.wheel.paths:
             self.wheel.set_paths(paths)
 
+    def on_shake(self):
+        target = settings().value("shake_opens", "convert")
+        if target == "peek":
+            self.on_peek()
+        elif not self.wheel.is_open():
+            self.on_tap(target if target in MODES else "convert")
+
     def on_scroll(self, delta):
         w = self.wheel
+        target = settings().value("scroll_opens", "convert")
+        if not w.is_open() and target == "peek":
+            if self._peek is None or not self._peek.isVisible():
+                self.on_peek()
+            return
         if not w.is_open():
-            w.popup("convert", click_mode=False)
+            w.popup(target if target in MODES else "convert", click_mode=False)
             self._fill_from_explorer()
             QTimer.singleShot(0, w.begin_anim)
             return
@@ -9733,11 +9906,14 @@ class DragWheelApp(QObject):
             open_one.raise_()
             open_one.activateWindow()
             return
-        self._settings_dlg = SettingsDialog(self)
-        try:
-            self._settings_dlg.exec()
-        finally:
-            self._settings_dlg = None
+        dlg = SettingsDialog(self)
+        dlg.setModal(False)                         # the wheel and floats keep working while Settings is open
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.finished.connect(lambda _r: setattr(self, "_settings_dlg", None))
+        self._settings_dlg = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def show_tour(self, parent=None):
         if parent is not None:                 # from Settings: on top of it, and usable while it's open
