@@ -17,8 +17,10 @@
 - **Unblock** on the Actions wheel: removes Windows' "This file came from another computer" mark from downloaded files (and everything inside a folder)
 - **Drag a web page into a float:** drag the site icon from the browser's address bar (or a link or tab) onto a float to play that video there
 - **Paste a file into a float:** copy a video or song in Explorer (Ctrl+C) or "Copy as path", then press Ctrl+V on a float to play it
-- **Open the log** from Settings → Advanced → Help
-- **Rename saved links** (right-click a float → Saved links): rename the one playing, or rename, reorder, add, remove or clear them all in *Manage saved links…*
+- **Open the log** and **Show the log folder** at the bottom of Settings → Advanced → Help
+- **Saved links are yours to choose:** links are saved only when you add them (*Save this link* on a float, or *Add…* in Manage saved links); the menu shows your last five, all of them in *Manage saved links…*, where you can rename, reorder, add, remove or clear them
+- **Recently played:** a new list on the float's menu with the links and files you played, to play again, save, or remove
+- *Play copied link* is now called *Paste link*
 - An empty float: *Open* and double-click choose a file (the window now comes to the front); *Show in Explorer* and *Copy path* only show when something is open
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
 - **JPEG** slice next to JPG for pictures (same format, .jpeg name); Settings → Wheel slices lists every format of a type

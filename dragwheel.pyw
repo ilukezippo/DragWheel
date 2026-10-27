@@ -2953,6 +2953,100 @@ def forget_link(url):
     settings().setValue("float_links", json.dumps([x for x in saved_links() if x["url"] != url], ensure_ascii=False))
 
 
+def refresh_link_title(url, title):
+    """A saved link that was played again: keep its place and your name, just update the page's title."""
+    links = saved_links()
+    for x in links:
+        if x["url"] == url and title:
+            x["title"] = title
+    settings().setValue("float_links", json.dumps(links, ensure_ascii=False))
+
+
+def recent_played() -> list:
+    """Links and files played in Float, newest first: [{"kind": "link"|"file", "key", "title"}]."""
+    try:
+        v = json.loads(settings().value("float_recent", "[]") or "[]")
+        return [x for x in v if isinstance(x, dict) and x.get("key")]
+    except (TypeError, ValueError):
+        return []
+
+
+def remember_played(kind, key, title):
+    items = [x for x in recent_played() if x["key"] != key]
+    items.insert(0, {"kind": kind, "key": key, "title": title or key})
+    settings().setValue("float_recent", json.dumps(items[:30], ensure_ascii=False))
+
+
+def forget_played(key=None):
+    items = [] if key is None else [x for x in recent_played() if x["key"] != key]
+    settings().setValue("float_recent", json.dumps(items, ensure_ascii=False))
+
+
+class RecentPlayedDialog(QDialog):
+    """The links and files you played in Float: play one again, save a link, or remove them."""
+
+    def __init__(self, play=None, parent=None):
+        super().__init__(parent)
+        from PySide6.QtCore import QSize
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+        self.play = play
+        self.setWindowTitle(f"{APP} — " + tr("Recently played"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setLayoutDirection(Qt.RightToLeft if i18n.is_rtl() else Qt.LeftToRight)
+        self.resize(560, 420)
+        lay = QVBoxLayout(self)
+        self.list = QListWidget()
+        for it in recent_played():
+            li = QListWidgetItem(("🔗  " if it["kind"] == "link" else "🎞  ") + it.get("title", it["key"]))
+            li.setData(Qt.UserRole, it)
+            li.setToolTip(it["key"])
+            li.setSizeHint(QSize(0, 34))
+            self.list.addItem(li)
+        self.list.itemDoubleClicked.connect(lambda _i: self._play())
+        lay.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        for label, fn in ((tr("Play"), self._play), (tr("Save this link"), self._save),
+                          (tr("Remove"), self._remove), (tr("Clear the list"), self._clear)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        b = QPushButton(tr("Close"))
+        b.clicked.connect(self.accept)
+        row.addWidget(b)
+        lay.addLayout(row)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def _cur(self):
+        li = self.list.currentItem()
+        return li.data(Qt.UserRole) if li is not None else None
+
+    def _play(self):
+        it = self._cur()
+        if it and self.play:
+            self.accept()
+            self.play(it)
+
+    def _save(self):
+        it = self._cur()
+        if it and it["kind"] == "link" and not any(x["url"] == it["key"] for x in saved_links()):
+            remember_link(it["key"], it.get("title"))
+
+    def _remove(self):
+        it = self._cur()
+        if it:
+            forget_played(it["key"])
+            self.list.takeItem(self.list.currentRow())
+
+    def _clear(self):
+        if self.list.count() and QMessageBox.question(self, tr("Recently played"),
+                                                      tr("Remove everything from the list?")) == QMessageBox.Yes:
+            forget_played()
+            self.list.clear()
+
+
 def _float_pins() -> list:
     """Floats that reopen when Windows starts: [{"id", "src", "link", "x", "y", "w", "on_top"}]."""
     try:
@@ -3216,6 +3310,8 @@ class FloatWindow(QWidget):
             self._pending_timer.start()
         elif cat in ("video", "audio") and self._start_player(cat):
             self.kind = cat
+            if path and not link:
+                remember_played("file", str(path), Path(path).name)
             if cat == "video":
                 self.aspect = 16 / 9
             else:
@@ -3243,6 +3339,18 @@ class FloatWindow(QWidget):
         self._pin_changed()
         self.setToolTip(f"{link['page'] if link else path}\n" + tr("Drag to move · drag ⠿ to drop the file · double-click to open · scroll to resize"))
         self.update()
+
+    def _play_recent(self, it):
+        if it["kind"] == "link":
+            if _APP is not None:
+                _APP.play_link(target=self, url=it["key"])
+        elif os.path.isfile(it["key"]):
+            self._play_now = True
+            self._load(it["key"])
+            self._fade_to(1.0)
+            self.come_forward()
+        else:
+            forget_played(it["key"])                     # the file was moved or deleted
 
     def display_name(self):
         if self.link:
@@ -4449,13 +4557,18 @@ class FloatWindow(QWidget):
                 a.setChecked(q == cur)
                 a.triggered.connect(lambda _=False, q=q: self._set_quality(q))
         if _APP is not None:
-            m.addAction(tr("Play copied link"), lambda: _APP.play_link(target=self))
+            m.addAction(tr("Paste link"), lambda: _APP.play_link(target=self))
             saved = saved_links()
+            cur_key = self.link and (self.link.get("saved") or self.link.get("page"))
+            is_saved = bool(cur_key) and any(x["url"] == cur_key for x in saved)
+            if cur_key and not is_saved:
+                m.addAction(tr("Save this link"), lambda _=False, k=cur_key: (
+                    remember_link(k, self.link.get("title") if self.link else None), self.update()))
             sm = m.addMenu(tr("Saved links"))
             if not saved:
-                a = sm.addAction(tr("Links you play in Float show up here"))
+                a = sm.addAction(tr("Links you save show up here"))
                 a.setEnabled(False)
-            for it in saved:
+            for it in saved[:5]:                            # the last five; all of them in Manage saved links
                 title = link_name(it)
                 title = title if len(title) <= 60 else title[:57] + "…"
                 a = sm.addAction(title, lambda _=False, u=it["url"]: _APP.play_link(target=self, url=u))
@@ -4470,6 +4583,22 @@ class FloatWindow(QWidget):
                              lambda: SavedLinksDialog(lambda u: _APP.play_link(target=self, url=u)).exec())
                 sm.addAction(tr("Clear the list"), lambda: settings().setValue("float_links", "[]"))
             sm.setToolTipsVisible(True)
+            rm = m.addMenu(tr("Recently played"))
+            recent = recent_played()
+            if not recent:
+                a = rm.addAction(tr("Links and files you play in Float show up here"))
+                a.setEnabled(False)
+            for it in recent[:10]:
+                t = it.get("title") or it["key"]
+                t = t if len(t) <= 60 else t[:57] + "…"
+                a = rm.addAction(("🔗  " if it["kind"] == "link" else "🎞  ") + t,
+                                 lambda _=False, it=it: self._play_recent(it))
+                a.setToolTip(it["key"])
+            if recent:
+                rm.addSeparator()
+                rm.addAction(tr("Manage recently played…"), lambda: RecentPlayedDialog(self._play_recent).exec())
+                rm.addAction(tr("Clear the list"), lambda: forget_played())
+            rm.setToolTipsVisible(True)
         m.addSeparator()
         top = m.addAction(tr("Always on top"))
         top.setCheckable(True)
@@ -7169,11 +7298,11 @@ class SettingsDialog(QDialog):
         b.clicked.connect(lambda: self.app.show_tour(parent=self))
         row.addWidget(b)
         v.addLayout(row)
+        self.crash_reports = QCheckBox(tr("When something goes wrong, offer to send a crash report (you see it first)"))
+        self.crash_reports.setChecked(st["crash_reports"])
+        v.addWidget(self.crash_reports)
         row = QHBoxLayout()
-        lbl = QLabel(tr("The log lists what DragWheel did, to help find a problem."))
-        lbl.setObjectName("dim")
-        lbl.setWordWrap(True)
-        row.addWidget(lbl, 1)
+        row.addStretch(1)
         b = QPushButton(tr("Open the log"))
         b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(winsys.log_path()))))
         row.addWidget(b)
@@ -7181,9 +7310,6 @@ class SettingsDialog(QDialog):
         b.clicked.connect(lambda: winsys.reveal([str(winsys.log_path())]))
         row.addWidget(b)
         v.addLayout(row)
-        self.crash_reports = QCheckBox(tr("When something goes wrong, offer to send a crash report (you see it first)"))
-        self.crash_reports.setChecked(st["crash_reports"])
-        v.addWidget(self.crash_reports)
         lay.addWidget(g)
         lay.addStretch(1)
         return page
@@ -8782,7 +8908,7 @@ class DragWheelApp(QObject):
         if direct or engine.model_ready("yt-dlp"):
             go()
         else:
-            self._ensure_model("yt-dlp", tr("Play copied link"), go)
+            self._ensure_model("yt-dlp", tr("Paste link"), go)
 
     def _resolve_and_play(self, url, target, pin=None, quiet=False, quality=None, show_card=True, restore=None, new=False):
         job = LinkResolve(url, quality)
@@ -8802,10 +8928,10 @@ class DragWheelApp(QObject):
                 saved_urls = [x["url"] for x in saved_links()]
                 key = url if url in saved_urls else page
                 info["saved"] = key
-                if not pin and not quiet:
-                    remember_link(key, info.get("title"))        # newest first
-                elif key not in saved_urls:
-                    remember_link(key, info.get("title"))        # reopened or refreshed floats are kept too
+                if key in saved_urls:
+                    refresh_link_title(key, info.get("title"))   # saved links keep their place and name
+                if not quiet:
+                    remember_played("link", key, info.get("title"))   # Recently played (saving is up to you)
             if err and pin is not None and pin.get("_tries", 0) < 4:     # at sign-in the network may not be up yet
                 pin["_tries"] = pin.get("_tries", 0) + 1
                 QTimer.singleShot(15000, lambda: self._resolve_and_play(url, None, pin=pin))
