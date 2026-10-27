@@ -67,6 +67,15 @@ def mode_keys() -> dict[str, str]:
     return {m: s.value(f"keys/{m}", DEFAULT_KEYS[m]) for m in MODES}
 
 
+def peek_key() -> str:
+    """The key that shows Quick preview while dragging (Space unless you chose another, or turned it off)."""
+    s = settings()
+    v = s.value("keys/peek", None)
+    if v is None:
+        v = "Space" if s.value("peek", "true") == "true" else "None"
+    return v
+
+
 def key_label(spec: str) -> str:
     """'Ctrl+Q' as shown to you (each part translated)."""
     return " + ".join(tr(p) for p in (spec or "None").split("+") if p) or tr("None")
@@ -4633,26 +4642,129 @@ class FloatWindow(QWidget):
 # ============================================================================
 # Settings: the pages down the left side and which sections each one shows (by their English names)
 SETTINGS_PAGES = [
-    ("⚙", "General", "Language, look, and how DragWheel starts with Windows",
+    ("general", "General", "Language, look, and how DragWheel starts with Windows",
      ["Appearance", "Startup and Explorer", "Windows right-click menu"]),
-    ("◎", "Wheel", "The keys and gestures that open the wheel while you drag a file",
+    ("wheel", "Wheel", "The keys and gestures that open the wheel while you drag a file",
      ["Wheel keys — tap while dragging a file", "While dragging a file"]),
-    ("♪", "Sounds & notifications", "What you see and hear when a job finishes",
+    ("sounds", "Sounds & notifications", "What you see and hear when a job finishes",
      ["When a job finishes"]),
-    ("▤", "Files & jobs", "Where results go, and how several jobs run",
+    ("files", "Files & jobs", "Where results go, and how several jobs run",
      ["Output", "While DragWheel is working", "Watch folders"]),
-    ("▶", "Float", "The mini player for pictures, videos, music and links",
+    ("float", "Float", "The mini player for pictures, videos, music and links",
      ["Float"]),
-    ("✎", "Customize", "Choose the slices, and add presets, chains and your own commands",
+    ("customize", "Customize", "Choose the slices, and add presets, chains and your own commands",
      ["Wheel slices", "Presets and chains", "Your own slices"]),
-    ("⚑", "Advanced", "Command line, moving to another PC, help and crash reports",
+    ("advanced", "Advanced", "Command line, moving to another PC, help and crash reports",
      ["Command line", "Move your setup to another PC", "Help"]),
-    ("ⓘ", "About", "", None),
+    ("about", "About", "", None),
 ]
 
+def nav_icon(kind: str) -> "QIcon":
+    """Simple modern line icons for the Settings pages (drawn, so they're sharp at any size and follow the theme)."""
+    import math
+    from PySide6.QtGui import QIcon, QPainterPath
+
+    def draw(color, accent):
+        S = 48                                         # drawn at 2x, shown at 24 px
+        pm = QPixmap(S, S)
+        pm.setDevicePixelRatio(2.0)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(color, 1.9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        c = QPointF(12, 12)
+        if kind == "general":                          # gear
+            path = QPainterPath()
+            teeth, r1, r2 = 8, 9.2, 7.0
+            for i in range(teeth * 2):
+                a0 = (i / (teeth * 2)) * 2 * math.pi
+                a1 = ((i + 1) / (teeth * 2)) * 2 * math.pi
+                r = r1 if i % 2 == 0 else r2
+                pt0 = QPointF(12 + r * math.cos(a0 + 0.08), 12 + r * math.sin(a0 + 0.08))
+                pt1 = QPointF(12 + r * math.cos(a1 - 0.08), 12 + r * math.sin(a1 - 0.08))
+                if i == 0:
+                    path.moveTo(pt0)
+                else:
+                    path.lineTo(pt0)
+                path.lineTo(pt1)
+            path.closeSubpath()
+            p.drawPath(path)
+            p.drawEllipse(c, 3.0, 3.0)
+        elif kind == "wheel":                          # the radial wheel
+            p.drawEllipse(c, 9.0, 9.0)
+            p.drawEllipse(c, 3.6, 3.6)
+            for i in range(5):
+                a = -math.pi / 2 + i * 2 * math.pi / 5
+                p.drawLine(QPointF(12 + 3.6 * math.cos(a), 12 + 3.6 * math.sin(a)),
+                           QPointF(12 + 9.0 * math.cos(a), 12 + 9.0 * math.sin(a)))
+            p.setPen(Qt.NoPen)
+            p.setBrush(accent)
+            p.drawEllipse(c, 1.6, 1.6)
+        elif kind == "sounds":                         # bell
+            path = QPainterPath()
+            path.moveTo(5, 17)
+            path.lineTo(19, 17)
+            path.cubicTo(17, 15, 17.5, 13, 17.5, 10.5)
+            path.cubicTo(17.5, 7, 15, 4.5, 12, 4.5)
+            path.cubicTo(9, 4.5, 6.5, 7, 6.5, 10.5)
+            path.cubicTo(6.5, 13, 7, 15, 5, 17)
+            p.drawPath(path)
+            p.drawArc(QRectF(9.5, 16.5, 5, 4), 180 * 16, 180 * 16)
+        elif kind == "files":                          # folder
+            path = QPainterPath()
+            path.moveTo(3.5, 7)
+            path.lineTo(3.5, 18)
+            path.quadTo(3.5, 19.5, 5, 19.5)
+            path.lineTo(19, 19.5)
+            path.quadTo(20.5, 19.5, 20.5, 18)
+            path.lineTo(20.5, 9.5)
+            path.quadTo(20.5, 8, 19, 8)
+            path.lineTo(12, 8)
+            path.lineTo(10, 5.5)
+            path.lineTo(5, 5.5)
+            path.quadTo(3.5, 5.5, 3.5, 7)
+            p.drawPath(path)
+        elif kind == "float":                          # a little screen with a play sign
+            p.drawRoundedRect(QRectF(3, 5, 18, 14), 2.5, 2.5)
+            path = QPainterPath()
+            path.moveTo(10, 9)
+            path.lineTo(15.5, 12)
+            path.lineTo(10, 15)
+            path.closeSubpath()
+            p.setBrush(accent)
+            p.setPen(Qt.NoPen)
+            p.drawPath(path)
+        elif kind == "customize":                      # sliders
+            for y, kx in ((6.5, 15), (12, 8), (17.5, 13)):
+                p.drawLine(QPointF(4, y), QPointF(20, y))
+                p.setBrush(accent)
+                p.drawEllipse(QPointF(kx, y), 2.4, 2.4)
+                p.setBrush(Qt.NoBrush)
+        elif kind == "advanced":                       # terminal
+            p.drawRoundedRect(QRectF(3, 4.5, 18, 15), 2.5, 2.5)
+            p.drawPolyline([QPointF(7, 9.5), QPointF(10, 12), QPointF(7, 14.5)])
+            p.drawLine(QPointF(12, 15), QPointF(16.5, 15))
+        elif kind == "about":                          # info
+            p.drawEllipse(c, 9.0, 9.0)
+            p.drawLine(QPointF(12, 11), QPointF(12, 16.5))
+            p.setPen(Qt.NoPen)
+            p.setBrush(color)
+            p.drawEllipse(QPointF(12, 7.8), 1.3, 1.3)
+        p.end()
+        return pm
+
+    icon = QIcon()
+    icon.addPixmap(draw(C("dim"), C("dim")), QIcon.Normal)
+    icon.addPixmap(draw(C("text"), ACCENT), QIcon.Selected)
+    icon.addPixmap(draw(C("text"), ACCENT), QIcon.Active)
+    return icon
+
+
 SETTINGS_CSS = """
-QListWidget#nav{background:transparent;border:none;padding:0;outline:0}
-QListWidget#nav::item{color:$dim;padding:10px 12px;margin:1px 0;border-radius:8px;font:600 10pt 'Segoe UI'}
+QListWidget#nav{background:transparent;border:none;padding:0;outline:0;font:700 10.5pt 'Segoe UI'}
+QListWidget#nav::item{color:$dim;padding:11px 12px;margin:2px 0;border-radius:8px;font:700 10.5pt 'Segoe UI'}
 QListWidget#nav::item:hover{background:$surface;color:$text}
 QListWidget#nav::item:selected{background:$surface;color:$text;border-left:3px solid $accent}
 QLabel#pagetitle{color:$text;font:600 17pt 'Segoe UI';padding:2px 0 0 2px}
@@ -4678,7 +4790,9 @@ QScrollBar:vertical{background:transparent;width:10px;margin:2px} QScrollBar::ha
 QScrollBar::handle:vertical:hover{background:$hover} QScrollBar::add-line,QScrollBar::sub-line{height:0;width:0} QScrollBar::add-page,QScrollBar::sub-page{background:transparent}
 QSlider::groove:horizontal{height:4px;background:$border;border-radius:2px} QSlider::sub-page:horizontal{background:$accent;border-radius:2px}
 QSlider::handle:horizontal{background:$text;width:14px;height:14px;margin:-5px 0;border-radius:7px}
-QListWidget::item{padding:3px 4px} QListWidget::item:selected{background:$accent;color:$on_accent;border-radius:4px}
+QListWidget{outline:0} QListWidget::item{padding:3px 4px;border:none} QListWidget::item:focus{border:none;outline:none}
+QListWidget::item:selected{background:$accent;color:$on_accent;border-radius:4px}
+QListWidget QLineEdit{background:$surface;color:$text;border:1px solid $accent;border-radius:4px;padding:2px 6px}
 QPushButton{background:$button;color:$text;border:none;border-radius:6px;padding:6px 16px;font:600 9pt 'Segoe UI'}
 QPushButton:default{background:$accent;color:$on_accent} QPushButton:hover{background:$hover} QPushButton:default:hover{background:$accent2}
 QPushButton:pressed{background:$border} QPushButton:default:pressed{background:$accent} QPushButton:focus{outline:none}
@@ -6957,7 +7071,6 @@ class SettingsDialog(QDialog):
             "crash_reports": self.crash_reports.isChecked(),
             "job_mode": self.job_mode.currentData(),
             "link_stops": self.link_stops.isChecked(),
-            "peek": self.peek.isChecked(),
             "finish_anim": self.finish_anim.isChecked(),
             "finish_sound": self.finish_sound.isChecked(),
             "full_menu": self.full_menu.isChecked() if self.full_menu is not None else False,
@@ -6967,7 +7080,7 @@ class SettingsDialog(QDialog):
     def _initial(self) -> dict:
         s = settings()
         return {
-            "keys": mode_keys(),
+            "keys": {**mode_keys(), "peek": peek_key()},
             "detect": int(s.value("detect_any", 0)),
             "scroll": s.value("scroll", "true") == "true",
             "out": s.value("output_dir", ""),
@@ -7093,7 +7206,12 @@ class SettingsDialog(QDialog):
         body.setSpacing(14)
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
-        self.nav.setFixedWidth(196)
+        self.nav.setFixedWidth(236)
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        from PySide6.QtCore import QSize as _QS
+        self.nav.setIconSize(_QS(24, 24))
+        self.nav.setFont(QFont(i18n.ui_font(), 10, QFont.Bold))
         self.nav.setFocusPolicy(Qt.NoFocus)
         self.stack = QStackedWidget()
         for icon, title, sub, keys in SETTINGS_PAGES:
@@ -7118,7 +7236,7 @@ class SettingsDialog(QDialog):
                     if g is not None:
                         lay.addWidget(g)
                 lay.addStretch(1)
-            it = QListWidgetItem(f"{icon}   {tr(title)}")
+            it = QListWidgetItem(nav_icon(icon), "  " + tr(title))
             self.nav.addItem(it)
             self.stack.addWidget(scroll(page))
         for k in self._groups:                        # (Updates stays on the About page)
@@ -7143,7 +7261,7 @@ class SettingsDialog(QDialog):
         self.adjustSize()
         scr = (self.screen() or QGuiApplication.primaryScreen()).availableGeometry()
         widest = max(self.stack.widget(i).widget().sizeHint().width() for i in range(self.stack.count()))
-        self.resize(min(scr.width() - 40, max(860, widest + 196 + 70)), min(scr.height() - 80, 720))
+        self.resize(min(scr.width() - 40, max(900, widest + 236 + 70)), min(scr.height() - 80, 720))
 
     def _group(self, key):
         """A section card; its English name says which page of Settings it goes on (SETTINGS_PAGES)."""
@@ -7180,15 +7298,15 @@ class SettingsDialog(QDialog):
         g1 = self._group("Wheel keys — tap while dragging a file")
         f1 = QFormLayout(g1)
         self.key_boxes = {}
-        for m in MODES:
-            cap = KeyCapture(st["keys"][m])
+        for m in MODES + ["peek"]:
+            cap = KeyCapture(st["keys"].get(m, "Space" if m == "peek" else "None"))
             none = QPushButton(tr("None"))
             none.setToolTip(tr("No key for this wheel"))
             none.clicked.connect(lambda _=False, c=cap: c.set_spec("None"))
             row = QHBoxLayout()
             row.addWidget(cap, 1)
             row.addWidget(none)
-            f1.addRow(tr(MODE_LABEL[m]), row)
+            f1.addRow(tr(MODE_LABEL[m]) if m != "peek" else tr("File preview"), row)
             self.key_boxes[m] = cap
         hint = QLabel(tr("Click a key box, then press any key or combination, e.g. Shift, Ctrl+Q or F8. "
                          "The mouse's side buttons work too."))
@@ -7312,9 +7430,6 @@ class SettingsDialog(QDialog):
         self.shake = QCheckBox(tr("Shake the mouse to open the wheel (instead of tapping a key)"))
         self.shake.setChecked(st["shake"])
         v.addWidget(self.shake)
-        self.peek = QCheckBox(tr("Tap Space to peek at the file"))
-        self.peek.setChecked(st["peek"])
-        v.addWidget(self.peek)
         lay.addWidget(g)
 
         g = self._group("When a job finishes")
@@ -7711,10 +7826,10 @@ class SettingsDialog(QDialog):
         keys = {m: cb.spec for m, cb in self.key_boxes.items()}
         used = [k for k in keys.values() if k != "None"]
         if len(set(used)) < len(used):
-            QMessageBox.warning(self, APP, tr("Each wheel needs a different key."))
+            QMessageBox.warning(self, APP, tr("Each wheel and File preview need a different key."))
             return
         if keys["convert"] == "None" and not self.shake.isChecked() and not self.scroll.isChecked() \
-                and all(k == "None" for k in keys.values()):
+                and all(keys[m] == "None" for m in MODES):
             QMessageBox.warning(self, APP, tr("With no wheel keys, turn on Shake (Everyday tab) or scrolling, "
                                               "or the wheel can only open from the right-click menu."))
         s = settings()
@@ -7735,7 +7850,8 @@ class SettingsDialog(QDialog):
         s.setValue("anim_speed", self.anim_speed.value())
         s.setValue("job_mode", self.job_mode.currentData())
         s.setValue("tick_volume", self.tick_volume.value())
-        for key, box in (("shake", self.shake), ("peek", self.peek), ("finish_anim", self.finish_anim),
+        s.setValue("peek", "false" if keys.get("peek", "None") == "None" else "true")
+        for key, box in (("shake", self.shake), ("finish_anim", self.finish_anim),
                          ("finish_sound", self.finish_sound), ("tour_at_start", self.tour_start),
                          ("cursor_busy", self.cursor_busy), ("float_link_stops", self.link_stops),
                          ("tick_sound", self.tick_sound), ("crash_reports", self.crash_reports)):
@@ -8158,7 +8274,7 @@ class PeekWindow(QWidget):
                    fm.elidedText(path.name, Qt.ElideMiddle, self.width() - 28))
         p.setPen(C("dim"))
         p.setFont(QFont("Segoe UI", 9))
-        info = " · ".join(x for x in (_human(path), self.extra, tr("Space to close")) if x)
+        info = " · ".join(x for x in (_human(path), self.extra, tr("{key} to close", key=key_label(peek_key()))) if x)
         p.drawText(QRectF(14, self.height() - 36, self.width() - 28, 20), Qt.AlignLeft | Qt.AlignVCenter, info)
         p.end()
 
@@ -8399,7 +8515,8 @@ class DragWatcher(QObject):
         self.any_drag = int(s.value("detect_any", 0)) == 1
         self.ctrl_float = s.value("float_ctrl_open", "true") == "true"
         self.shake_enabled = s.value("shake", "true") == "true"
-        self.peek_enabled = s.value("peek", "true") == "true"
+        self.peek_vks = winsys.combo_vks(peek_key())
+        self.peek_enabled = bool(self.peek_vks)
 
     # called on the hook thread — keep it tiny
     def _drag_qualifies(self):
@@ -8453,7 +8570,9 @@ class DragWatcher(QObject):
                 if esc and not self.esc_prev:
                     self.cancelled.emit()
                 self.esc_prev = esc
-                space = winsys.key_down(winsys.VK_SPACE) and not winsys.key_down(0x11) and not winsys.key_down(0x12)
+                pv = getattr(self, "peek_vks", [winsys.VK_SPACE])
+                space = bool(pv) and all(winsys.key_down(v) for v in pv) and (
+                    len(pv) > 1 or pv[0] in (0x10, 0x11, 0x12) or not (winsys.key_down(0x11) or winsys.key_down(0x12)))
                 if space and not self.space_prev and self.peek_enabled and winsys.file_drag_active():
                     self.peek.emit()
                 self.space_prev = space
