@@ -3419,6 +3419,15 @@ class FloatWindow(QWidget):
         self.setToolTip(f"{link['page'] if link else path}\n" + tr("Drag to move · drag ⠿ to drop the file · double-click to open · scroll to resize"))
         self.update()
 
+    def set_rate(self, rate):
+        """Play faster or slower (the sound keeps its pitch)."""
+        if self.player is not None:
+            self.player.setPlaybackRate(rate)
+        if getattr(self, "companion", None) is not None:
+            self.companion.setPlaybackRate(rate)
+            if self.player is not None:
+                self.companion.setPosition(self.player.position())
+
     def _play_recent(self, it):
         if it["kind"] == "link":
             if _APP is not None:
@@ -4250,7 +4259,13 @@ class FloatWindow(QWidget):
         clip = QPainterPath()
         clip.addRoundedRect(r, self.RADIUS, self.RADIUS)
         p.setClipPath(clip)
-        p.fillRect(r, QColor(0, 0, 0) if self.kind == "video" else C("panel"))
+        bare = self.kind == "other" and not self.link and settings().value("float_icon_only", "true") == "true"
+        if bare:                                            # just the icon; a light panel only while you point at it
+            bg = QColor(C("panel"))
+            bg.setAlphaF(0.85 * self.ctrl)
+            p.fillRect(r, bg)
+        else:
+            p.fillRect(r, QColor(0, 0, 0) if self.kind == "video" else C("panel"))
         media = self.kind in ("image", "video") or self.art
         if self.kind == "image" or self.art:
             if self._scaled is None or self._scaled.size() != self.size():
@@ -4618,6 +4633,13 @@ class FloatWindow(QWidget):
                 a.setCheckable(True)
                 a.setChecked(bool(self.repeat == key or (self.link and key == "one" and self.repeat == "all")))
                 a.triggered.connect(lambda _=False, k=key: self.set_repeat(k))
+            sp = m.addMenu(tr("Speed"))
+            cur = self.player.playbackRate()
+            for rate in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
+                a = sp.addAction(f"{rate:g}×" + ("  (" + tr("Normal") + ")" if rate == 1.0 else ""))
+                a.setCheckable(True)
+                a.setChecked(abs(cur - rate) < 0.01)
+                a.triggered.connect(lambda _=False, r=rate: self.set_rate(r))
         if self.player:
             m.addSeparator()
         m.addAction(tr("Open"), self._open_original)
@@ -7196,6 +7218,7 @@ class SettingsDialog(QDialog):
             "on_top": self.on_top.isChecked(),
             "ctrl_open": self.ctrl_open.isChecked(),
             "media_osd": self.media_osd.isChecked(),
+            "icon_only": self.icon_only.isChecked(),
             "anim": self.anim.currentData(),
             "shake_opens": self.shake_opens.currentData(),
             "scroll_opens": self.scroll_opens.currentData(),
@@ -7230,6 +7253,7 @@ class SettingsDialog(QDialog):
             "on_top": s.value("float_on_top", "true") == "true",
             "ctrl_open": s.value("float_ctrl_open", "true") == "true",
             "media_osd": s.value("media_osd", "true") == "true",
+            "icon_only": s.value("float_icon_only", "true") == "true",
             "anim": wheel_anim(),
             "shake_opens": s.value("shake_opens", "convert"),
             "scroll_opens": s.value("scroll_opens", "convert"),
@@ -7554,6 +7578,9 @@ class SettingsDialog(QDialog):
         self.link_stops = QCheckBox(tr("When a float plays a new link, stop what it was playing until the link is ready"))
         self.link_stops.setChecked(st["link_stops"])
         vf.addWidget(self.link_stops)
+        self.icon_only = QCheckBox(tr("Show only the icon for other files (folders, programs…), without a background"))
+        self.icon_only.setChecked(st["icon_only"])
+        vf.addWidget(self.icon_only)
         self.media_osd = QCheckBox(tr("Show a big sign on screen (play, pause, next, volume…) when the keyboard's media keys control a float"))
         self.media_osd.setChecked(st["media_osd"])
         vf.addWidget(self.media_osd)
@@ -8003,6 +8030,9 @@ class SettingsDialog(QDialog):
         s.setValue("float_on_top", "true" if self.on_top.isChecked() else "false")
         s.setValue("float_ctrl_open", "true" if self.ctrl_open.isChecked() else "false")
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
+        s.setValue("float_icon_only", "true" if self.icon_only.isChecked() else "false")
+        for w in getattr(self.app, "floats", []):
+            w.update()
         s.setValue("wheel_anim", self.anim.currentData())
         s.setValue("shake_opens", self.shake_opens.currentData())
         s.setValue("scroll_opens", self.scroll_opens.currentData())
@@ -8028,7 +8058,7 @@ class SettingsDialog(QDialog):
         s.setValue("theme", self.theme_box.currentData())
         try:
             winsys.set_startup(self.startup.isChecked())
-            winsys.set_context_menu(self.menu.isChecked(), paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"),
+            winsys.set_context_menu(self.menu.isChecked(), paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
                                     float_label=tr("Open Float"))
         except Exception as e:
             QMessageBox.warning(self, APP, tr("Couldn't update Windows integration:") + f"\n{e}")
@@ -8895,7 +8925,7 @@ class DragWheelApp(QObject):
         menu = QMenu()
         self._first_action = menu.addAction(tr("Convert files…"), self.pick_files)
         menu.addAction(tr("Save image from clipboard"), self.save_clipboard_image)
-        menu.addAction(tr("Play copied link in Float"), self.play_link)
+        menu.addAction(tr("Paste link to Float"), self.play_link)
         recent = menu.addMenu(tr("Recent results"))
         recent.aboutToShow.connect(lambda m=recent: self._fill_recent(m))
         self._qr_menu = menu.addMenu(tr("Send to phone — show QR code"))
@@ -9203,7 +9233,7 @@ class DragWheelApp(QObject):
         names = [k for k in s.childKeys() if s.value(k) == "1"]
         s.endGroup()
         labels = {"isnet": tr("Remove background"), "whisper-small": tr("Transcribe…").rstrip("…"),
-                  "yt-dlp": tr("Play copied link in Float")}
+                  "yt-dlp": tr("Paste link to Float")}
         todo = [n for n in names if n in engine.MODELS]
 
         def nxt():
@@ -10229,7 +10259,7 @@ def main():
         winsys.log(f"cli command: {e}")
     try:
         if winsys.context_menu_enabled():
-            winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"),
+            winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
                                     float_label=tr("Open Float"))
     except Exception as e:
         winsys.log(f"context menu refresh failed: {e}")
@@ -10285,7 +10315,7 @@ def main():
         settings().setValue("first_run_done", "true")
         if settings().value("installer", "") != "1":   # the installer already applied the user's choice
             try:
-                winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Play copied link in Float"),
+                winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
                                     float_label=tr("Open Float"))
             except Exception:
                 pass

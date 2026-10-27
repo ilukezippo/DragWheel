@@ -24,7 +24,9 @@
 - **Open the log** and **Show the log folder** at the bottom of Settings → Advanced → Help
 - **Saved links are yours to choose:** links are saved only when you add them (*Save this link* on a float, or *Add…* in Manage saved links); the menu shows your last five, all of them in *Manage saved links…*, where you can rename, reorder, add, remove or clear them
 - **Recently played:** a new list on the float's menu with the links and files you played, to play again, save, or remove
-- *Play copied link* is now called *Paste link*
+- *Play copied link* is now called *Paste link* (and *Paste link to Float* on the desktop's right-click menu)
+- **Playback speed** for videos and music in Float (right-click → Speed: 0.5× to 2×)
+- Folders, programs and other files in Float show just their icon, without the dark background (can be turned off in Settings → Float)
 - An empty float: *Open* and double-click choose a file (the window now comes to the front); *Show in Explorer* and *Copy path* only show when something is open
 - Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
 - **JPEG** slice next to JPG for pictures (same format, .jpeg name); Settings → Wheel slices lists every format of a type
