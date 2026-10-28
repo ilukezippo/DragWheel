@@ -157,7 +157,7 @@ jobs:
             echo
             echo "**Install:** download \`DragWheel-Setup-$VERSION.exe\` below and run it (asks for admin, installs to \`C:\\Program Files\\DragWheel\`)."
             if [ "$SIGNED" = "true" ]; then echo "The installer and app are code-signed."; else
-              echo "Windows SmartScreen may warn because the installer is not code-signed yet — choose *More info → Run anyway*."; fi
+              echo "The installer is not code-signed yet, so Windows may warn: if Edge holds the download, choose *… → Keep → Show more → Keep anyway*; if SmartScreen warns when you run it, choose *More info → Run anyway*."; fi
             echo
             echo "**Portable:** \`DragWheel-portable.zip\` — unzip anywhere and run \`DragWheel.exe\`."
             echo

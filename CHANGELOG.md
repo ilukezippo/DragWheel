@@ -2,62 +2,53 @@
 
 ## 1.2.1 — October 2026
 
-- **No more freezing on big jobs:** Unblock, Move to… and Copy to… work in the background with a progress card and Cancel, so the wheel and floats keep responding (Unblock also handles folders of more than 50,000 files)
-- A video link that expires while it plays in Float is renewed and carries on from the same spot, instead of retrying the dead link
-- Setup: the "already installed" question and the welcome page now use the language you pick, and DragWheel starts in that language; changing the language in Settings makes it Setup's first choice next time
-- Mouse hover: holding Shift or Ctrl in a wheel key no longer selects a range of files or opens a second wheel; *Hold to show* closes File preview even after a quick tap
-- **Key + click for a wheel key:** hold a key and click while setting a wheel key, e.g. Ctrl + right click; the click goes to DragWheel instead of opening Explorer's menu (right clicks work while dragging a file; left clicks with Mouse hover and File selection)
-- **File preview opens** (Settings → Wheel): *Press to open, press again to close* or *Hold to show, let go to close*
-- **Custom Slices** (was Your own slices, now under Wheel slices): add a slice that opens files in any app — browse for the app, pick which files it shows for, no commands to type (the slices file is still there under *Advanced…*)
-- **Auto Convert** window has a **Save result as** choice: *Copy* (into a Converted folder, as before) or *Overwrite original* (the new file takes the original's place; the original goes to the Recycle Bin)
-- **Three more sound styles:** Velvet, Crystal and Pulse
-- **The installer speaks every language DragWheel does:** French, Spanish, German, Italian, Portuguese, Turkish, Russian, Persian, Urdu, Hindi, Japanese and Chinese join English and Arabic, and the app starts in the language you pick there
-- **Any key or combination for each wheel:** click a wheel's key box and press what you like (Shift, Ctrl+Q, F8, the mouse's side buttons…); a key that is also part of a longer combination counts when you let it go; File preview (Space) has its own key box too
-- **Mouse Control** on the Wheel page: Mouse Shake, Scroll Wheel and Loading Spin with on/off switches and a line about each; choose whether a shake or a scroll opens Convert, Tools, Actions or File preview
-- Clearer names in Settings: *Wheel keys*, *Jobs*, *Auto Convert* (was Watch folders), *Startup*, *Enable notification sound*, *Enable wheel sound*, and an *Animations* section; every option is now an on/off switch
-- **Trigger on** has new choices: *File drag (recommended)*, *Mouse hover* (point at a file in Explorer or on the desktop and tap the key) and *File selection* (select files and tap the key); the wheel keys and File preview follow the choice you make, and this replaces Ctrl + Alt + Space
-- A key can belong to only one wheel: giving it to another one sets the first to None
-- **Opening and closing animation** can be different (Settings → Wheel → Animations), with six new styles: Zoom, Pop, Drop, Rise, Flip and Swirl
-- **Six new themes:** Midnight, Ocean, Forest, Grape, Rose and Sand, each with its own accent colour
-- **Show in taskbar:** each float gets a taskbar button, so it's easy to get back to (Settings → Float)
-- Shorter Float options: *Play files and links instantly*, *Always on top*, *Ctrl+Enter opens a file in Float*, *Stop playing while loading*, *Remove float border*, *Enable multimedia logos on screen*
-- **Right-click menu** in Settings → General: the context menu, Send To and the Windows 11 context menu are separate switches
-- The wheel's buttons show the key under the wheel's name, so long names (like the mouse's side buttons) fit; the welcome tour fits them too
-- **New Settings layout:** clear pages down the side (General, Wheel, Sounds & notifications, Files & jobs, Float, Customize, Advanced, About) with each section on its own card, new page icons and bolder page names; Segoe UI everywhere, more room next to tick boxes, buttons no longer stay lit after you click them, and lists show one clean highlight
-- **Actions for all file types at once:** in Customize → Choose slices, the Actions wheel can be arranged once for every type of file
-- "Last checked" for updates shows the time with AM/PM
-- **MKV H.264 and MKV H.265** (smaller) instead of a single MKV slice
-- **DOC, XLS and PPT** for older Office: Word, Excel and PowerPoint files can be saved in the 97–2003 formats
-- **Float and Quick preview show documents:** PDFs, e-books, comics, Word (DOC, DOCX, RTF, ODT), Excel, PowerPoint, text, Markdown, HTML and CSV files show their first page instead of an icon
-- Quick preview follows the pointer while you drag
-- **PDF to Word that looks the same:** every line stays where it was, in the same font, size and weight, tables become real Word tables, and lines, logos and pictures stay behind the text; Arabic is written as proper right-to-left text you can edit
-- A second **PDF to Word (flowing text)** slice keeps the old way, for documents you want to rewrite freely (Microsoft Word's own PDF import when Word is installed)
-- **Animation speed** slider next to the wheel animation in Settings (opening and closing)
-- **Sound styles** for the wheel (Settings → Sounds & notifications): Classic, Soft, Glass, Bubble, Mechanical and Retro, each with its own open, close, click and choose sounds, and a Listen button
-- New subtle sounds when the wheel opens and closes (with the click sounds and their volume, shown as a percentage)
-- Changing the language or theme: Settings fades out, changes, and fades back in (no flash)
-- **Unblock** on the Actions wheel: removes Windows' "This file came from another computer" mark from downloaded files (and everything inside a folder)
-- **Drag a web page into a float:** drag the site icon from the browser's address bar (or a link or tab) onto a float to play that video there
-- **Paste a file into a float:** copy a video or song in Explorer (Ctrl+C) or "Copy as path", then press Ctrl+V on a float to play it
-- **Restore defaults** in Settings → Advanced → Settings Config (was "Move your setup to another PC"), next to Export and Import; your saved links, presets, chains and own slices are kept
-- **Open the log** and **Show the log folder** at the bottom of Settings → Advanced → Help
-- **Saved links are yours to choose:** links are saved only when you add them (*Save this link* on a float, or *Add…* in Manage saved links); the menu shows your last five, all of them in *Manage saved links…*, where you can rename, reorder, add, remove or clear them
-- **Recently played:** a new list on the float's menu with the links and files you played, to play again, save, or remove
-- *Play copied link* is now called *Paste link* (and *Paste link to Float* on the desktop's right-click menu)
-- **Playback speed** for videos and music in Float (right-click → Speed: 0.5× to 2×)
-- Folders, programs and other files in Float show just their icon and name (in bold, without the extension, sized with the icon; *Hide name* hides it) — no background, frame or highlight, even when you point at them (can be turned off in Settings → Float)
-- An empty float: *Open* and double-click choose a file (the window now comes to the front); *Show in Explorer* and *Copy path* only show when something is open
-- Fixed: pressing the wheel key again sometimes reopened the wheel instead of closing it, especially with a key set to None
-- **JPEG** slice next to JPG for pictures (same format, .jpeg name); Settings → Wheel slices lists every format of a type
-- Fixed: right-clicking many files at once (Explorer starts DragWheel once per file) now gathers all of them into one wheel, and a slice you already chose is applied to files that arrive late; Unblock also handles very long paths and read-only files
-- Fixed: choosing a saved link could play a different one (the link on the clipboard), and a renamed live link showed the video's own title again; the same fix applies to Recent results and the QR menu in the tray
-- **Smoother live streams:** live videos now come from YouTube's mobile-web player first, whose live stream keeps playing (the stream used before was refused by YouTube every ~30 seconds); other players are asked at the same time, so if YouTube starts refusing one, the float switches to another in a moment instead of reloading for 12 seconds; the stream is also fetched one request at a time after a refusal, and reconnects by itself after network hiccups
-- Fixed: the wheel couldn't be used while Settings was open
-- Fixed: resizing a float past its smallest or largest size moved it around instead of stopping
-- Fixed: moving a dragged file quickly over the wheel could freeze DragWheel for a few seconds (the click sounds now play without Qt's audio engine)
-- Fixed: links reopened after an update or at Windows start were not added to Saved links
-- Fixed: right-clicking a float playing a link could fail (Repeat menu)
-- Fixed: a crash repeating many times a second is written to the log only once
+### Wheel and keys
+- **Any key or combination for each wheel:** click a wheel's key box and press what you like (Shift, Ctrl+Q, F8, the mouse's side buttons…), or hold a key and click (e.g. Ctrl + right click — the click goes to DragWheel instead of opening Explorer's menu); a key can belong to only one wheel
+- **Trigger on:** *File drag (recommended)*, *Mouse hover* (point at a file in Explorer or on the desktop and tap the key) or *File selection* (select files and tap the key); this replaces Ctrl + Alt + Space
+- **File preview** has its own key (Space) and opens with a press or only while you hold it; it shows PDFs, e-books, comics, Word, Excel, PowerPoint, text, Markdown, HTML and CSV files, and follows the pointer while you drag
+- **Mouse Control:** Mouse Shake, Scroll Wheel and Loading Spin with on/off switches; choose whether a shake or a scroll opens Convert, Tools, Actions or File preview
+- **Animations:** separate opening and closing styles, six new ones (Zoom, Pop, Drop, Rise, Flip, Swirl) and a speed slider
+- **Sound styles:** Classic, Soft, Glass, Bubble, Mechanical, Retro, Velvet, Crystal and Pulse, with new open and close sounds, a Listen button and the volume shown as a percentage
+- The wheel's buttons show their key under the wheel's name
+
+### Converting and file tools
+- **PDF to Word that looks the same:** every line stays where it was, in the same font and size, tables become real Word tables, pictures stay in place, and Arabic is proper right-to-left text; *PDF to Word (flowing text)* keeps the old way
+- **New formats:** MKV H.264 and MKV H.265, JPEG next to JPG, and DOC, XLS and PPT for older Office
+- **Unblock** on the Actions wheel removes Windows' "This file came from another computer" mark from downloads (whole folders too, any size)
+- **Custom Slices:** open files in any app from the Actions wheel — browse for the app and pick which files it's for
+- **Auto Convert** (was Watch folders): save the result as a copy or overwrite the original
+- **Actions for every file type at once** in Customize → Choose slices
+- **No more freezing on big jobs:** Unblock, Move to… and Copy to… run in the background with progress and Cancel
+
+### Float
+- **Saved links are yours to choose:** saved only when you add them; rename, reorder, add, remove or clear them in *Manage saved links…*; the menu shows the last five
+- **Recently played:** the links and files you played, to play again, save or remove
+- **Playback speed** from 0.5× to 2×
+- **Drag a web page** (the icon in the browser's address bar, a link or a tab) onto a float to play it, or **paste** a copied video or song with Ctrl+V
+- **Show in taskbar** gives each float a taskbar button
+- Folders, programs and other files show just their icon and name, without a frame (*Hide name* hides the name)
+- **Smoother live streams** that switch YouTube player instead of stalling, and expired video links are renewed and continue from the same spot
+- *Paste link* (was *Play copied link*), also *Paste link to Float* on the desktop's right-click menu
+
+### Settings and setup
+- **New Settings layout:** pages down the side (General, Wheel, Sounds & notifications, Files & jobs, Float, Customize, Advanced, About), each section on its own card, Segoe UI everywhere and on/off switches for every option
+- **Six new themes:** Midnight, Ocean, Forest, Grape, Rose and Sand
+- **Right-click menu:** the context menu, Send To and the Windows 11 menu are separate switches
+- **Settings Config:** Export, Import and **Restore defaults** (keeps your saved links, presets, chains and slices); **Open the log** in Help
+- The wheel works while Settings is open; changing language or theme fades instead of flashing
+- **The installer speaks all 14 of DragWheel's languages,** and the app starts in the language you pick there
+- "Last checked" for updates shows AM/PM
+
+### Fixed
+- Pressing the wheel key again sometimes reopened the wheel instead of closing it
+- Right-clicking many files at once now gathers them into one wheel
+- Choosing a saved link could play a different one
+- Moving a dragged file quickly over the wheel could freeze DragWheel for a few seconds
+- Resizing a float past its smallest or largest size moved it around
+- An empty float: *Open* and double-click now choose a file
+- Links reopened after an update or at Windows start weren't added to Saved links
+- Right-clicking a float playing a link could fail
+- A crash repeating many times a second is written to the log only once
 
 ## 1.2.0 — October 2026
 

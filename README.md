@@ -148,7 +148,10 @@ Everything that changed is in the [changelog](CHANGELOG.md).
 
 DragWheel then sits in the system tray. To remove it, use **Settings → Apps** or *Uninstall DragWheel* in the Start menu.
 
-> Releases are being prepared for code signing through the SignPath Foundation (see [Code signing policy](#code-signing-policy)). Until then, Windows SmartScreen may warn you about the installer. Choose **More info → Run anyway**.
+> Releases are being prepared for code signing through the SignPath Foundation (see [Code signing policy](#code-signing-policy)). Until then, Windows may warn you about the installer:
+>
+> - **Microsoft Edge** may hold the download ("isn't commonly downloaded"): open the downloads list, point at the file, choose **… → Keep**, then **Show more → Keep anyway**.
+> - **SmartScreen** may warn when you run it: choose **More info → Run anyway**.
 
 **Requirements:** Windows 10 (1809+) or Windows 11, 64-bit.
 
