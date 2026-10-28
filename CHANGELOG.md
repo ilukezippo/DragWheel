@@ -2,6 +2,8 @@
 
 ## 1.2.1 — October 2026
 
+- **No more freezing on big jobs:** Unblock, Move to… and Copy to… work in the background with a progress card and Cancel, so the wheel and floats keep responding (Unblock also handles folders of more than 50,000 files)
+- A video link that expires while it plays in Float is renewed and carries on from the same spot, instead of retrying the dead link
 - Setup: the "already installed" question and the welcome page now use the language you pick, and DragWheel starts in that language; changing the language in Settings makes it Setup's first choice next time
 - Mouse hover: holding Shift or Ctrl in a wheel key no longer selects a range of files or opens a second wheel; *Hold to show* closes File preview even after a quick tap
 - **Key + click for a wheel key:** hold a key and click while setting a wheel key, e.g. Ctrl + right click; the click goes to DragWheel instead of opening Explorer's menu (right clicks work while dragging a file; left clicks with Mouse hover and File selection)

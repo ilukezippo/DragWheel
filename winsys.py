@@ -203,7 +203,7 @@ def bring_to_front(hwnd: int) -> None:
         log(f"bring to front: {e}")
 
 
-def unblock(paths, limit=50_000) -> tuple[int, int, int]:
+def unblock(paths, limit=2_000_000, progress=None, stop=None) -> tuple[int, int, int]:
     """Remove the "came from another computer" mark (the Zone.Identifier stream Windows adds to downloads)
     from files, and from every file inside folders. Returns (files checked, unblocked, failed)."""
     def files():
@@ -217,8 +217,10 @@ def unblock(paths, limit=50_000) -> tuple[int, int, int]:
     checked = done = failed = 0
     for f in files():
         checked += 1
-        if checked > limit:
+        if checked > limit or (stop is not None and checked % 200 == 0 and stop()):
             break
+        if progress is not None and checked % 250 == 0:
+            progress(checked)
         full = os.path.abspath(f)
         if IS_WIN and not full.startswith("\\\\?\\"):     # long paths too
             full = "\\\\?\\UNC\\" + full[2:] if full.startswith("\\\\") else "\\\\?\\" + full

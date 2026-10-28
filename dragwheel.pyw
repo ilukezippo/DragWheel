@@ -1077,15 +1077,53 @@ class Actions:
         winsys.log("renamed: " + "; ".join(f"{Path(o).name} -> {Path(n).name}" for o, n in done[:50]))
         self.app.toast.show_result(tr("Renamed {n} files", n=len(done)), [n for _, n in done])
 
+    def _background(self, title, name, work, finish, progress=None):
+        """Run `work(state)` off the main thread so the wheel and floats stay responsive; a card shows it's busy
+        (with `progress(state)` text) and has a Cancel button that sets state["stop"]. `finish(result)` runs here."""
+        state, result = {"stop": False}, {}
+        card = self.app.toast.show_busy(title, name, lambda: state.update(stop=True))
+
+        def run():
+            try:
+                result["ok"] = work(state)
+            except Exception as e:
+                result["err"] = e
+
+        def check():
+            if not result:
+                if progress is not None and card in self.app.toast.cards:
+                    text = progress(state)
+                    if text:
+                        card.body.setText(text)
+                QTimer.singleShot(200, check)
+                return
+            if card in self.app.toast.cards:
+                card.close_card()
+            if "err" in result:
+                winsys.log(f"{title}: {result['err']}")
+                self.app.toast.show_msg(title, str(result["err"]), "err", 8000)
+                return
+            finish(result["ok"])
+        threading.Thread(target=run, daemon=True).start()
+        QTimer.singleShot(200, check)
+
     def unblock(self, paths, p):
         """Remove Windows' "This file came from another computer" mark (folders: everything inside)."""
-        n, blocked, failed = winsys.unblock(paths)
-        if failed:
-            self.app.toast.show_msg(tr("Unblock"), tr("{n} files couldn't be unblocked", n=failed), "err", 6000)
-        elif blocked:
-            self.app.toast.show_msg(tr("Unblocked {n} files", n=blocked), tr("Windows won't warn about them any more."), "ok", 5000)
-        else:
-            self.app.toast.show_msg(tr("Unblock"), tr("Nothing was blocked ({n} files checked)", n=n), "info", 5000)
+        name = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
+
+        def work(st):
+            return winsys.unblock(paths, progress=lambda n: st.update(n=n), stop=lambda: st["stop"])
+
+        def finish(r):
+            n, blocked, failed = r
+            if failed:
+                self.app.toast.show_msg(tr("Unblock"), tr("{n} files couldn't be unblocked", n=failed), "err", 6000)
+            elif blocked:
+                self.app.toast.show_msg(tr("Unblocked {n} files", n=blocked), tr("Windows won't warn about them any more."), "ok", 5000)
+            else:
+                self.app.toast.show_msg(tr("Unblock"), tr("Nothing was blocked ({n} files checked)", n=n), "info", 5000)
+        self._background(tr("Unblock") + "…", name, work, finish,
+                         lambda st: tr("{n} files checked", n=f"{st['n']:,}") if st.get("n") else None)
 
     def checksum(self, paths, p):
         files = [Path(x) for x in paths if Path(x).is_file()]
@@ -1267,12 +1305,20 @@ class Actions:
         d = self._pick_dir(tr("Move to"))
         if not d:
             return
-        done = []
-        for x in paths:
-            target = engine.unique_path(Path(d) / Path(x).name)
-            shutil.move(x, target)
-            done.append(target)
-        self.app.toast.show_result(tr("Moved"), done)
+
+        def work(st):
+            done = []
+            for x in paths:
+                if st["stop"]:
+                    break
+                target = engine.unique_path(Path(d) / Path(x).name)
+                shutil.move(x, target)
+                done.append(target)
+                st["n"] = len(done)
+            return done
+        self._background(tr("Move to").rstrip("…") + "…", Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths)),
+                         work, lambda done: self.app.toast.show_result(tr("Moved"), done),
+                         lambda st: tr("{a} of {b} done", a=st.get("n", 0), b=len(paths)) if len(paths) > 1 else None)
 
     def copy_to(self, paths, p):
         import shutil
@@ -1280,12 +1326,20 @@ class Actions:
         d = self._pick_dir(tr("Copy to"))
         if not d:
             return
-        done = []
-        for x in paths:
-            target = engine.unique_path(Path(d) / Path(x).name)
-            (shutil.copytree if Path(x).is_dir() else shutil.copy2)(x, target)
-            done.append(target)
-        self.app.toast.show_result(tr("Copied"), done)
+
+        def work(st):
+            done = []
+            for x in paths:
+                if st["stop"]:
+                    break
+                target = engine.unique_path(Path(d) / Path(x).name)
+                (shutil.copytree if Path(x).is_dir() else shutil.copy2)(x, target)
+                done.append(target)
+                st["n"] = len(done)
+            return done
+        self._background(tr("Copy to").rstrip("…") + "…", Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths)),
+                         work, lambda done: self.app.toast.show_result(tr("Copied"), done),
+                         lambda st: tr("{a} of {b} done", a=st.get("n", 0), b=len(paths)) if len(paths) > 1 else None)
 
     def terminal(self, paths, p):
         x = Path(paths[0])
@@ -2665,6 +2719,8 @@ class StreamCache:
         self.have = bytearray(self.n)
         self.busy = set()
         self.fails = 0
+        self.forbidden = 0       # chunks refused in a row (403): the link has expired
+        self.expired = False
         self.focus = 0
         self.closed = False
         self.cond = threading.Condition()
@@ -2772,7 +2828,7 @@ class StreamCache:
         return None
 
     def _worker(self):
-        while not self.closed:
+        while not self.closed and not self.expired:
             with self.cond:
                 i = self._next()
                 if i is None:
@@ -2783,7 +2839,7 @@ class StreamCache:
                 self.busy.add(i)
             a = i * self.CHUNK
             b = min(self.size, a + self.CHUNK) - 1
-            ok = False
+            ok = refused = False
             for attempt in range(3):
                 try:
                     with self._request(a, b) as r:
@@ -2795,15 +2851,23 @@ class StreamCache:
                         ok = True
                         break
                 except Exception as e:
-                    if attempt == 2:
+                    refused = getattr(e, "code", None) == 403
+                    if attempt == 2 or refused:
                         winsys.log(f"stream cache: chunk {i} failed: {e}")
+                    if refused:
+                        break                              # asking again won't help
                     time.sleep(0.5 * (attempt + 1))
             with self.cond:
                 self.busy.discard(i)
                 if ok:
                     self.have[i] = 1
+                    self.forbidden = 0
                 else:
                     self.fails += 1
+                    self.forbidden = self.forbidden + 1 if refused else 0
+                    if self.forbidden >= 3 and not self.expired:
+                        self.expired = True                # the float asks the site for a fresh link
+                        winsys.log("stream cache: the link has expired")
                 self.cond.notify_all()
             if not ok:
                 time.sleep(1.0)
@@ -4002,7 +4066,28 @@ class FloatWindow(QWidget):
             winsys.log(f"stream cache not used: {e}")
             return url
         self._caches = getattr(self, "_caches", []) + [c]
+        if getattr(self, "_expiry_timer", None) is None:
+            self._expiry_timer = QTimer(self, interval=2000, timeout=self._check_expired)
+        self._expiry_timer.start()
         return c.local
+
+    def _check_expired(self):
+        """A video link stopped working (sites give links that last a few hours): get a fresh one, same place."""
+        caches = getattr(self, "_caches", [])
+        if not caches:
+            self._expiry_timer.stop()
+            return
+        if not any(c.expired for c in caches) or _APP is None or not (self.link or {}).get("page"):
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_renewed_at", 0.0) < 60:
+            return                                       # renewed a moment ago: don't loop
+        self._renewed_at = now
+        self._resume_ms = self.player.position() if self.player is not None else 0
+        winsys.log("float: link expired, getting a fresh one")
+        for c in caches:
+            c.expired = False                            # so this runs once per renewal
+        _APP._resolve_and_play(self.link["page"], self, quiet=True)
 
     def restart_live(self, info):
         """The link was renewed: keep the float as it is (size, place, volume) and carry on playing —
