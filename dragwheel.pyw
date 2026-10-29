@@ -3459,18 +3459,34 @@ class FloatWindow(QWidget):
         self._load(path, link)
         self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
         self._resume_ms = int((pin or {}).get("pos") or 0)     # where playback was before an update
+        self._placing = False
+        self._pin_play = bool((pin or {}).get("playing", True))    # a reopened link keeps playing or stays paused
         if pin is not None:
             self.pin_id = pin.get("id")
-            try:
-                w = max(self.MIN_W, int(pin.get("w", self.width())))
-                self._apply_size(w, self._height_for(w))
-                at = QPoint(int(pin["x"]), int(pin["y"]))
-                if QGuiApplication.screenAt(at + QPoint(20, 20)) is not None:
-                    self.move(at)
-            except (KeyError, TypeError, ValueError):
-                pass
+            self._place_from(pin)
         # show the controls briefly so people know they exist, then let them fade
         QTimer.singleShot(1600, self._maybe_hide_controls)
+
+    def _place_from(self, pin, tries=0):
+        """Put a reopened float back exactly where it was, at the same size. Right after signing in to Windows the
+        screens may not be ready yet: then it waits (up to 20 s) instead of saving a wrong place over the right one."""
+        try:
+            w = max(self.MIN_W, int(pin.get("w", self.width())))
+            h = int(pin.get("h") or 0)
+            at = QPoint(int(pin["x"]), int(pin["y"]))
+        except (KeyError, TypeError, ValueError):
+            self._placing = False
+            return
+        self._placing = True
+        if h and self.aspect and self.kind in ("video", "image"):
+            self.aspect = w / max(1, h)               # the shape it had (a video corrects it with its first frame)
+        self._apply_size(w, h or self._height_for(w))
+        if QGuiApplication.screenAt(at + QPoint(20, 20)) is None and tries < 20:
+            QTimer.singleShot(1000, lambda: self._place_from(pin, tries + 1))
+            return
+        if QGuiApplication.screenAt(at + QPoint(20, 20)) is not None:
+            self.move(at)
+        self._placing = False
 
     def _load(self, path, link=None):
         """Show `path` in this float (also used when another file is dropped on it).
@@ -4095,7 +4111,7 @@ class FloatWindow(QWidget):
         if self.player is None or info.get("audio") or self.companion is not None:
             keep = getattr(self, "_resume_ms", 0)
             pos = 0 if info.get("live") else (self.player.position() if self.player is not None else keep)
-            self._play_now = True
+            self._play_now = True if self.player is not None else getattr(self, "_pin_play", True)
             self._load(info["url"], info)                # picture and sound apart: set both up again
             self._resume_ms = pos
             return
@@ -4221,12 +4237,24 @@ class FloatWindow(QWidget):
             return "stop"
         return key if self._step(1 if key == "next" else -1) else None
 
+    LONG_PAUSE = 10 * 60          # seconds paused after which Play reopens the float instead
+
     def _toggle_play(self):
         if not self.player:
             return
         if self._playing():
             self.player.pause()
+            self._paused_at = time.monotonic()
         else:
+            paused = getattr(self, "_paused_at", None)
+            if (paused is not None and time.monotonic() - paused > self.LONG_PAUSE and self.kind == "video"
+                    and _APP is not None):
+                # after hours (or a night asleep) the player and the video link are stale: the sound came back
+                # but the picture and the window froze. Reopen it fresh, same place, size and point in the video.
+                winsys.log(f"float: playing again after {int((time.monotonic() - paused) / 60)} min paused — reopening")
+                self.reopen(play=True)
+                return
+            self._paused_at = None
             if self.player.duration() and self.player.position() >= self.player.duration() - 200:
                 self.player.setPosition(0)
             self.player.play()
@@ -4357,7 +4385,7 @@ class FloatWindow(QWidget):
             _save_float_pins(pins)
 
     def _pin_changed(self):
-        if getattr(self, "pin_id", None):
+        if getattr(self, "pin_id", None) and not getattr(self, "_placing", False):
             self._pin_timer.start()
 
     def state(self) -> dict:
@@ -4365,7 +4393,7 @@ class FloatWindow(QWidget):
         g = self.geometry()
         st = {"id": self.pin_id, "src": self.link["page"] if self.link else str(self.path), "link": bool(self.link),
               "title": (self.link or {}).get("title", ""),
-              "x": g.x(), "y": g.y(), "w": g.width(), "on_top": self.on_top}
+              "x": g.x(), "y": g.y(), "w": g.width(), "h": g.height(), "on_top": self.on_top}
         if self.player is not None and not self._live():
             st["pos"] = int(self.player.position())
             st["playing"] = bool(self._playing())
@@ -4387,6 +4415,21 @@ class FloatWindow(QWidget):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._pin_changed()
+
+    def reopen(self, play=None):
+        """Close this float and open it again: same size, place and media, from the same point."""
+        if _APP is None or not self._has_content():
+            return
+        st = self.state()
+        if play is not None:
+            st["playing"] = bool(play)
+        if self.link:
+            st["src"] = self.link.get("saved") or self.link.get("page")
+        winsys.log("float: reopen")
+        self._pin_timer.stop()
+        self.hide()
+        QTimer.singleShot(0, self.close)                 # stays pinned to Windows start (not closed by you)
+        QTimer.singleShot(120, lambda: _APP.open_float_state(st))
 
     def close_by_user(self):
         """Closed with ✕, Esc or the menu: it no longer reopens with Windows."""
@@ -4905,6 +4948,8 @@ class FloatWindow(QWidget):
         boot.setChecked(bool(self.pin_id))
         boot.setToolTip(tr("This float comes back at the same place, playing the same file or link"))
         boot.toggled.connect(self.set_pinned)
+        if self._has_content() and _APP is not None:
+            m.addAction(tr("Reopen"), self.reopen)
         m.addAction(tr("Close"), self.close_by_user)
         m.exec(at)
 
@@ -7521,10 +7566,37 @@ class ChainDialog(QDialog):
                 "hint": " → ".join(tr(s["label"]).replace("…", "") for s in self.steps)[:60]}
 
 
+# every option in Settings with the value it has when it was never changed — an export carries all of them,
+# so importing on another PC sets each one (not only the ones that were changed on this PC)
+SETTINGS_DEFAULTS = {
+    "language": "", "theme": "system", "check_updates": "true", "tour_at_start": "true", "crash_reports": "false",
+    "trigger_mode": "drag", "peek_hold": "false", "shake": "true", "shake_opens": "convert", "scroll": "true",
+    "scroll_opens": "convert", "cursor_busy": "true", "wheel_anim": "bloom", "anim_same": "true", "anim_speed": 100,
+    "tick_sound": "true", "tick_volume": 70, "sound_pack": "classic", "finish_sound": "true", "finish_anim": "true",
+    "media_osd": "true", "media_osd_when": "unfocused", "output_mode": "next", "output_dir": "", "job_mode": "queue",
+    "replace_no_ask": "false", "float_autoplay": "true", "float_on_top": "true", "float_ctrl_open": "true",
+    "float_link_stops": "true", "float_icon_only": "true", "float_hide_name": "false", "float_taskbar": "true",
+    "float_repeat": "off", "float_volume": 1.0, "link_quality": "1080p", "share_way": "quick", "share_minutes": 60,
+    "sign_mode": "this", "wheel_layout": "{}", "custom_slices": "[]", "watch_folders": "[]",
+}
+EXPORT_SKIP = ("float_resume", "last_update", "geometry", "installer", "first_run_done", "skip_version", "detect_any",
+               "hotkey")
+
+
 def export_settings(path):
+    """Settings Config → Export: every option in Settings (also the ones never changed), your keys, wheel slices,
+    presets, chains, Custom Slices, Auto Convert folders, saved links, and Windows' start-up and right-click menus."""
     s = settings()
-    data = {"app": APP, "version": VERSION, "settings": {k: s.value(k) for k in s.allKeys()
-                                                        if not k.startswith(("float_resume", "last_update", "geometry"))}}
+    vals = {k: s.value(k) for k in s.allKeys() if not k.startswith(EXPORT_SKIP)}
+    for k, d in SETTINGS_DEFAULTS.items():
+        vals.setdefault(k, d)
+    for m, k in mode_keys().items():
+        vals[f"keys/{m}"] = k
+    vals["keys/peek"] = peek_key()
+    vals["wheel_anim_close"] = wheel_anim_close()
+    data = {"app": APP, "version": VERSION, "settings": vals,
+            "windows": {"startup": winsys.startup_enabled(), "menu": winsys.context_menu_enabled(),
+                        "sendto": winsys.sendto_enabled(), "full_menu": winsys.full_menu_enabled()}}
     try:
         data["my_slices"] = my_slices_file().read_text(encoding="utf-8")
     except OSError:
@@ -7543,6 +7615,19 @@ def import_settings(path) -> int:
         my_slices_file().parent.mkdir(parents=True, exist_ok=True)
         my_slices_file().write_text(data["my_slices"], encoding="utf-8")
     s.sync()
+    win = data.get("windows") or {}
+    try:                                            # start with Windows and the right-click menus, as they were
+        if "startup" in win:
+            winsys.set_startup(bool(win["startup"]))
+        if "menu" in win or "sendto" in win:
+            winsys.set_context_menu(bool(win.get("menu", winsys.context_menu_enabled())),
+                                    paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
+                                    float_label=tr("Open Float"), sendto=bool(win.get("sendto", winsys.sendto_enabled())))
+        if "full_menu" in win and bool(win["full_menu"]) != winsys.full_menu_enabled():
+            winsys.set_full_menu(bool(win["full_menu"]))
+            winsys.restart_explorer()
+    except Exception as e:
+        winsys.log(f"import: Windows settings: {e}")
     return len(data["settings"])
 
 
@@ -8519,6 +8604,11 @@ class SettingsDialog(QDialog):
         self.app.apply_language()
         self.app.apply_theme()
         self.app.watcher.refresh_settings()
+        try:
+            self.app.watch.reload()                    # Auto Convert folders
+            self.app._build_tray_menu()
+        except Exception as e:
+            winsys.log(f"import: {e}")
         QDialog.reject(self)                       # close without undoing the imported language/theme
 
     def save(self):
@@ -9513,6 +9603,7 @@ class DragWheelApp(QObject):
         QTimer.singleShot(8000, self._auto_update_check)
         QTimer.singleShot(150, self.restore_pinned_floats)
         self.predownload()
+        self._prebuild_settings(6000)
 
     def restore_pinned_floats(self):
         """Reopen the floats that were open before an update, and those set to 'Open when Windows starts'."""
@@ -9523,24 +9614,30 @@ class DragWheelApp(QObject):
         settings().remove("float_resume")
         ids = {r.get("id") for r in resume if r.get("id")}
         for pin in resume + [x for x in _float_pins() if x.get("id") not in ids]:
-            src = pin.get("src")
-            if not src:
-                continue
-            if pin.get("link"):
-                if engine.model_ready("yt-dlp"):
-                    w = FloatWindow("", {"page": src, "title": pin.get("title") or src, "pending": True}, pin=pin)
-                    self.floats.append(w)
-                    w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
-                    w.show()
-                    self._resolve_and_play(src, w, pin=pin, quiet=True)
-                continue
-            if not os.path.exists(src):
-                winsys.log(f"pinned float missing: {src}")
-                continue
-            w = FloatWindow(src, play=pin.get("playing", True), pin=pin)
+            self.open_float_state(pin)
+
+    def open_float_state(self, pin):
+        """Open a float from FloatWindow.state(): the same file or link, place, size and point in the video."""
+        src = pin.get("src")
+        if not src:
+            return None
+        if pin.get("link"):
+            if not engine.model_ready("yt-dlp"):
+                return None
+            w = FloatWindow("", {"page": src, "title": pin.get("title") or src, "pending": True}, pin=pin)
             self.floats.append(w)
             w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
             w.show()
+            self._resolve_and_play(src, w, pin=pin, quiet=True)
+            return w
+        if not os.path.exists(src):
+            winsys.log(f"pinned float missing: {src}")
+            return None
+        w = FloatWindow(src, play=pin.get("playing", True), pin=pin)
+        self.floats.append(w)
+        w.closed.connect(lambda w=w: self.floats.remove(w) if w in self.floats else None)
+        w.show()
+        return w
 
     def _build_tray_menu(self):
         ck = mode_keys()["convert"]
@@ -10647,16 +10744,54 @@ class DragWheelApp(QObject):
         # (and cancelling setup leaves the app running).
 
     # ---- windows
+    # Settings has eight pages of controls; building them takes about a second, and everything else (a playing
+    # float too) waits meanwhile. So a copy is built ahead of time, while no float is playing, and shown at once.
+    _VOLATILE = ("float_resume", "float_recent", "recent_results", "float_volume", "geometry",
+                 "share_links", "float_pins", "last_dir", "float_links", "float_repeat", "link_quality",
+                 "share_way", "share_minutes", "sign_mode", "pdf_watermark", "InstallerLanguage")
+
+    def _settings_snapshot(self):
+        s = settings()
+        return hash(tuple((k, str(s.value(k))) for k in sorted(s.allKeys()) if not k.startswith(self._VOLATILE)))
+
+    def _prebuild_settings(self, delay=4000):
+        t = getattr(self, "_prebuild_timer", None)
+        if t is None:
+            t = self._prebuild_timer = QTimer(self, singleShot=True, timeout=self._do_prebuild_settings)
+        t.start(delay)
+
+    def _do_prebuild_settings(self):
+        if getattr(self, "_settings_dlg", None) is not None or getattr(self, "_settings_spare", None) is not None:
+            return
+        if any(f.player is not None and f._playing() for f in self.floats) or self.wheel.is_open() or self.running:
+            self._prebuild_settings(15000)          # not now: it would make the video stutter
+            return
+        try:
+            dlg = SettingsDialog(self)
+        except Exception as e:
+            winsys.log(f"settings prebuild: {e}")
+            return
+        self._settings_spare = (dlg, self._settings_snapshot(), i18n.language(), theme.mode())
+
     def show_settings(self):
         open_one = getattr(self, "_settings_dlg", None)
         if open_one is not None:                    # already open: bring it forward instead of a second one
             open_one.raise_()
             open_one.activateWindow()
             return
-        dlg = SettingsDialog(self)
+        spare, self._settings_spare = getattr(self, "_settings_spare", None), None
+        dlg = None
+        if spare is not None:
+            if spare[1:] == (self._settings_snapshot(), i18n.language(), theme.mode()):
+                dlg = spare[0]                      # built ahead of time, nothing changed since: shows at once
+            else:
+                spare[0].deleteLater()
+        if dlg is None:
+            dlg = SettingsDialog(self)
         dlg.setModal(False)                         # the wheel and floats keep working while Settings is open
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         dlg.finished.connect(lambda _r: setattr(self, "_settings_dlg", None))
+        dlg.finished.connect(lambda _r: self._prebuild_settings())   # ready for next time
         self._settings_dlg = dlg
         dlg.show()
         dlg.raise_()

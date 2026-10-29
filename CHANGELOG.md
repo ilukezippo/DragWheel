@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.2 — not released yet
+
+- **Settings opens at once:** it's prepared ahead of time while nothing is playing, so a playing float no longer stops for a second when you open Settings
+- **Settings Config exports everything:** every option (also the ones you never changed), your keys, slices, presets, chains, Custom Slices, Auto Convert folders and saved links, plus starting with Windows and the right-click menus
+- **Floats that open with Windows** come back at the same place and size (the height is remembered too, and DragWheel waits for the screens to be ready after you sign in)
+- **Reopen** on the float's right-click menu: closes it and opens it again at the same size and place, with the same file or link, from the same point
+- **Playing again after a long break:** a video paused for more than 10 minutes (or overnight) reopens fresh when you press play, instead of the sound coming back with a frozen picture
+
 ## 1.2.1 — October 2026
 
 ### Wheel and keys
