@@ -17,11 +17,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe"><img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-ff8c1a?style=for-the-badge" height="60" alt="Download DragWheel for Windows"></a>
+  <a href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe"><img src="assets/download-button.svg" width="340" alt="Download DragWheel for Windows"></a>
 </p>
 
 <p align="center">
-  <sub>Downloads the latest installer straight away (Windows 10 and 11, 64-bit). Prefer no install? Get <a href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Portable-1.2.1.zip">the portable ZIP</a>.</sub>
+  <sub>Downloads the latest installer straight away. Prefer no install? Get <a href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Portable-1.2.1.zip">the portable ZIP</a>.</sub>
 </p>
 
 <p align="center">
