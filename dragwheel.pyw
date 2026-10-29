@@ -401,11 +401,13 @@ class FrontDialog(QDialog):
 class PhoneShare(FrontDialog):
     """Share files with a phone on the same Wi-Fi: a QR code opens a page served straight from this PC."""
 
-    def __init__(self, paths):
+    def __init__(self, paths, mode="wifi"):
         super().__init__(None)
         import http.server
         import secrets
         import urllib.parse
+        self.mode = mode                 # "wifi": phones on this network · "tunnel": anywhere, through Cloudflare
+        self.tunnel = None
         self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
         self.setWindowIcon(app_icon())
         self.setStyleSheet(i18n.css(DIALOG_CSS))
@@ -483,11 +485,11 @@ class PhoneShare(FrontDialog):
             def log_message(h, *a):
                 pass
 
-        self.server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), H)
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1" if mode == "tunnel" else "0.0.0.0", 0), H)
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self._port, self._token = self.server.server_address[1], token
-        self.ips = _lan_ips()
+        self.ips = _lan_ips() if mode == "wifi" else []
         lay = QVBoxLayout(self)
         from PySide6.QtWidgets import QLayout
         lay.setSizeConstraint(QLayout.SetFixedSize)          # the window always fits the code and the text
@@ -507,19 +509,33 @@ class PhoneShare(FrontDialog):
                 self.ip_box.addItem(tr("Network address: {ip}", ip=ip), ip)
             self.ip_box.currentIndexChanged.connect(lambda _i: self._show_qr(self.ip_box.currentData()))
             lay.addWidget(self.ip_box)
-        self._show_qr(self.ips[0])
         what = self.paths[0].name if len(self.paths) == 1 else tr("{n} files", n=len(self.paths))
-        info = QLabel(tr("Sharing {what}. Your phone must be on the same Wi-Fi. If Windows asks, allow DragWheel on "
-                         "private networks. Nothing goes through the internet; sharing stops when you close this window.",
-                         what=what))
+        if mode == "tunnel":
+            self.url = ""
+            title.setText("<b>" + tr("Link from this PC") + "</b>")
+            self.link.setText(tr("Making the link…"))
+            info = QLabel(tr("Sharing {what}. The link works on any network, even mobile data. The file goes straight "
+                             "from this PC through Cloudflare and isn't stored anywhere; the link ends when you close "
+                             "this window, so keep it open until it's downloaded.", what=what))
+        else:
+            self._show_qr(self.ips[0])
+            info = QLabel(tr("Sharing {what}. Your phone must be on the same Wi-Fi. If Windows asks, allow DragWheel on "
+                             "private networks. Nothing goes through the internet; sharing stops when you close this window.",
+                             what=what))
         info.setWordWrap(True)
         info.setFixedWidth(360)
         lay.addWidget(info)
         self.count = QLabel()
         lay.addWidget(self.count)
-        help_b = QPushButton(tr("Phone can't open it?"))
-        help_b.clicked.connect(self._help)
-        lay.addWidget(help_b)
+        if mode == "tunnel":
+            self.copy_b = QPushButton(tr("Copy link"))
+            self.copy_b.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.url))
+            self.copy_b.setEnabled(False)
+            lay.addWidget(self.copy_b)
+        else:
+            help_b = QPushButton(tr("Phone can't open it?"))
+            help_b.clicked.connect(self._help)
+            lay.addWidget(help_b)
         stop = QPushButton(tr("Stop sharing"))
         stop.clicked.connect(self.close)
         lay.addWidget(stop)
@@ -534,11 +550,45 @@ class PhoneShare(FrontDialog):
         self._poll = QTimer(self, interval=500, timeout=self._update)
         self._poll.start()
         self._last = ""
-        threading.Thread(target=self._diagnose, daemon=True).start()
+        self._tunnel_url = None
+        self._tunnel_err = None
+        if mode == "tunnel":
+            threading.Thread(target=self._start_tunnel, daemon=True).start()
+        else:
+            threading.Thread(target=self._diagnose, daemon=True).start()
+
+    def _start_tunnel(self):
+        """Cloudflare's quick tunnel: a random https://….trycloudflare.com address that reaches this window's
+        little web server. No account; it lasts while cloudflared runs."""
+        import re
+        import subprocess
+        try:
+            self.tunnel = subprocess.Popen(
+                [str(engine.model_path("cloudflared")), "tunnel", "--no-autoupdate", "--url",
+                 f"http://127.0.0.1:{self._port}"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, creationflags=engine.NO_WINDOW)
+        except Exception as e:
+            self._tunnel_err = str(e)
+            return
+        t0 = time.monotonic()
+        for raw in iter(self.tunnel.stdout.readline, b""):
+            line = raw.decode("utf-8", "replace")
+            m = re.search(r"https://[-a-z0-9]+\.trycloudflare\.com", line)
+            if m and self._tunnel_url is None:
+                self._tunnel_url = m.group(0)
+                winsys.log(f"send to phone: tunnel {self._tunnel_url} after {time.monotonic() - t0:.1f} s")
+            elif ("ERR" in line or "error" in line.lower()) and self._tunnel_url is None:
+                winsys.log("cloudflared: " + line.strip()[:200])
+        if self._tunnel_url is None:
+            self._tunnel_err = tr("Couldn't make the link. Check the internet connection, or that a firewall or "
+                                  "antivirus lets cloudflared.exe connect.")
 
     def _show_qr(self, ip):
-        self.url = f"http://{ip}:{self._port}/{self._token}/"
-        winsys.log(f"send to phone: {self.url} (addresses: {', '.join(self.ips)})")
+        self._show_url(f"http://{ip}:{self._port}/{self._token}/")
+
+    def _show_url(self, url):
+        self.url = url
+        winsys.log(f"send to phone: {self.url} (addresses: {', '.join(self.ips) or 'tunnel'})")
         self.link.setText(f"<span style='color:{theme.hexc('dim')}'>{self.url}</span>")
         try:
             import io as _io
@@ -629,6 +679,13 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
         self._last = name
 
     def _update(self):
+        if self.mode == "tunnel" and not self.url:
+            if self._tunnel_url:
+                self._show_url(f"{self._tunnel_url}/{self._token}/")
+                self.copy_b.setEnabled(True)
+            elif self._tunnel_err:
+                self.link.setText(f"<span style='color:{theme.hexc('danger')}'>{self._tunnel_err}</span>")
+                self._tunnel_err = ""
         if self._diag_lines is not None:
             notes = self._diag_text(self._diag_lines)
             self._diag_lines = None
@@ -645,6 +702,11 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
             self.server.server_close()
         except Exception:
             pass
+        if self.tunnel is not None:                    # the link ends with the window
+            try:
+                self.tunnel.kill()
+            except Exception:
+                pass
         super().closeEvent(e)
 
 
@@ -1094,9 +1156,16 @@ class SendChooser(FrontDialog):
         from PySide6.QtWidgets import QLayout
         self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
         self.setWindowIcon(app_icon())
-        self.setStyleSheet(i18n.css(DIALOG_CSS) + f"QPushButton#way{{text-align:left;padding:10px 14px;font:600 10pt 'Segoe UI'}}"
-                           f"QPushButton#way[last=true]{{border:2px solid {theme.hexc('accent')}}}")
+        self.setStyleSheet(i18n.css(DIALOG_CSS) +
+                           f"QPushButton#way{{text-align:left;padding:0;border-radius:10px;background:{theme.hexc('surface')};"
+                           f"border:1px solid {theme.hexc('border')}}}"
+                           f"QPushButton#way:hover{{border:1px solid {theme.hexc('accent')}}}"
+                           f"QPushButton#way:disabled{{background:transparent}}"
+                           f"QPushButton#way[last=\"true\"]{{border:2px solid {theme.hexc('accent')}}}"
+                           "QLabel#waytitle{font:700 10.5pt 'Segoe UI';background:transparent}"
+                           f"QLabel#waydesc{{color:{theme.hexc('dim')};font:9pt 'Segoe UI';background:transparent}}")
         lay = QVBoxLayout(self)
+        lay.setSpacing(8)
         lay.setSizeConstraint(QLayout.SetFixedSize)
         what = Path(paths[0]).name if len(paths) == 1 else tr("{n} files", n=len(paths))
         lay.addWidget(QLabel(f"<b>{tr('How do you want to send it?')}</b><br>"
@@ -1104,16 +1173,44 @@ class SendChooser(FrontDialog):
         self.choice = None
         last = settings().value("share_way", "quick")
         last = "internet" if last == "iphone" else last
-        for key, title, desc in (
-                ("quick", tr("Quick Share"), tr("Google's Quick Share sends straight to a nearby Android phone. No network setup.")),
-                ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network and any phone, iPhone too. Deleted after 5 minutes to 72 hours.")),
-                ("bluetooth", tr("Bluetooth"), tr("Slower, but needs no network. Works with phones paired to this PC (Android; iPhones can't receive files over Bluetooth).")),
-                ("wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Nothing leaves your home, but routers and firewalls can block it."))):
-            b = QPushButton(f"{title}\n{desc}")
+        clouds = cloud_folders()
+        cloud_names = " / ".join(dict.fromkeys(n.split(" (")[0] for n, _ in clouds))
+        from PySide6.QtCore import QSize as _QS
+        for key, icon, title, desc, ok in (
+                ("quick", "quickshare", tr("Quick Share"), tr("Straight to a nearby Android phone. No network setup."), True),
+                ("internet", "link", tr("Internet link"), tr("Uploads to a free temporary file service. Any phone, any network."), True),
+                ("pclink", "pclink", tr("Link from this PC"), tr("A link that works anywhere, served from this PC while the window is open. Nothing is uploaded."), True),
+                ("cloud", "cloud", tr("Cloud link"),
+                 tr("A share link from your {cloud}. Works even when this PC is off.", cloud=cloud_names) if clouds
+                 else tr("Needs OneDrive or Google Drive set up on this PC."), bool(clouds)),
+                ("bluetooth", "bluetooth", tr("Bluetooth"), tr("Slower, but needs no network. Android phones paired to this PC."), True),
+                ("wifi", "wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Routers and firewalls can block it."), True)):
+            b = QPushButton()
             b.setObjectName("way")
             b.setAutoDefault(False)
-            b.setDefault(key == last)                         # the way used last time is highlighted
-            b.setMinimumWidth(380)
+            b.setProperty("last", "true" if key == last and ok else "false")   # the way used last time is outlined
+            b.setEnabled(ok)
+            b.setMinimumWidth(440)
+            row = QHBoxLayout(b)
+            row.setContentsMargins(14, 10, 14, 10)
+            row.setSpacing(14)
+            ic = QLabel()
+            ic.setPixmap(nav_icon(icon).pixmap(_QS(26, 26), QIcon.Selected if ok else QIcon.Normal))
+            ic.setFixedSize(28, 28)
+            col = QVBoxLayout()
+            col.setSpacing(1)
+            t = QLabel(title)
+            t.setObjectName("waytitle")
+            d = QLabel(desc)
+            d.setObjectName("waydesc")
+            d.setWordWrap(True)
+            col.addWidget(t)
+            col.addWidget(d)
+            for w in (ic, t, d):
+                w.setAttribute(Qt.WA_TransparentForMouseEvents)
+            row.addWidget(ic, 0, Qt.AlignVCenter)
+            row.addLayout(col, 1)
+            b.setMinimumHeight(row.sizeHint().height() + 4)
             b.clicked.connect(lambda _=False, k=key: self._pick(k))
             lay.addWidget(b)
 
@@ -1121,6 +1218,209 @@ class SendChooser(FrontDialog):
         self.choice = key
         settings().setValue("share_way", key)
         self.accept()
+
+
+def cloud_folders() -> list:
+    """[(name, folder)] for OneDrive and Google Drive set up on this PC (their synced folders)."""
+    out, seen = [], set()
+    for env, name in (("OneDriveConsumer", "OneDrive"), ("OneDriveCommercial", "OneDrive (work)"), ("OneDrive", "OneDrive")):
+        v = os.environ.get(env)
+        if v and Path(v).is_dir() and os.path.normcase(v) not in seen:
+            seen.add(os.path.normcase(v))
+            out.append((name, Path(v)))
+    if winsys.IS_WIN:
+        for letter in "GHIJKLMNOPQRSTUVWXYZDEF":           # Google Drive for desktop mounts a drive with "My Drive"
+            d = Path(f"{letter}:/My Drive")
+            try:
+                if d.is_dir():
+                    out.append(("Google Drive", d))
+                    break
+            except OSError:
+                continue
+    g = Path.home() / "Google Drive"                     # the older Backup and Sync folder
+    if g.is_dir() and not any(n == "Google Drive" for n, _ in out):
+        out.append(("Google Drive", g))
+    return out
+
+
+def cloud_shares() -> list:
+    return _jload("cloud_shares", []) if "_jload" in globals() else []
+
+
+def remember_cloud_share(path, expires):
+    lst = [x for x in cloud_shares() if x.get("path") != str(path)] + [{"path": str(path), "expires": expires}]
+    settings().setValue("cloud_shares", json.dumps(lst, ensure_ascii=False))
+
+
+def clean_cloud_shares():
+    """Delete cloud-link copies whose time is up (they go to the cloud's own recycle bin)."""
+    keep = []
+    for x in cloud_shares():
+        if x.get("expires") and x["expires"] <= time.time():
+            try:
+                Path(x["path"]).unlink(missing_ok=True)
+                winsys.log(f"cloud link ended: {Path(x['path']).name}")
+            except OSError as e:
+                winsys.log(f"cloud link: couldn't delete {x['path']}: {e}")
+                keep.append(x)
+        else:
+            keep.append(x)
+    if len(keep) != len(cloud_shares()):
+        settings().setValue("cloud_shares", json.dumps(keep, ensure_ascii=False))
+
+
+_CLOUD_LINK = ("1drv.ms/", "onedrive.live.com/", "sharepoint.com/", "drive.google.com/", "docs.google.com/")
+
+
+class CloudShare(FrontDialog):
+    """Send to phone → Cloud link: a copy goes into your OneDrive or Google Drive, and its own Share window gives the
+    link (trusted, no ads, works when this PC is off). DragWheel shows the link you copy as a QR code."""
+    KEEP = [(60, "1 hour"), (12 * 60, "12 hours"), (24 * 60, "1 day"), (3 * 24 * 60, "3 days"), (7 * 24 * 60, "1 week"),
+            (0, "Keep it")]
+
+    def __init__(self, paths):
+        super().__init__(None)
+        from PySide6.QtWidgets import QLayout
+        self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.paths = [Path(x) for x in paths]
+        self.clouds = cloud_folders()
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetFixedSize)
+        what = self.paths[0].name if len(self.paths) == 1 and self.paths[0].is_file() else \
+            tr("{n} files (as one ZIP)", n=len(self.paths)) if len(self.paths) > 1 else self.paths[0].name + ".zip"
+        head = QLabel(f"<b>{tr('Cloud link')}</b><br><span style='color:{theme.hexc('dim')}'>{what}</span>")
+        head.setWordWrap(True)
+        head.setFixedWidth(380)
+        lay.addWidget(head)
+        form = QFormLayout()
+        self.cloud = QComboBox()
+        for name, folder in self.clouds:
+            self.cloud.addItem(name, str(folder))
+        self.cloud.setCurrentIndex(max(0, self.cloud.findText(settings().value("cloud_last", ""))))
+        form.addRow(tr("Cloud"), self.cloud)
+        self.keep = QComboBox()
+        for m, label in self.KEEP:
+            self.keep.addItem(tr(label), m)
+        self.keep.setCurrentIndex(max(0, self.keep.findData(int(settings().value("cloud_keep", 24 * 60)))))
+        form.addRow(tr("Delete it after"), self.keep)
+        lay.addLayout(form)
+        note = QLabel(tr("A copy goes into a “DragWheel shares” folder in your cloud, and the cloud's own Share window "
+                         "opens: choose who can open it and copy the link. The link works even when this PC is off."))
+        note.setWordWrap(True)
+        note.setFixedWidth(380)
+        note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        lay.addWidget(note)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        self.status.setFixedWidth(380)
+        lay.addWidget(self.status)
+        self.qr = QLabel()
+        self.qr.hide()
+        lay.addWidget(self.qr, 0, Qt.AlignHCenter)
+        self.link = QLabel()
+        self.link.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.link.setAlignment(Qt.AlignCenter)
+        self.link.setWordWrap(True)
+        self.link.setFixedWidth(380)
+        self.link.hide()
+        lay.addWidget(self.link)
+        self.go = QPushButton(tr("Make a link"))
+        self.go.clicked.connect(self._start)
+        lay.addWidget(self.go)
+        close = QPushButton(tr("Close"))
+        close.clicked.connect(self.close)
+        lay.addWidget(close)
+        self.dest = None
+        self._copied = None
+        self._clip_start = ""
+        self._poll = QTimer(self, interval=400, timeout=self._update)
+
+    def _start(self):
+        settings().setValue("cloud_last", self.cloud.currentText())
+        settings().setValue("cloud_keep", self.keep.currentData())
+        self.go.setEnabled(False)
+        self.cloud.setEnabled(False)
+        self.keep.setEnabled(False)
+        folder = Path(self.cloud.currentData()) / "DragWheel shares"
+        self.status.setText(tr("Copying to {cloud}…", cloud=self.cloud.currentText()))
+        self._clip_start = QGuiApplication.clipboard().text()
+
+        def work():
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                src = self.paths[0]
+                if len(self.paths) == 1 and src.is_file():
+                    dest = engine.unique_path(folder / src.name)
+                    shutil.copy2(src, dest)
+                else:
+                    import zipfile
+                    dest = engine.unique_path(folder / ((src.name if len(self.paths) == 1 else "DragWheel") + ".zip"))
+                    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+                        for it in self.paths:
+                            for f in ([it] if it.is_file() else [x for x in it.rglob("*") if x.is_file()]):
+                                z.write(f, str(f.relative_to(it.parent)))
+                self._copied = ("ok", dest)
+            except Exception as e:
+                self._copied = ("err", str(e))
+        threading.Thread(target=work, daemon=True).start()
+        self._poll.start()
+
+    def _update(self):
+        if self._copied is not None:
+            kind, val = self._copied
+            self._copied = None
+            if kind == "err":
+                self.status.setText(f"<span style='color:{theme.hexc('danger')}'>{val}</span>")
+                self._poll.stop()
+                return
+            self.dest = val
+            m = int(self.keep.currentData())
+            if m:
+                remember_cloud_share(val, time.time() + m * 60)
+            winsys.log(f"send to phone (cloud): {val}")
+            ok = False
+            try:                                  # the cloud's own right-click entry: copy a link, or its Share window
+                ok = winsys.invoke_shell_verb([str(val)], "Copy link", "Share")
+            except Exception as e:
+                winsys.log(f"cloud share verb: {e}")
+            if ok:
+                self.status.setText(tr("In {cloud}'s Share window, choose who can open it and copy the link. "
+                                       "It appears here as a QR code.", cloud=self.cloud.currentText()))
+            else:
+                winsys.reveal(str(val))
+                self.status.setText(tr("Right-click the file in the window that opened, choose Share (or Copy link), "
+                                       "and copy the link. It appears here as a QR code."))
+            return
+        text = QGuiApplication.clipboard().text().strip()
+        if self.dest is not None and text != self._clip_start and text.startswith("http") and any(
+                c in text for c in _CLOUD_LINK):
+            self._poll.stop()
+            self._show(text)
+
+    def _show(self, url):
+        self.url = url
+        self.status.setText("<b>" + tr("Scan with your phone's camera") + "</b> — " +
+                            tr("works on any network, even mobile data."))
+        try:
+            pm = qr_pixmap(url, 6)
+            self.qr.setPixmap(pm)
+            self.qr.setFixedSize(pm.size())
+            self.qr.show()
+        except Exception as e:
+            winsys.log(f"qr: {e}")
+        self.link.setText(f"<span style='color:{theme.hexc('dim')}'>{url}</span>")
+        self.link.show()
+        self.go.setText(tr("Copy link"))
+        self.go.setEnabled(True)
+        try:
+            self.go.clicked.disconnect()
+        except Exception:
+            pass
+        self.go.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.url))
+        self.adjustSize()
 
 
 def shutil_copy(fi, fo):
@@ -1276,11 +1576,19 @@ class Actions:
         if chooser.choice == "bluetooth":
             self.bluetooth(paths)
             return
-        w = PhoneShare(paths) if chooser.choice == "wifi" else InternetShare(paths)
-        self.app._phone_windows = getattr(self.app, "_phone_windows", [])
-        self.app._phone_windows.append(w)
-        w.show()
-        w.raise_()
+        def open_window(w):
+            self.app._phone_windows = getattr(self.app, "_phone_windows", [])
+            self.app._phone_windows.append(w)
+            w.show()
+            w.raise_()
+        if chooser.choice == "pclink":
+            self.app._ensure_model("cloudflared", tr("Link from this PC"),
+                                   lambda: open_window(PhoneShare(paths, mode="tunnel")))
+            return
+        if chooser.choice == "cloud":
+            open_window(CloudShare(paths))
+            return
+        open_window(PhoneShare(paths) if chooser.choice == "wifi" else InternetShare(paths))
 
     def quick_share(self, paths):
         exe = winsys.quick_share_installed()
@@ -5171,6 +5479,48 @@ def nav_icon(kind: str) -> "QIcon":
             p.drawRoundedRect(QRectF(3, 4.5, 18, 15), 2.5, 2.5)
             p.drawPolyline([QPointF(7, 9.5), QPointF(10, 12), QPointF(7, 14.5)])
             p.drawLine(QPointF(12, 15), QPointF(16.5, 15))
+        elif kind == "quickshare":                     # two linked circles (share)
+            p.drawEllipse(QPointF(6.5, 12), 2.6, 2.6)
+            p.drawEllipse(QPointF(17.5, 6.5), 2.6, 2.6)
+            p.drawEllipse(QPointF(17.5, 17.5), 2.6, 2.6)
+            p.drawLine(QPointF(8.8, 10.8), QPointF(15.2, 7.7))
+            p.drawLine(QPointF(8.8, 13.2), QPointF(15.2, 16.3))
+        elif kind == "link":                           # chain
+            p.drawRoundedRect(QRectF(2.5, 9, 10, 6), 3, 3)
+            p.drawRoundedRect(QRectF(11.5, 9, 10, 6), 3, 3)
+            p.setPen(QPen(accent, 1.9, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(9, 12), QPointF(15, 12))
+        elif kind == "pclink":                         # a screen with a globe
+            p.drawRoundedRect(QRectF(3, 4, 18, 12.5), 2, 2)
+            p.drawLine(QPointF(9, 20), QPointF(15, 20))
+            p.drawLine(QPointF(12, 16.5), QPointF(12, 20))
+            p.setPen(QPen(accent, 1.6))
+            p.drawEllipse(QPointF(12, 10.2), 3.6, 3.6)
+            p.drawLine(QPointF(8.4, 10.2), QPointF(15.6, 10.2))
+            p.drawEllipse(QPointF(12, 10.2), 1.5, 3.6)
+        elif kind == "cloud":                          # cloud
+            path = QPainterPath()
+            path.moveTo(6.5, 18)
+            path.cubicTo(3.5, 18, 2.5, 15.5, 3.2, 13.8)
+            path.cubicTo(3.8, 12.2, 5.3, 11.6, 6.6, 11.8)
+            path.cubicTo(7, 8.2, 9.6, 6, 12.6, 6.2)
+            path.cubicTo(15.4, 6.4, 17.4, 8.5, 17.8, 11)
+            path.cubicTo(20, 11.2, 21.5, 12.9, 21.3, 14.9)
+            path.cubicTo(21.1, 16.8, 19.6, 18, 17.7, 18)
+            path.closeSubpath()
+            p.drawPath(path)
+            p.setPen(QPen(accent, 1.9, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(12, 15.6), QPointF(12, 10.6))
+            p.drawPolyline([QPointF(9.8, 12.6), QPointF(12, 10.4), QPointF(14.2, 12.6)])
+        elif kind == "bluetooth":                      # the Bluetooth rune
+            p.drawPolyline([QPointF(7, 7.5), QPointF(16.5, 16), QPointF(12, 20), QPointF(12, 4),
+                            QPointF(16.5, 8), QPointF(7, 16.5)])
+        elif kind == "wifi":                           # Wi-Fi arcs
+            for r in (9.5, 6.3, 3.2):
+                p.drawArc(QRectF(12 - r, 17.5 - r, 2 * r, 2 * r), 45 * 16, 90 * 16)
+            p.setPen(Qt.NoPen)
+            p.setBrush(accent)
+            p.drawEllipse(QPointF(12, 17.8), 1.6, 1.6)
         elif kind == "about":                          # info
             p.drawEllipse(c, 9.0, 9.0)
             p.drawLine(QPointF(12, 11), QPointF(12, 16.5))
@@ -9704,6 +10054,9 @@ class DragWheelApp(QObject):
         QTimer.singleShot(150, self.restore_pinned_floats)
         self.predownload()
         self._prebuild_settings(6000)
+        self._cloud_timer = QTimer(self, interval=10 * 60 * 1000, timeout=clean_cloud_shares)
+        self._cloud_timer.start()
+        QTimer.singleShot(20000, clean_cloud_shares)
 
     def restore_pinned_floats(self):
         """Reopen the floats that were open before an update, and those set to 'Open when Windows starts'."""
@@ -10157,6 +10510,9 @@ class DragWheelApp(QObject):
         if name == "yt-dlp":
             box.setText(tr("{what} needs a one-time download of the free yt-dlp tool ({mb} MB) to play links "
                            "from YouTube and other sites.", what=what, mb=mb))
+        elif name == "cloudflared":
+            box.setText(tr("{what} needs a one-time download of Cloudflare's free tunnel tool ({mb} MB). "
+                           "It needs no account.", what=what, mb=mb))
         else:
             box.setText(tr("{what} needs a one-time download of its AI model ({mb} MB). It is saved on this PC, "
                            "and everything runs offline after that.", what=what, mb=mb))
@@ -10175,7 +10531,7 @@ class DragWheelApp(QObject):
 
         def cancel():
             job.stop = True
-        job.card = self.toast.show_busy(tr("Downloading AI model…") if name != "yt-dlp" else tr("Download") + "…",
+        job.card = self.toast.show_busy(tr("Downloading AI model…") if name not in ("yt-dlp", "cloudflared") else tr("Download") + "…",
                                         what, cancel)
 
         def progress(done, total, card=job.card):
@@ -10191,7 +10547,7 @@ class DragWheelApp(QObject):
                     on_fail()
                 return
             if err:
-                self.toast.show_msg(tr("Couldn't download the AI model") if name != "yt-dlp" else tr("Couldn't do that"),
+                self.toast.show_msg(tr("Couldn't download the AI model") if name not in ("yt-dlp", "cloudflared") else tr("Couldn't do that"),
                                     err, "err", 8000)
                 if on_fail:
                     on_fail()

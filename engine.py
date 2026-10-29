@@ -1502,6 +1502,9 @@ MODELS = {
     # reads video/audio links from YouTube and ~1800 other sites; always the latest version, self-updating
     "yt-dlp": {"file": "yt-dlp.exe", "size": 0, "sha256": "", "mb": 18,
                "url": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"},
+    # Send to phone → Link from this PC: Cloudflare's free tunnel tool (no account), serves a file from this PC
+    "cloudflared": {"file": "cloudflared.exe", "size": 0, "sha256": "", "mb": 60,
+                    "url": "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"},
     # speech recognition (whisper.cpp), multilingual incl. Arabic; size/sha256 unknown upfront -> Content-Length check
     "whisper-small": {"file": "ggml-small-q5_1.bin", "size": 0, "sha256": "", "mb": 190,
                       "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin"},
