@@ -167,24 +167,6 @@ jobs:
             awk -v head="## $VERSION" 'index($0, head) == 1 {on = 1; next} /^## / {if (on) exit} on' CHANGELOG.md | sed 's/^### /#### /'
           } > release_notes.md
           cat release_notes.md
-      - name: Fixed-name installer on an existing release
-        # copies the already-published installer (same bytes), so the Download buttons work for releases made before this step
-        if: github.ref == 'refs/heads/main' && steps.exists.outputs.released == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          V: ${{ needs.app.outputs.version }}
-        run: |
-          if gh release view "v$V" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -qx 'DragWheel-Setup.exe'; then
-            echo "v$V already has DragWheel-Setup.exe"; exit 0; fi
-          mkdir -p published && cd published
-          gh release download "v$V" -R "$GITHUB_REPOSITORY" -p "DragWheel-Setup-$V.exe"
-          cp "DragWheel-Setup-$V.exe" DragWheel-Setup.exe
-          sha256sum DragWheel-Setup-$V.exe DragWheel-Setup.exe
-          gh release upload "v$V" DragWheel-Setup.exe -R "$GITHUB_REPOSITORY"
-      - name: Same installer under a fixed name
-        # releases/latest/download/DragWheel-Setup.exe always downloads the newest installer (README and website buttons);
-        # the updater and winget keep using the versioned name
-        run: cp "dist/DragWheel-Setup-${{ needs.app.outputs.version }}.exe" dist/DragWheel-Setup.exe
       - name: Release
         # publishes v<VERSION> from main once; an existing release is never overwritten, so its
         # checksum (used by the winget listing and the in-app updater) stays the same
@@ -198,5 +180,17 @@ jobs:
           body_path: release_notes.md
           files: |
             dist/DragWheel-Setup-*.exe
-            dist/DragWheel-Setup.exe
             dist/DragWheel-portable.zip
+      - name: Point the Download buttons at this installer
+        # README and website link straight to DragWheel-Setup-<VERSION>.exe of the newest release
+        if: github.ref == 'refs/heads/main' && steps.exists.outputs.released == 'false'
+        env:
+          V: ${{ needs.app.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main && git checkout -B main origin/main
+          sed -i -E "s#releases/download/v[0-9][^/\"]*/DragWheel-Setup-[^/\"]*\.exe#releases/download/v$V/DragWheel-Setup-$V.exe#g" README.md docs/index.html
+          if git diff --quiet; then echo "buttons already point at $V"; exit 0; fi
+          git commit -am "Download buttons: DragWheel $V"
+          git push origin main

@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ilukezippo/DragWheel/releases/latest/download/DragWheel-Setup.exe"><img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-ff8c1a?style=for-the-badge" height="44" alt="Download DragWheel for Windows"></a>
+  <a href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe"><img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-ff8c1a?style=for-the-badge" height="44" alt="Download DragWheel for Windows"></a>
 </p>
 
 <p align="center">
@@ -150,7 +150,7 @@ Everything that changed is in the [changelog](CHANGELOG.md).
 
 ## Install
 
-1. **[Download the installer](https://github.com/ilukezippo/DragWheel/releases/latest/download/DragWheel-Setup.exe)** (always the latest version), or pick a file on the [Releases](../../releases/latest) page.
+1. **[Download the installer](https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe)** (the latest version), or pick a file on the [Releases](../../releases/latest) page.
 2. Run it. It asks for administrator rights and installs for all users into `C:\Program Files\DragWheel`.
 3. Choose your options: Explorer right-click menu + Send To, start with Windows, desktop shortcut. The installer speaks all 14 of DragWheel's languages, and the app starts in the one you pick.
 
