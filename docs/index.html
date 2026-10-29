@@ -25,7 +25,7 @@
   "name": "DragWheel",
   "applicationCategory": "UtilitiesApplication",
   "operatingSystem": "Windows 10, Windows 11",
-  "softwareVersion": "1.2.0",
+  "softwareVersion": "1.2.1",
   "description": "Offline drag-and-drop file converter and toolbox for Windows. Tap a key while dragging a file and drop it on a radial wheel to convert images, video, audio, PDF, Office files and archives.",
   "url": "https://ilukezippo.github.io/DragWheel/",
   "downloadUrl": "https://github.com/ilukezippo/DragWheel/releases/latest",
@@ -43,7 +43,7 @@
     {"@type": "Question", "name": "Is DragWheel free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. DragWheel is free and open source under the MIT License."}},
     {"@type": "Question", "name": "Does DragWheel upload my files?", "acceptedAnswer": {"@type": "Answer", "text": "No. Every conversion runs on your own PC. The only network connection is an optional daily update check against GitHub, which can be turned off."}},
     {"@type": "Question", "name": "Is there a Tangerine for Windows?", "acceptedAnswer": {"@type": "Answer", "text": "DragWheel brings the Tangerine for Mac idea to Windows: tap a key while dragging a file and drop it on a wheel to convert it."}},
-    {"@type": "Question", "name": "Why does Windows warn about the installer?", "acceptedAnswer": {"@type": "Answer", "text": "The installer is not code-signed yet, so SmartScreen shows a warning for new downloads. Releases are built by GitHub Actions from the public source code. Choose More info, then Run anyway."}}
+    {"@type": "Question", "name": "Why does Windows warn about the installer?", "acceptedAnswer": {"@type": "Answer", "text": "The installer is not code-signed yet, so Windows warns about new downloads. Releases are built by GitHub Actions from the public source code. If Edge holds the download, choose Keep, then Show more, then Keep anyway. If SmartScreen warns when you run it, choose More info, then Run anyway."}}
   ]
 }
 </script>
@@ -210,7 +210,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
         <a class="btn btn-main" href="https://github.com/ilukezippo/DragWheel/releases/latest">Download for Windows</a>
         <a class="btn btn-quiet" href="https://github.com/ilukezippo/DragWheel">View source</a>
       </div>
-      <p class="fine">Version 1.2.0 for Windows 10 and 11 (64-bit). Free and open source, MIT License.</p>
+      <p class="fine">Version 1.2.1 for Windows 10 and 11 (64-bit). Free and open source, MIT License.</p>
     </div>
 
     <div class="stage">
@@ -280,8 +280,19 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
 
   <section id="new">
     <div class="wrap">
-      <h2>New in 1.2</h2>
-      <p class="intro">The biggest update yet: PDF signing, a mini player for YouTube links, sending files to your phone, and a wheel you can make your own. <a href="https://github.com/ilukezippo/DragWheel/blob/main/CHANGELOG.md">Full changelog</a>.</p>
+      <h2>New in 1.2.1</h2>
+      <p class="intro">Your keys, your way: any key or combination opens a wheel, PDF to Word keeps the look of the page, and a fresh Settings. <a href="https://github.com/ilukezippo/DragWheel/blob/main/CHANGELOG.md">Full changelog</a>.</p>
+      <dl class="formats">
+        <div><dt>Any key, any way</dt><dd>Give each wheel any key or combination, a mouse side button, or a key + click like Ctrl + right click. Open it while dragging, on the file under the mouse, or on the files you selected.</dd></div>
+        <div><dt>PDF to Word that looks the same</dt><dd>Every line stays where it was, in the same font and size, tables become real Word tables, and Arabic is proper right-to-left text you can edit.</dd></div>
+        <div><dt>File preview</dt><dd>Peek at PDFs, Word, Excel, PowerPoint, e-books and more while you drag, with a press or only while you hold the key.</dd></div>
+        <div><dt>New Settings</dt><dd>Clear pages down the side, on/off switches, six new themes, nine sound styles, new wheel animations, and Restore defaults.</dd></div>
+        <div><dt>Float</dt><dd>Save only the links you want, Recently played, playback speed from 0.5× to 2×, and drag a web page or paste a file to play it.</dd></div>
+        <div><dt>Your own slices</dt><dd>Open files in any app from the wheel by picking the app. Auto Convert can overwrite the original, and Unblock clears Windows' download warning from files.</dd></div>
+      </dl>
+
+      <h2 style="font-size:24px;margin-top:40px">Also in 1.2</h2>
+      <p class="intro">The biggest update yet: PDF signing, a mini player for YouTube links, sending files to your phone, and a wheel you can make your own.</p>
       <dl class="formats">
         <div><dt>PDF tools</dt><dd>Sign with a drawn or dropped signature on one page, every page or a range. Arrange pages by dragging, watermark with a live preview, page numbers, grayscale, unlock.</dd></div>
         <div><dt>Float, the mini player</dt><dd>Copy a YouTube link and play it on top of your work, live streams included. Quality menu, repeat and loop, saved links, subtitles and keyboard media keys.</dd></div>
@@ -334,7 +345,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
       <details><summary>Is DragWheel free?</summary><p>Yes. It's free and open source under the MIT License. If it saves you time, you can <a href="https://buymeacoffee.com/ilukezippo">buy the author a coffee</a>.</p></details>
       <details><summary>Does it upload my files?</summary><p>No. Every conversion happens on your PC. DragWheel only goes online for things you ask for: the update check (you can turn it off), one-time downloads you agree to, links you play, and <em>Send to phone → Internet link</em>, which uploads the file you pick. See the <a href="https://github.com/ilukezippo/DragWheel/blob/main/PRIVACY.md">privacy policy</a>.</p></details>
       <details><summary>Is this a Tangerine for Windows?</summary><p>That's the idea. DragWheel brings the drag-tap-drop gesture of <a href="https://tangerineformac.com/">Tangerine for Mac</a> to Windows, with its own set of tools and actions.</p></details>
-      <details><summary>Why does Windows warn about the installer?</summary><p>The installer isn't code-signed yet, so SmartScreen warns about new downloads. Every release is built by GitHub Actions from the public source code. Choose <i>More info</i>, then <i>Run anyway</i>.</p></details>
+      <details><summary>Why does Windows warn about the installer?</summary><p>The installer isn't code-signed yet, so Windows warns about new downloads. Every release is built by GitHub Actions from the public source code. If Edge holds the download, choose <i>… → Keep</i>, then <i>Show more → Keep anyway</i>. If SmartScreen warns when you run it, choose <i>More info</i>, then <i>Run anyway</i>.</p></details>
       <details><summary>How do updates work?</summary><p>DragWheel checks GitHub once a day and offers <i>Download & install</i> when a new version is out. Your settings are kept.</p></details>
     </div>
   </section>
