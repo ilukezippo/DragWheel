@@ -28,7 +28,7 @@
   "softwareVersion": "1.2.1",
   "description": "Offline drag-and-drop file converter and toolbox for Windows. Tap a key while dragging a file and drop it on a radial wheel to convert images, video, audio, PDF, Office files and archives.",
   "url": "https://ilukezippo.github.io/DragWheel/",
-  "downloadUrl": "https://github.com/ilukezippo/DragWheel/releases/latest",
+  "downloadUrl": "https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe",
   "screenshot": "https://ilukezippo.github.io/DragWheel/img/og.jpg",
   "license": "https://opensource.org/licenses/MIT",
   "author": {"@type": "Person", "name": "ilukezippo (BoYaqoub)", "url": "https://github.com/ilukezippo"},
@@ -113,6 +113,13 @@ img { max-width: 100%; height: auto; display: block; }
 .btn-main { background: linear-gradient(180deg, var(--orange), var(--orange-deep)); color: #1b1206; box-shadow: 0 6px 18px rgba(242,106,0,.32); }
 .btn-main:hover { filter: brightness(1.05); }
 .btn-quiet { background: var(--graphite); color: #f1f1f3; }
+.btn-big { padding: 12px 26px 12px 14px; border-radius: 16px; gap: 14px; text-align: left;
+  box-shadow: 0 3px 0 rgba(150,70,0,.45), 0 10px 26px rgba(242,106,0,.32); }
+.btn-big .dl-icon { width: 42px; height: 42px; flex: none; }
+.btn-big .dl-text { display: grid; gap: 4px; }
+.btn-big .dl-main { font-size: 21px; font-weight: 800; line-height: 1.1; }
+.btn-big .dl-sub { font-size: 13px; font-weight: 600; opacity: .8; line-height: 1.1; }
+.btn-big:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(150,70,0,.45), 0 6px 18px rgba(242,106,0,.3); }
 .fine { font-size: 14px; color: var(--muted); margin-top: 14px; }
 
 .stage { display: grid; justify-items: center; gap: 18px; }
@@ -197,7 +204,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
     <a class="brand" href="./"><img src="img/icon.webp" alt="" width="30" height="30">DragWheel</a>
     <nav aria-label="Page">
       <a class="hide-sm" href="#how">How it works</a>
-      <a class="hide-sm" href="#new">New in 1.2</a>
+      <a class="hide-sm" href="#new">New in 1.2.1</a>
       <a class="hide-sm" href="#formats">Formats</a>
       <a href="https://github.com/ilukezippo/DragWheel">GitHub</a>
     </nav>
@@ -207,10 +214,13 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
       <h1><span>Drag a file.</span><span>Tap a key.</span><span>Drop it on the wheel.</span></h1>
       <p class="lede">DragWheel is a free file converter for Windows that appears under your cursor while you drag. Turn a HEIC photo into a JPG, shrink a video or pack a folder into a 7Z in one gesture, without opening an app or uploading anything.</p>
       <div class="cta">
-        <a class="btn btn-main" id="dl" href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe">Download for Windows</a>
+        <a class="btn btn-main btn-big" data-dl href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe">
+          <svg class="dl-icon" viewBox="-24 -24 48 48" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><circle r="20" stroke-opacity=".3"/><path d="M0 -10 V8 M-8 1 L0 9 L8 1"/></svg>
+          <span class="dl-text"><span class="dl-main">Download for Windows</span><span class="dl-sub">Free · Windows 10 and 11 · 64-bit</span></span>
+        </a>
         <a class="btn btn-quiet" href="https://github.com/ilukezippo/DragWheel">View source</a>
       </div>
-      <p class="fine">Version 1.2.1 for Windows 10 and 11 (64-bit). Free and open source, MIT License.</p>
+      <p class="fine">Version <span data-ver>1.2.1</span> for Windows 10 and 11 (64-bit). Free and open source, MIT License.</p>
     </div>
 
     <div class="stage">
@@ -358,7 +368,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
   <div class="wrap">
     <span>DragWheel by <a href="https://github.com/ilukezippo">ilukezippo (BoYaqoub)</a>. MIT License.</span>
     <nav aria-label="Links">
-      <a href="https://github.com/ilukezippo/DragWheel/releases/latest">Download</a>
+      <a data-dl href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe">Download</a>
       <a href="https://github.com/ilukezippo/DragWheel/issues">Report a problem</a>
       <a href="https://github.com/ilukezippo/DragWheel/blob/main/PRIVACY.md">Privacy</a>
       <a href="https://buymeacoffee.com/ilukezippo">Donate</a>
@@ -366,6 +376,23 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
   </div>
 </footer>
 
+<script>
+(function () {
+  try {
+    fetch("https://api.github.com/repos/ilukezippo/DragWheel/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (rel) {
+        if (!rel || !rel.assets) return;
+        var exe = rel.assets.filter(function (a) { return /^DragWheel-Setup-.*\.exe$/i.test(a.name); })[0];
+        if (!exe) return;
+        document.querySelectorAll("[data-dl]").forEach(function (a) { a.href = exe.browser_download_url; });
+        var v = String(rel.tag_name || "").replace(/^v/, "");
+        if (v) document.querySelectorAll("[data-ver]").forEach(function (e) { e.textContent = v; });
+      })
+      .catch(function () {});
+  } catch (e) {}
+})();
+</script>
 <script>
 (function () {
   var SETS = {
