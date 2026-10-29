@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe"><img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-ff8c1a?style=for-the-badge" height="44" alt="Download DragWheel for Windows"></a>
+  <a href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe"><img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-ff8c1a?style=for-the-badge" height="60" alt="Download DragWheel for Windows"></a>
 </p>
 
 <p align="center">
