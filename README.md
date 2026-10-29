@@ -17,8 +17,16 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/ilukezippo/DragWheel/releases/latest/download/DragWheel-Setup.exe"><img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-ff8c1a?style=for-the-badge" height="44" alt="Download DragWheel for Windows"></a>
+</p>
+
+<p align="center">
+  <sub>Downloads the latest installer straight away (Windows 10 and 11, 64-bit). Prefer no install? Get <a href="../../releases/latest/download/DragWheel-portable.zip">the portable ZIP</a>.</sub>
+</p>
+
+<p align="center">
   <a href="https://ilukezippo.github.io/DragWheel/"><b>Website</b></a> ·
-  <a href="../../releases/latest"><b>⬇ Download the installer</b></a> ·
+  <a href="../../releases/latest">All downloads</a> ·
   <a href="#how-to-use">How to use</a> ·
   <a href="CHANGELOG.md">What's new</a> ·
   <a href="#supported-formats">Formats</a> ·
@@ -142,9 +150,9 @@ Everything that changed is in the [changelog](CHANGELOG.md).
 
 ## Install
 
-1. Download **`DragWheel-Setup-1.1.0.exe`** from [Releases](../../releases/latest).
+1. **[Download the installer](https://github.com/ilukezippo/DragWheel/releases/latest/download/DragWheel-Setup.exe)** (always the latest version), or pick a file on the [Releases](../../releases/latest) page.
 2. Run it. It asks for administrator rights and installs for all users into `C:\Program Files\DragWheel`.
-3. Choose your options: Explorer right-click menu + Send To, start with Windows, desktop shortcut. The installer is available in English and Arabic.
+3. Choose your options: Explorer right-click menu + Send To, start with Windows, desktop shortcut. The installer speaks all 14 of DragWheel's languages, and the app starts in the one you pick.
 
 DragWheel then sits in the system tray. To remove it, use **Settings → Apps** or *Uninstall DragWheel* in the Start menu.
 

@@ -167,6 +167,24 @@ jobs:
             awk -v head="## $VERSION" 'index($0, head) == 1 {on = 1; next} /^## / {if (on) exit} on' CHANGELOG.md | sed 's/^### /#### /'
           } > release_notes.md
           cat release_notes.md
+      - name: Fixed-name installer on an existing release
+        # copies the already-published installer (same bytes), so the Download buttons work for releases made before this step
+        if: github.ref == 'refs/heads/main' && steps.exists.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.app.outputs.version }}
+        run: |
+          if gh release view "v$V" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -qx 'DragWheel-Setup.exe'; then
+            echo "v$V already has DragWheel-Setup.exe"; exit 0; fi
+          mkdir -p published && cd published
+          gh release download "v$V" -R "$GITHUB_REPOSITORY" -p "DragWheel-Setup-$V.exe"
+          cp "DragWheel-Setup-$V.exe" DragWheel-Setup.exe
+          sha256sum DragWheel-Setup-$V.exe DragWheel-Setup.exe
+          gh release upload "v$V" DragWheel-Setup.exe -R "$GITHUB_REPOSITORY"
+      - name: Same installer under a fixed name
+        # releases/latest/download/DragWheel-Setup.exe always downloads the newest installer (README and website buttons);
+        # the updater and winget keep using the versioned name
+        run: cp "dist/DragWheel-Setup-${{ needs.app.outputs.version }}.exe" dist/DragWheel-Setup.exe
       - name: Release
         # publishes v<VERSION> from main once; an existing release is never overwritten, so its
         # checksum (used by the winget listing and the in-app updater) stays the same
@@ -180,4 +198,5 @@ jobs:
           body_path: release_notes.md
           files: |
             dist/DragWheel-Setup-*.exe
+            dist/DragWheel-Setup.exe
             dist/DragWheel-portable.zip
