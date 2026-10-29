@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <sub>Downloads the latest installer straight away (Windows 10 and 11, 64-bit). Prefer no install? Get <a href="../../releases/latest/download/DragWheel-portable.zip">the portable ZIP</a>.</sub>
+  <sub>Downloads the latest installer straight away (Windows 10 and 11, 64-bit). Prefer no install? Get <a href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Portable-1.2.1.zip">the portable ZIP</a>.</sub>
 </p>
 
 <p align="center">

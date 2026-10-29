@@ -1,0 +1,37 @@
+name: Tidy release files
+
+# One-off clean-up of an already-published release: removes the fixed-name installer copy and gives the
+# portable ZIP its versioned name (DragWheel-Portable-<VERSION>.zip). The installer itself is never touched.
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/tidy-release.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tidy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' dragwheel.pyw)
+          T="v$V"
+          names=$(gh release view "$T" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          echo "$names"
+          if echo "$names" | grep -qx 'DragWheel-Setup.exe'; then
+            gh release delete-asset "$T" DragWheel-Setup.exe -R "$GITHUB_REPOSITORY" -y
+          fi
+          if echo "$names" | grep -qx 'DragWheel-portable.zip' && ! echo "$names" | grep -qx "DragWheel-Portable-$V.zip"; then
+            id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$T" --jq '.assets[] | select(.name=="DragWheel-portable.zip") | .id')
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$id" -f name="DragWheel-Portable-$V.zip" --jq .name
+          fi
+          body=$(gh release view "$T" -R "$GITHUB_REPOSITORY" --json body -q .body)
+          new=${body//DragWheel-portable.zip/DragWheel-Portable-$V.zip}
+          if [ "$new" != "$body" ]; then printf '%s' "$new" > notes.md; gh release edit "$T" -R "$GITHUB_REPOSITORY" --notes-file notes.md; fi
+          gh release view "$T" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[] | "\(.name) \(.size)"'

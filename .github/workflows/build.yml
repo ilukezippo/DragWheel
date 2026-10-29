@@ -77,7 +77,7 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: dist/DragWheel
       - name: Zip portable
-        run: Compress-Archive -Path dist/DragWheel -DestinationPath DragWheel-portable.zip
+        run: Compress-Archive -Path dist/DragWheel -DestinationPath "DragWheel-Portable-${{ steps.ver.outputs.version }}.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: app
@@ -86,7 +86,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: portable
-          path: DragWheel-portable.zip
+          path: DragWheel-Portable-*.zip
           retention-days: 7
 
   # 2) Build the installer with Linux NSIS (it ships the 64-bit stubs; the Windows build does not)
@@ -135,7 +135,7 @@ jobs:
           name: DragWheel-windows
           path: |
             dist/DragWheel-Setup-*.exe
-            dist/DragWheel-portable.zip
+            dist/DragWheel-Portable-*.zip
       - name: Check whether this version is already released
         id: exists
         env:
@@ -159,7 +159,7 @@ jobs:
             if [ "$SIGNED" = "true" ]; then echo "The installer and app are code-signed."; else
               echo "The installer is not code-signed yet, so Windows may warn: if Edge holds the download, choose *… → Keep → Show more → Keep anyway*; if SmartScreen warns when you run it, choose *More info → Run anyway*."; fi
             echo
-            echo "**Portable:** \`DragWheel-portable.zip\` — unzip anywhere and run \`DragWheel.exe\`."
+            echo "**Portable:** \`DragWheel-Portable-$VERSION.zip\` — unzip anywhere and run \`DragWheel.exe\`."
             echo
             echo "Requires Windows 10 (1809+) or 11, 64-bit."
             echo
@@ -180,7 +180,7 @@ jobs:
           body_path: release_notes.md
           files: |
             dist/DragWheel-Setup-*.exe
-            dist/DragWheel-portable.zip
+            dist/DragWheel-Portable-*.zip
       - name: Point the Download buttons at this installer
         # README and website link straight to DragWheel-Setup-<VERSION>.exe of the newest release
         if: github.ref == 'refs/heads/main' && steps.exists.outputs.released == 'false'
@@ -190,7 +190,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main && git checkout -B main origin/main
-          sed -i -E "s#releases/download/v[0-9][^/\"]*/DragWheel-Setup-[^/\"]*\.exe#releases/download/v$V/DragWheel-Setup-$V.exe#g" README.md docs/index.html
+          sed -i -E -e "s#releases/download/v[0-9][^/\"]*/DragWheel-Setup-[^/\"]*\.exe#releases/download/v$V/DragWheel-Setup-$V.exe#g" \
+                    -e "s#releases/download/v[0-9][^/\"]*/DragWheel-Portable-[^/\"]*\.zip#releases/download/v$V/DragWheel-Portable-$V.zip#g" README.md docs/index.html
           if git diff --quiet; then echo "buttons already point at $V"; exit 0; fi
           git commit -am "Download buttons: DragWheel $V"
           git push origin main
