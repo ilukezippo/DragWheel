@@ -329,7 +329,29 @@ def shred_path(path):
     os.remove(tmp)
 
 
+_IPS = (0.0, None)
+
+
 def _lan_ips() -> list[str]:
+    """IPv4 addresses a phone could reach, best first (looked up in the background a moment earlier when possible:
+    the lookup can take a second and would freeze a playing float)."""
+    t, ips = _IPS
+    if ips and time.time() - t < 120:
+        return list(ips)
+    return _find_lan_ips()
+
+
+def warm_lan_ips():
+    def run():
+        global _IPS
+        try:
+            _IPS = (time.time(), _find_lan_ips())
+        except Exception:
+            pass
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _find_lan_ips() -> list[str]:
     """IPv4 addresses a phone could reach, best first (the Wi-Fi/LAN one used for the internet, then other
     private addresses; virtual adapters such as WSL/Hyper-V/VPN last)."""
     import socket
@@ -1161,7 +1183,6 @@ class SendChooser(FrontDialog):
                            f"border:1px solid {theme.hexc('border')}}}"
                            f"QPushButton#way:hover{{border:1px solid {theme.hexc('accent')}}}"
                            f"QPushButton#way:disabled{{background:transparent}}"
-                           f"QPushButton#way[last=\"true\"]{{border:2px solid {theme.hexc('accent')}}}"
                            "QLabel#waytitle{font:700 10.5pt 'Segoe UI';background:transparent}"
                            f"QLabel#waydesc{{color:{theme.hexc('dim')};font:9pt 'Segoe UI';background:transparent}}")
         lay = QVBoxLayout(self)
@@ -1174,7 +1195,9 @@ class SendChooser(FrontDialog):
         last = settings().value("share_way", "quick")
         last = "internet" if last == "iphone" else last
         clouds = cloud_folders()
-        cloud_names = " / ".join(dict.fromkeys(n.split(" (")[0] for n, _ in clouds))
+        refresh_clouds()
+        warm_lan_ips()                                     # ready if Same Wi-Fi is chosen
+        cloud_names = ", ".join(dict.fromkeys(n.split(" (")[0] for n, _ in clouds))
         from PySide6.QtCore import QSize as _QS
         for key, icon, title, desc, ok in (
                 ("quick", "quickshare", tr("Quick Share"), tr("Straight to a nearby Android phone. No network setup."), True),
@@ -1182,13 +1205,12 @@ class SendChooser(FrontDialog):
                 ("pclink", "pclink", tr("Link from this PC"), tr("A link that works anywhere, served from this PC while the window is open. Nothing is uploaded."), True),
                 ("cloud", "cloud", tr("Cloud link"),
                  tr("A share link from your {cloud}. Works even when this PC is off.", cloud=cloud_names) if clouds
-                 else tr("Needs OneDrive or Google Drive set up on this PC."), bool(clouds)),
+                 else tr("Needs OneDrive, Google Drive, iCloud Drive, Dropbox or Box set up on this PC."), True),
                 ("bluetooth", "bluetooth", tr("Bluetooth"), tr("Slower, but needs no network. Android phones paired to this PC."), True),
                 ("wifi", "wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Routers and firewalls can block it."), True)):
             b = QPushButton()
             b.setObjectName("way")
             b.setAutoDefault(False)
-            b.setProperty("last", "true" if key == last and ok else "false")   # the way used last time is outlined
             b.setEnabled(ok)
             b.setMinimumWidth(440)
             row = QHBoxLayout(b)
@@ -1220,27 +1242,76 @@ class SendChooser(FrontDialog):
         self.accept()
 
 
-def cloud_folders() -> list:
-    """[(name, folder)] for OneDrive and Google Drive set up on this PC (their synced folders)."""
+_CLOUDS = None          # [(name, folder)] found in the background (looking can be slow: drives, network)
+
+
+def _detect_clouds() -> list:
+    """Cloud storage apps set up on this PC and their synced folders: OneDrive, Google Drive, iCloud Drive,
+    Dropbox and Box."""
     out, seen = [], set()
+
+    def add(name, folder):
+        try:
+            if folder and Path(folder).is_dir() and os.path.normcase(str(folder)) not in seen:
+                seen.add(os.path.normcase(str(folder)))
+                out.append((name, Path(folder)))
+        except OSError:
+            pass
     for env, name in (("OneDriveConsumer", "OneDrive"), ("OneDriveCommercial", "OneDrive (work)"), ("OneDrive", "OneDrive")):
-        v = os.environ.get(env)
-        if v and Path(v).is_dir() and os.path.normcase(v) not in seen:
-            seen.add(os.path.normcase(v))
-            out.append((name, Path(v)))
+        add(name, os.environ.get(env))
+    # Google Drive for desktop: its settings say which drive letter it mounts ("My Drive" inside)
+    gdrive = None
     if winsys.IS_WIN:
-        for letter in "GHIJKLMNOPQRSTUVWXYZDEF":           # Google Drive for desktop mounts a drive with "My Drive"
-            d = Path(f"{letter}:/My Drive")
-            try:
-                if d.is_dir():
-                    out.append(("Google Drive", d))
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\DriveFS") as k:
+                prefs = json.loads(winreg.QueryValueEx(k, "PerAccountPreferences")[0])
+            for acc in prefs.get("per_account_preferences", []):
+                mp = (acc.get("value") or {}).get("mount_point_path")
+                if mp:
+                    gdrive = Path((mp.rstrip(":\\") + ":\\") if len(mp.rstrip(":\\")) == 1 else mp) / "My Drive"
                     break
-            except OSError:
-                continue
-    g = Path.home() / "Google Drive"                     # the older Backup and Sync folder
-    if g.is_dir() and not any(n == "Google Drive" for n, _ in out):
-        out.append(("Google Drive", g))
+        except (OSError, ValueError, TypeError):
+            pass
+        if gdrive is None:                      # otherwise: only local drives that exist (never network or CD drives)
+            import ctypes
+            mask = ctypes.windll.kernel32.GetLogicalDrives()
+            for i in range(3, 26):
+                if mask & (1 << i):
+                    letter = chr(65 + i)
+                    if ctypes.windll.kernel32.GetDriveTypeW(f"{letter}:\\") == 3 and Path(f"{letter}:/My Drive").is_dir():
+                        gdrive = Path(f"{letter}:/My Drive")
+                        break
+    add("Google Drive", gdrive)
+    add("Google Drive", Path.home() / "Google Drive")              # the older Backup and Sync folder
+    add("iCloud Drive", Path.home() / "iCloudDrive")
+    for base in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")):   # Dropbox writes where its folder is
+        try:
+            info = json.loads((Path(base) / "Dropbox" / "info.json").read_text(encoding="utf-8")) if base else {}
+        except (OSError, ValueError):
+            info = {}
+        for kind, name in (("personal", "Dropbox"), ("business", "Dropbox (work)")):
+            add(name, (info.get(kind) or {}).get("path"))
+    add("Box", Path.home() / "Box")
     return out
+
+
+def cloud_folders(wait=False) -> list:
+    """The clouds found so far (looked for in the background, so opening a window never waits for drives)."""
+    global _CLOUDS
+    if _CLOUDS is None and wait:
+        _CLOUDS = _detect_clouds()
+    return list(_CLOUDS or [])
+
+
+def refresh_clouds():
+    def run():
+        global _CLOUDS
+        try:
+            _CLOUDS = _detect_clouds()
+        except Exception as e:
+            winsys.log(f"clouds: {e}")
+    threading.Thread(target=run, daemon=True).start()
 
 
 def cloud_shares() -> list:
@@ -1269,7 +1340,8 @@ def clean_cloud_shares():
         settings().setValue("cloud_shares", json.dumps(keep, ensure_ascii=False))
 
 
-_CLOUD_LINK = ("1drv.ms/", "onedrive.live.com/", "sharepoint.com/", "drive.google.com/", "docs.google.com/")
+_CLOUD_LINK = ("1drv.ms/", "onedrive.live.com/", "sharepoint.com/", "drive.google.com/", "docs.google.com/",
+               "icloud.com/", "dropbox.com/", "db.tt/", "box.com/")
 
 
 class CloudShare(FrontDialog):
@@ -1286,7 +1358,8 @@ class CloudShare(FrontDialog):
         self.setStyleSheet(i18n.css(DIALOG_CSS))
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.paths = [Path(x) for x in paths]
-        self.clouds = cloud_folders()
+        self.clouds = cloud_folders(wait=True)
+        refresh_clouds()                                   # anything set up since: ready for next time
         lay = QVBoxLayout(self)
         lay.setSizeConstraint(QLayout.SetFixedSize)
         what = self.paths[0].name if len(self.paths) == 1 and self.paths[0].is_file() else \
@@ -1336,7 +1409,13 @@ class CloudShare(FrontDialog):
         self.dest = None
         self._copied = None
         self._clip_start = ""
+        self._shared = None
+        self._closed = False
         self._poll = QTimer(self, interval=400, timeout=self._update)
+
+    def closeEvent(self, e):
+        self._closed = True
+        super().closeEvent(e)
 
     def _start(self):
         settings().setValue("cloud_last", self.cloud.currentText())
@@ -1381,19 +1460,36 @@ class CloudShare(FrontDialog):
             if m:
                 remember_cloud_share(val, time.time() + m * 60)
             winsys.log(f"send to phone (cloud): {val}")
-            ok = False
-            try:                                  # the cloud's own right-click entry: copy a link, or its Share window
-                ok = winsys.invoke_shell_verb([str(val)], "Copy link", "Share")
-            except Exception as e:
-                winsys.log(f"cloud share verb: {e}")
+            self.status.setText(tr("Waiting for {cloud} to take the file…", cloud=self.cloud.currentText()))
+            cloud = self.cloud.currentText()
+
+            def ask():
+                # the cloud's own right-click entry. Never the plain Windows "Share" (that's Quick Share / Nearby).
+                # OneDrive only offers "Copy link" once the file has synced, so keep trying for a while.
+                names = ["Copy link", "Copy Dropbox link", "Copy Shared Link", "Share with Google Drive",
+                         "Share with iCloud", "Share with Dropbox", "Share with Box", "iCloud Drive"]
+                ok = False
+                for _ in range(20):
+                    try:
+                        ok = winsys.invoke_shell_verb([str(val)], *names)
+                    except Exception as e:
+                        winsys.log(f"cloud share verb: {e}")
+                    if ok or self._closed:
+                        break
+                    time.sleep(2)
+                self._shared = ok
+            self._shared = None
+            threading.Thread(target=ask, daemon=True).start()
+            return
+        if self._shared is not None:
+            ok, self._shared = self._shared, None
             if ok:
                 self.status.setText(tr("In {cloud}'s Share window, choose who can open it and copy the link. "
                                        "It appears here as a QR code.", cloud=self.cloud.currentText()))
             else:
-                winsys.reveal(str(val))
+                winsys.reveal(str(self.dest))
                 self.status.setText(tr("Right-click the file in the window that opened, choose Share (or Copy link), "
                                        "and copy the link. It appears here as a QR code."))
-            return
         text = QGuiApplication.clipboard().text().strip()
         if self.dest is not None and text != self._clip_start and text.startswith("http") and any(
                 c in text for c in _CLOUD_LINK):
@@ -10054,6 +10150,7 @@ class DragWheelApp(QObject):
         QTimer.singleShot(150, self.restore_pinned_floats)
         self.predownload()
         self._prebuild_settings(6000)
+        QTimer.singleShot(3000, refresh_clouds)
         self._cloud_timer = QTimer(self, interval=10 * 60 * 1000, timeout=clean_cloud_shares)
         self._cloud_timer.start()
         QTimer.singleShot(20000, clean_cloud_shares)

@@ -1026,9 +1026,9 @@ def sendto_entry(*words) -> Path | None:
     return None
 
 
-def invoke_shell_verb(paths, *names) -> bool:
-    """Run the right-click entry whose text contains one of `names` on all `paths` (same folder = one action).
-    True if it was found and started."""
+def invoke_shell_verb(paths, *names, exact=()) -> bool:
+    """Run the right-click entry whose text contains one of `names` (earlier names win) or equals one of `exact`
+    on all `paths` (same folder = one action). True if it was found and started."""
     if not IS_WIN or not paths:
         return False
     import pythoncom
@@ -1056,14 +1056,20 @@ def invoke_shell_verb(paths, *names) -> bool:
             verbs = items.Verbs()
         if verbs is None:
             continue
-        for i in range(verbs.Count):
-            v = verbs.Item(i)
-            label = (v.Name or "").replace("&", "").lower()
-            if any(n.lower() in label for n in names):
-                log(f"shell verb: {v.Name} on {len(files)} item(s)")
-                v.DoIt()
-                started = True
+        found = [(verbs.Item(i), (verbs.Item(i).Name or "").replace("&", "").strip().lower()) for i in range(verbs.Count)]
+        pick = None
+        for n in names:
+            pick = next((v for v, label in found if n.lower() in label), None)
+            if pick is not None:
                 break
+        if pick is None:
+            pick = next((v for v, label in found if label in [e.lower() for e in exact]), None)
+        if pick is None:
+            log("shell verbs: " + ", ".join(label for _, label in found if label))
+            continue
+        log(f"shell verb: {pick.Name} on {len(files)} item(s)")
+        pick.DoIt()
+        started = True
     return started
 
 
