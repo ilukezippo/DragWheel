@@ -5,7 +5,8 @@
 - Internet links: a service that refuses your network is skipped straight away instead of uploading half the file first; programs go as *Name.zip* (not *Name.exe.zip*, which some services refuse) and files are sent with their real type
 - The Send to phone windows come to the front when they open but no longer stay on top of everything
 - Windows 11: the right-click option is now called *Use the full right-click menu (like Windows 10)*, which is what it does — Windows' short menu only takes signed, packaged apps
-- **Internet links download the file itself:** tmpfiles.org is no longer used — its download page was full of ads whose fake Download buttons opened other sites. Links now come from Litterbox, 0x0.st or uguu.se, which give the file directly, and last 1 to 72 hours
+- **Choose the file service** for an internet link: Automatic (Litterbox, then 0x0.st, then uguu.se, which all give the file itself), or one of them, or tmpfiles.org with a warning about the ads and pop-ups on its download page; each shows the link times it offers
+- When an upload fails, the message says what each service did (refused your network, cut the upload off, refused the file type…)
 - **Settings opens at once:** it's prepared ahead of time while nothing is playing, so a playing float no longer stops for a second when you open Settings
 - **Settings Config exports everything:** every option (also the ones you never changed), your keys, slices, presets, chains, Custom Slices, Auto Convert folders and saved links, plus starting with Windows and the right-click menus
 - **Floats that open with Windows** come back at the same place and size (the height is remembered too, and DragWheel waits for the screens to be ready after you sign in)

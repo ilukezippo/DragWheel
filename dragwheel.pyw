@@ -725,17 +725,48 @@ def _host_0x0(path, minutes, progress, cancelled):
     return link
 
 
+def _host_tmpfiles(path, minutes, progress, cancelled):
+    import json as _json
+    data = _json.loads(_post_upload("https://tmpfiles.org/api/v1/upload", path, "file",
+                                    {"expire": str(min(48 * 60, minutes) * 60)}, progress, cancelled))
+    url = data["data"]["url"].replace("http://", "https://", 1)
+    return url.replace("tmpfiles.org/", "tmpfiles.org/dl/", 1)        # the file itself, not the page with ads
+
+
 def _host_uguu(path, minutes, progress, cancelled):
     import json as _json
     data = _json.loads(_post_upload("https://uguu.se/upload", path, "files[]", {}, progress, cancelled))
     return data["files"][0]["url"]
 
 
-# name, function, size limit in MB, longest it keeps a file (minutes). Only services whose link is the file itself:
-# tmpfiles.org was dropped because its download page is full of ads with fake Download buttons.
+# name, function, size limit in MB, longest it keeps a file (minutes)
 TEMP_HOSTS = [("litterbox.catbox.moe", _host_litterbox, 1000, 72 * 60),
               ("0x0.st", _host_0x0, 512, 365 * 24 * 60),
-              ("uguu.se", _host_uguu, 128, 3 * 60)]
+              ("uguu.se", _host_uguu, 128, 3 * 60),
+              ("tmpfiles.org", _host_tmpfiles, 100, 48 * 60)]
+AUTO_HOSTS = ["litterbox.catbox.moe", "0x0.st", "uguu.se"]     # tried in turn; tmpfiles.org only when you pick it
+# what the Service list shows, and the link times each one offers (minutes)
+HOST_CHOICES = [("auto", "Automatic (tries each in turn)", [60, 12 * 60, 24 * 60, 72 * 60]),
+                ("litterbox.catbox.moe", "Litterbox — up to 1 GB", [60, 12 * 60, 24 * 60, 72 * 60]),
+                ("0x0.st", "0x0.st — up to 512 MB", [60, 12 * 60, 24 * 60, 72 * 60]),
+                ("uguu.se", "uguu.se — up to 128 MB", [3 * 60]),
+                ("tmpfiles.org", "tmpfiles.org — up to 100 MB (ads)", [5, 15, 30, 60, 12 * 60, 24 * 60, 48 * 60])]
+
+
+def _short_reason(err: str) -> str:
+    """One host's failure in a few words, for the message you see."""
+    e = err.lower()
+    if "refuses this connection" in e or "403" in e:
+        return tr("refuses connections from your network")
+    if "eof occurred" in e or "reset" in e or "timed out" in e:
+        return tr("the upload was cut off partway")
+    if "415" in e or "unsupported media" in e:
+        return tr("refused this kind of file")
+    if "413" in e or "too large" in e:
+        return tr("the file is too big for it")
+    if "can't be reached" in e or "getaddrinfo" in e or "urlopen error" in e:
+        return tr("couldn't be reached")
+    return tr("didn't work")
 
 
 BLOCKED_UPLOAD_EXT = {".exe", ".msi", ".msix", ".appx", ".bat", ".cmd", ".com", ".scr", ".dll", ".sys", ".cpl", ".jar",
@@ -757,17 +788,19 @@ def _host_refuses(name) -> str:
         return f"can't be reached ({type(e).__name__}: {e})"
 
 
-def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: False) -> tuple[str, str]:
+def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: False, only=None) -> tuple[str, str]:
     """Upload to a free temporary host; returns (download link, host). Several hosts are tried in turn, because a
     network, country or security app may block one of them. Short times (under an hour) prefer hosts that delete soon."""
     size = Path(path).stat().st_size
     mb = size / (1024 * 1024)
-    order = ["litterbox.catbox.moe", "0x0.st", "uguu.se"]
+    order = [only] if only and only != "auto" else list(AUTO_HOSTS)
     hosts = {h[0]: h for h in TEMP_HOSTS}
     errors = []
     for name in order:
         _n, fn, limit, _keep = hosts[name]
         if mb > limit or (_keep < minutes and name != order[-1]):
+            errors.append(f"{name}: too large ({mb:.0f} MB, limit {limit} MB)" if mb > limit else
+                          f"{name}: keeps files only {_keep // 60} h")
             continue                                   # too big, or it would delete the file too early
         why = _host_refuses(name)
         if why:                                        # e.g. this network or country is blocked there:
@@ -798,9 +831,14 @@ def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: F
     winsys.log(f"temporary upload failed ({mb:.1f} MB, {minutes} min): " + " | ".join(errors))
     if mb > 1000:
         raise OSError(tr("Too big for an internet link (the limit is 1 GB)."))
-    if errors and all("EOF occurred" in e or "CERTIFICATE" in e.upper() or "SSL" in e.upper() for e in errors):
-        raise OSError(tr("The upload was cut off by something on this PC or network, often an antivirus that checks "
-                         "secure connections (like ESET). Let DragWheel through it, or try Quick Share."))
+    # say what each service did (the last try counts), so it's clear which one to pick next time
+    last = {}
+    for e in errors:
+        last[e.split(":", 1)[0].split("#")[0]] = e
+    lines = [f"{n}: {_short_reason(e)}" for n, e in last.items() if "keeps files only" not in e]
+    if lines:
+        raise OSError(tr("Couldn't upload.") + "\n" + "\n".join("• " + x for x in lines) + "\n" +
+                      tr("Pick another service in the list, or use Quick Share."))
     raise OSError(tr("Couldn't upload. Check the internet connection and try again."))
 
 
@@ -907,16 +945,26 @@ class InternetShare(FrontDialog):
         head.setWordWrap(True)
         head.setFixedWidth(360)
         lay.addWidget(head)
-        row = QHBoxLayout()
-        row.addWidget(QLabel(tr("Keep the link for")))
+        form = QFormLayout()
+        self.host = QComboBox()
+        for key, label, _m in HOST_CHOICES:
+            self.host.addItem(tr(label), key)
+        self.host.setCurrentIndex(max(0, self.host.findData(settings().value("share_host", "auto"))))
+        form.addRow(tr("Service"), self.host)
         self.hours = QComboBox()
-        for m in self.MINUTES:
-            self.hours.addItem(tr("{n} minutes", n=m) if m < 60 else tr("{n} hour(s)", n=m // 60), m)
-        self.hours.setCurrentIndex(max(0, self.hours.findData(int(settings().value("share_minutes", 60)))))
-        row.addWidget(self.hours, 1)
-        lay.addLayout(row)
-        note = QLabel(tr("The file is uploaded to a free temporary file service (DragWheel tries several in turn) and deleted "
-                         "automatically after about that time. Anyone with the link can download it until then. Up to 1 GB."))
+        form.addRow(tr("Keep the link for"), self.hours)
+        lay.addLayout(form)
+        self.ads = QLabel(tr("tmpfiles.org's download page shows ads and pop-ups, with fake Download buttons that open "
+                             "other sites. DragWheel gives the direct file link, but tell whoever opens it not to tap "
+                             "anything else on that page."))
+        self.ads.setWordWrap(True)
+        self.ads.setFixedWidth(360)
+        self.ads.setStyleSheet(f"color:{theme.hexc('danger')};font-size:9pt")
+        lay.addWidget(self.ads)
+        self.host.currentIndexChanged.connect(self._host_changed)
+        self._host_changed()
+        note = QLabel(tr("The file is uploaded to a free temporary file service and deleted automatically after about "
+                         "that time. Anyone with the link can download it until then."))
         note.setWordWrap(True)
         note.setFixedWidth(360)
         note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
@@ -954,14 +1002,27 @@ class InternetShare(FrontDialog):
         self._result = None
         self._poll = QTimer(self, interval=150, timeout=self._update)
 
+    def _host_changed(self, *_):
+        key = self.host.currentData()
+        times = next(m for k, _l, m in HOST_CHOICES if k == key)
+        want = int(self.hours.currentData() or settings().value("share_minutes", 60))
+        self.hours.clear()
+        for m in times:
+            self.hours.addItem(tr("{n} minutes", n=m) if m < 60 else tr("{n} hour(s)", n=m // 60), m)
+        self.hours.setCurrentIndex(max(0, self.hours.findData(min(times, key=lambda m: abs(m - want)))))
+        self.ads.setVisible(key == "tmpfiles.org")
+
     def _start(self):
         settings().setValue("share_minutes", self.hours.currentData())
+        settings().setValue("share_host", self.host.currentData())
         self.shared_name = self.paths[0].name if len(self.paths) == 1 else tr("{n} files", n=len(self.paths))
         self.go.setEnabled(False)
         self.hours.setEnabled(False)
+        self.host.setEnabled(False)
         self.bar.show()
         self.status.setText(tr("Uploading…"))
         hours = self.hours.currentData()
+        only = self.host.currentData()
 
         def work():
             try:
@@ -974,11 +1035,12 @@ class InternetShare(FrontDialog):
                     tmp = Path(tempfile.mkdtemp(prefix="dragwheel-share-"))
                     src = tmp / ((self.paths[0].stem if blocked else self.paths[0].name if len(self.paths) == 1
                                   else "DragWheel") + ".zip")         # "Setup.zip", not "Setup.exe.zip": some services refuse that
-                    with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED if blocked else zipfile.ZIP_DEFLATED) as z:
+                    with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as z:
                         for it in self.paths:
                             for f in ([it] if it.is_file() else [x for x in it.rglob("*") if x.is_file()]):
                                 z.write(f, str(f.relative_to(it.parent)))
-                link, host = upload_temporary(src, hours, lambda f: setattr(self, "_frac", f), lambda: self._cancel)
+                link, host = upload_temporary(src, hours, lambda f: setattr(self, "_frac", f), lambda: self._cancel,
+                                              only=only)
                 self._result = ("ok", link, host)
             except Exception as e:
                 self._result = ("err", str(e), "")
@@ -993,9 +1055,10 @@ class InternetShare(FrontDialog):
         kind, val, host = self._result
         self.bar.hide()
         if kind == "err":
-            self.status.setText(f"<span style='color:{theme.hexc('danger')}'>{val}</span>")
+            self.status.setText(f"<span style='color:{theme.hexc('danger')}'>" + val.replace("\n", "<br>") + "</span>")
             self.go.setEnabled(True)
             self.hours.setEnabled(True)
+            self.host.setEnabled(True)
             return
         self.url = val
         winsys.log(f"send to phone (internet): uploaded to {host}")
@@ -1043,7 +1106,7 @@ class SendChooser(FrontDialog):
         last = "internet" if last == "iphone" else last
         for key, title, desc in (
                 ("quick", tr("Quick Share"), tr("Google's Quick Share sends straight to a nearby Android phone. No network setup.")),
-                ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network and any phone, iPhone too. Deleted after 1 to 72 hours.")),
+                ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network and any phone, iPhone too. Deleted after 5 minutes to 72 hours.")),
                 ("bluetooth", tr("Bluetooth"), tr("Slower, but needs no network. Works with phones paired to this PC (Android; iPhones can't receive files over Bluetooth).")),
                 ("wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Nothing leaves your home, but routers and firewalls can block it."))):
             b = QPushButton(f"{title}\n{desc}")
