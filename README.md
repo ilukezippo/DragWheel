@@ -67,7 +67,7 @@ All keys can be changed in **Settings** (tray icon → Settings).
 - **PDF tools:** sign (draw or drop your signature, on one page, all pages or a range), arrange pages by dragging (drop more PDFs or pictures in), watermark with live preview, page numbers, grayscale, unlock, word count
 - **Comics, fonts, subtitles and archives:** CBR/CBZ/CB7 to PDF and back, font conversion and install, add or extract subtitles, split and join big files, password-protected ZIP/7Z, fix garbled Arabic text
 - **Float, the mini player:** play YouTube and ~1,800 sites (copy a link, right-click → *Play copied link in Float*), live streams, quality menu, repeat and loop, saved links, subtitles, keyboard media keys with a big on-screen sign
-- **Send to phone:** Quick Share, Bluetooth, or a temporary internet link with a QR code (5 minutes to 72 hours)
+- **Send to phone:** Quick Share, Bluetooth, or a temporary internet link with a QR code (1 to 72 hours)
 - **Make it yours:** choose and reorder slices (with a live preview), presets like *WebP · quality 80 · max 1920 px*, chains like *resize → WebP → ZIP*, your own commands, results next to the file / in a folder / replacing it / on the clipboard, export and import settings
 - **Everyday:** recent results in the tray, a queue for many files, Undo, watch folders, a command line (`dragwheel convert *.heic --to jpg`), quick preview (tap Space while dragging), wheel animations, sounds, high contrast
 - **AI, offline:** remove backgrounds, blur faces, speech to text in many languages including Arabic

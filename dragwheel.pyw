@@ -708,23 +708,16 @@ def _host_0x0(path, minutes, progress, cancelled):
     return link
 
 
-def _host_tmpfiles(path, minutes, progress, cancelled):
-    import json as _json
-    data = _json.loads(_post_upload("https://tmpfiles.org/api/v1/upload", path, "file",
-                                    {"expire": str(min(48 * 60, minutes) * 60)}, progress, cancelled))
-    return data["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/", 1)
-
-
 def _host_uguu(path, minutes, progress, cancelled):
     import json as _json
     data = _json.loads(_post_upload("https://uguu.se/upload", path, "files[]", {}, progress, cancelled))
     return data["files"][0]["url"]
 
 
-# name, function, size limit in MB, longest it keeps a file (minutes)
+# name, function, size limit in MB, longest it keeps a file (minutes). Only services whose link is the file itself:
+# tmpfiles.org was dropped because its download page is full of ads with fake Download buttons.
 TEMP_HOSTS = [("litterbox.catbox.moe", _host_litterbox, 1000, 72 * 60),
               ("0x0.st", _host_0x0, 512, 365 * 24 * 60),
-              ("tmpfiles.org", _host_tmpfiles, 100, 48 * 60),
               ("uguu.se", _host_uguu, 128, 3 * 60)]
 
 
@@ -737,14 +730,13 @@ def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: F
     network, country or security app may block one of them. Short times (under an hour) prefer hosts that delete soon."""
     size = Path(path).stat().st_size
     mb = size / (1024 * 1024)
-    order = ["litterbox.catbox.moe", "0x0.st", "tmpfiles.org", "uguu.se"] if minutes >= 60 else \
-        ["tmpfiles.org", "uguu.se", "0x0.st", "litterbox.catbox.moe"]
+    order = ["litterbox.catbox.moe", "0x0.st", "uguu.se"]
     hosts = {h[0]: h for h in TEMP_HOSTS}
     errors = []
     for name in order:
         _n, fn, limit, _keep = hosts[name]
-        if mb > limit:
-            continue
+        if mb > limit or (_keep < minutes and name != order[-1]):
+            continue                                   # too big, or it would delete the file too early
         for attempt in (1, 2):
             if cancelled():
                 raise OSError("cancelled")
@@ -852,7 +844,7 @@ class ShareQR(QDialog):
 
 class InternetShare(QDialog):
     """Send to phone through a temporary internet link: upload, then a QR code to open it on any phone."""
-    MINUTES = [5, 10, 15, 30, 60, 12 * 60, 24 * 60, 72 * 60]
+    MINUTES = [60, 12 * 60, 24 * 60, 72 * 60]     # what the file services offer (none deletes sooner than an hour)
 
     def __init__(self, paths):
         super().__init__(None, Qt.WindowStaysOnTopHint)
@@ -1007,7 +999,7 @@ class SendChooser(QDialog):
         last = "internet" if last == "iphone" else last
         for key, title, desc in (
                 ("quick", tr("Quick Share"), tr("Google's Quick Share sends straight to a nearby Android phone. No network setup.")),
-                ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network and any phone, iPhone too. Deleted after 5 minutes to 72 hours.")),
+                ("internet", tr("Internet link"), tr("Uploads to a temporary link that works on any network and any phone, iPhone too. Deleted after 1 to 72 hours.")),
                 ("bluetooth", tr("Bluetooth"), tr("Slower, but needs no network. Works with phones paired to this PC (Android; iPhones can't receive files over Bluetooth).")),
                 ("wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Nothing leaves your home, but routers and firewalls can block it."))):
             b = QPushButton(f"{title}\n{desc}")

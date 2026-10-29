@@ -2,6 +2,7 @@
 
 ## 1.2.2 — not released yet
 
+- **Internet links download the file itself:** tmpfiles.org is no longer used — its download page was full of ads whose fake Download buttons opened other sites. Links now come from Litterbox, 0x0.st or uguu.se, which give the file directly, and last 1 to 72 hours
 - **Settings opens at once:** it's prepared ahead of time while nothing is playing, so a playing float no longer stops for a second when you open Settings
 - **Settings Config exports everything:** every option (also the ones you never changed), your keys, slices, presets, chains, Custom Slices, Auto Convert folders and saved links, plus starting with Windows and the right-click menus
 - **Floats that open with Windows** come back at the same place and size (the height is remembered too, and DragWheel waits for the screens to be ready after you sign in)
