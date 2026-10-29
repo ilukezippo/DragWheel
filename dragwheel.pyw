@@ -383,11 +383,26 @@ def _lan_ip() -> str:
         s.close()
 
 
-class PhoneShare(QDialog):
+class FrontDialog(QDialog):
+    """A window that comes to the front when it opens (even from the tray or the wheel) but doesn't stay on top
+    of everything afterwards, so you can keep working while a long upload runs."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not getattr(self, "_fronted", False):
+            self._fronted = True
+            QTimer.singleShot(0, lambda: (self.raise_(), self.activateWindow(), winsys.bring_to_front(int(self.winId()))))
+
+
+class PhoneShare(FrontDialog):
     """Share files with a phone on the same Wi-Fi: a QR code opens a page served straight from this PC."""
 
     def __init__(self, paths):
-        super().__init__(None, Qt.WindowStaysOnTopHint)
+        super().__init__(None)
         import http.server
         import secrets
         import urllib.parse
@@ -645,8 +660,10 @@ class _Upload:
         pre = "".join(f'--{self.boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'
                       for k, v in fields.items())
         from urllib.parse import quote
+        import mimetypes
+        ctype = mimetypes.guess_type(Path(path).name)[0] or "application/octet-stream"   # e.g. application/zip
         pre += (f'--{self.boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{quote(Path(path).name)}"\r\n'
-                f"Content-Type: application/octet-stream\r\n\r\n")
+                f"Content-Type: {ctype}\r\n\r\n")
         self.parts = [pre.encode(), None, f"\r\n--{self.boundary}--\r\n".encode()]
         self.f = open(path, "rb")
         self.size = Path(path).stat().st_size
@@ -725,6 +742,21 @@ BLOCKED_UPLOAD_EXT = {".exe", ".msi", ".msix", ".appx", ".bat", ".cmd", ".com", 
                       ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".lnk", ".reg", ".apk", ".xapk", ".ipa"}
 
 
+def _host_refuses(name) -> str:
+    """A quick look at the service's home page (a few KB) before sending a big file: '' if it answers normally."""
+    import urllib.error
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"https://{name}/", headers={"User-Agent": f"DragWheel/{VERSION} (Windows)"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            r.read(2048)
+        return ""
+    except urllib.error.HTTPError as e:
+        return f"refuses this connection (HTTP {e.code})" if e.code in (401, 403, 451) else ""
+    except Exception as e:
+        return f"can't be reached ({type(e).__name__}: {e})"
+
+
 def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: False) -> tuple[str, str]:
     """Upload to a free temporary host; returns (download link, host). Several hosts are tried in turn, because a
     network, country or security app may block one of them. Short times (under an hour) prefer hosts that delete soon."""
@@ -737,19 +769,30 @@ def upload_temporary(path, minutes, progress=lambda f: None, cancelled=lambda: F
         _n, fn, limit, _keep = hosts[name]
         if mb > limit or (_keep < minutes and name != order[-1]):
             continue                                   # too big, or it would delete the file too early
+        why = _host_refuses(name)
+        if why:                                        # e.g. this network or country is blocked there:
+            errors.append(f"{name}: {why}")            # skip it instead of uploading half the file first
+            continue
         for attempt in (1, 2):
             if cancelled():
                 raise OSError("cancelled")
+            seen = [0.0]
+            t0 = time.monotonic()
+
+            def prog(f, seen=seen):
+                seen[0] = f
+                progress(f)
             try:
                 progress(0.0)
-                link = fn(path, minutes, progress, cancelled)
+                link = fn(path, minutes, prog, cancelled)
                 winsys.log(f"temporary upload: {name} ok ({mb:.1f} MB, {minutes} min)" +
                            (f" after: {' | '.join(errors)}" if errors else ""))
                 return link, name
             except Exception as e:
                 if cancelled():
                     raise
-                errors.append(f"{name}#{attempt}: {type(e).__name__}: {e}")
+                errors.append(f"{name}#{attempt}: {type(e).__name__}: {e} (at {int(seen[0] * 100)}% after "
+                              f"{time.monotonic() - t0:.0f} s)")
                 if "EOF occurred" not in str(e) and "timed out" not in str(e) and "reset" not in str(e).lower():
                     break                                  # only retry dropped connections
     winsys.log(f"temporary upload failed ({mb:.1f} MB, {minutes} min): " + " | ".join(errors))
@@ -795,11 +838,11 @@ def _time_left(expires) -> str:
     return tr("{n} min left", n=m) if m < 60 else tr("{h} h {m} min left", h=m // 60, m=m % 60)
 
 
-class ShareQR(QDialog):
+class ShareQR(FrontDialog):
     """Tray → Send to phone — show QR code: an internet link made earlier, until it runs out."""
 
     def __init__(self, item):
-        super().__init__(None, Qt.WindowStaysOnTopHint)
+        super().__init__(None)
         from PySide6.QtWidgets import QLayout
         self.item = item
         self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
@@ -842,12 +885,12 @@ class ShareQR(QDialog):
         self.left.setText(_time_left(self.item["expires"]))
 
 
-class InternetShare(QDialog):
+class InternetShare(FrontDialog):
     """Send to phone through a temporary internet link: upload, then a QR code to open it on any phone."""
     MINUTES = [60, 12 * 60, 24 * 60, 72 * 60]     # what the file services offer (none deletes sooner than an hour)
 
     def __init__(self, paths):
-        super().__init__(None, Qt.WindowStaysOnTopHint)
+        super().__init__(None)
         from PySide6.QtWidgets import QLayout, QProgressBar
         self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
         self.setWindowIcon(app_icon())
@@ -859,7 +902,7 @@ class InternetShare(QDialog):
         what = self.paths[0].name if len(self.paths) == 1 and self.paths[0].is_file() else \
             tr("{n} files (as one ZIP)", n=len(self.paths)) if len(self.paths) > 1 else self.paths[0].name + ".zip"
         if len(self.paths) == 1 and self.paths[0].is_file() and self.paths[0].suffix.lower() in BLOCKED_UPLOAD_EXT:
-            what = self.paths[0].name + ".zip — " + tr("programs are sent inside a ZIP, because file services refuse them")
+            what = self.paths[0].stem + ".zip — " + tr("programs are sent inside a ZIP, because file services refuse them")
         head = QLabel(f"<b>{tr('Internet link')}</b><br><span style='color:{theme.hexc('dim')}'>{what}</span>")
         head.setWordWrap(True)
         head.setFixedWidth(360)
@@ -929,7 +972,8 @@ class InternetShare(QDialog):
                     import tempfile
                     import zipfile
                     tmp = Path(tempfile.mkdtemp(prefix="dragwheel-share-"))
-                    src = tmp / ((self.paths[0].name if len(self.paths) == 1 else "DragWheel") + ".zip")
+                    src = tmp / ((self.paths[0].stem if blocked else self.paths[0].name if len(self.paths) == 1
+                                  else "DragWheel") + ".zip")         # "Setup.zip", not "Setup.exe.zip": some services refuse that
                     with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED if blocked else zipfile.ZIP_DEFLATED) as z:
                         for it in self.paths:
                             for f in ([it] if it.is_file() else [x for x in it.rglob("*") if x.is_file()]):
@@ -979,11 +1023,11 @@ class InternetShare(QDialog):
         super().closeEvent(e)
 
 
-class SendChooser(QDialog):
+class SendChooser(FrontDialog):
     """How to send to the phone: Quick Share, an internet link, or the same Wi-Fi."""
 
     def __init__(self, paths):
-        super().__init__(None, Qt.WindowStaysOnTopHint)
+        super().__init__(None)
         from PySide6.QtWidgets import QLayout
         self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
         self.setWindowIcon(app_icon())
@@ -8103,11 +8147,12 @@ class SettingsDialog(QDialog):
         self.sendto.setChecked(st["sendto"])
         v.addWidget(self.sendto)
         if winsys.windows_11():
-            self.full_menu = SwitchBox(tr("Add {app} to the Windows 11 context menu", app=APP))
+            self.full_menu = SwitchBox(tr("Use the full right-click menu (like Windows 10)"))
             self.full_menu.setChecked(st["full_menu"])
             v.addWidget(self.full_menu)
-            lbl = QLabel(tr("Windows 11 hides DragWheel and other apps under “Show more options”. This turns on Windows' own "
-                            "full menu for your account (like Windows 10). Explorer restarts to apply it."))
+            lbl = QLabel(tr("Windows 11's short menu only lets in apps installed as signed packages, so {app} sits under "
+                            "“Show more options”. This turns on Windows' full menu for your account, with {app} right in it. "
+                            "Explorer restarts to apply it.", app=APP))
             lbl.setWordWrap(True)
             lbl.setObjectName("dim")
             lbl.setContentsMargins(58, 0, 0, 0)
