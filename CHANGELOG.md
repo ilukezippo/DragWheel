@@ -9,6 +9,7 @@
 - The Send to phone window no longer outlines the way you used last time
 - **Read QR code on screen** (tray menu and the desktop's right-click menu): the QR codes on your screens light up; click one (or drag a box around it) and DragWheel shows what it says — open a link, copy text, or copy a Wi-Fi password. Pictures get a *Read QR code* action too. Works offline
 - **Send to phone windows redone:** ‹ Back at the top left, the title in the middle, a space for the QR code with a spinning wheel inside it until the link is ready (with the upload percentage), and clear main buttons; click a QR code to copy its link
+- **Same file, same QR code:** choosing Internet link or Cloud link again for a file that's already shared shows the link you made (with the time left, and *New link* if you want a fresh one); Back from Same Wi-Fi or Link from this PC keeps sharing, and choosing it again brings the same window back
 - Cloud link finds Google Drive when it's set to mirror files into a *My Drive* folder, or uses another drive letter
 - Cloud link lists every cloud it supports; one that isn't set up on this PC offers to get it
 - The installer can download Cloudflare's tunnel tool ahead of time (optional, under one-time downloads)

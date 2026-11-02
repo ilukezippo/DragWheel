@@ -464,7 +464,10 @@ class FrontDialog(QDialog):
 
     def _go_back(self):
         go = self.back
-        self.close()
+        if getattr(self, "keep_on_back", False):           # still sharing: choosing it again brings it back
+            self.hide()
+        else:
+            self.close()
         if go:
             QTimer.singleShot(0, go)
 
@@ -488,6 +491,9 @@ class PhoneShare(FrontDialog):
         import urllib.parse
         self.mode = mode                 # "wifi": phones on this network · "tunnel": anywhere, through Cloudflare
         self.tunnel = None
+        self.keep_on_back = True
+        self.key = share_key(paths)
+        self.ended = False
         self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
         self.setWindowIcon(app_icon())
         self.setStyleSheet(i18n.css(DIALOG_CSS))
@@ -768,6 +774,7 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
             self.count.setText(tr("Downloaded {n} time(s) — last: {name}", n=self.hits, name=self._last))
 
     def closeEvent(self, e):
+        self.ended = True
         try:
             self.server.shutdown()
             self.server.server_close()
@@ -988,10 +995,22 @@ def share_links() -> list:
     return alive
 
 
-def remember_share_link(url, name, minutes):
+def share_key(paths) -> str:
+    """Which files were shared, and as they were then (a changed file is shared again, not the old copy)."""
+    out = []
+    for x in sorted(os.path.normcase(os.path.abspath(str(x))) for x in paths):
+        try:
+            st = os.stat(x)
+            out.append(f"{x}|{st.st_size}|{int(st.st_mtime)}")
+        except OSError:
+            out.append(x)
+    return "\n".join(out)
+
+
+def remember_share_link(url, name, minutes, key=""):
     import time
     links = [x for x in share_links() if x["url"] != url]
-    links.insert(0, {"url": url, "name": name, "expires": time.time() + minutes * 60})
+    links.insert(0, {"url": url, "name": name, "expires": time.time() + minutes * 60, "key": key})
     settings().setValue("share_links", json.dumps(links[:20], ensure_ascii=False))
 
 
@@ -1380,7 +1399,7 @@ def _time_left(expires) -> str:
 class ShareQR(FrontDialog):
     """Tray → Send to phone — show QR code: an internet link made earlier, until it runs out."""
 
-    def __init__(self, item):
+    def __init__(self, item, title=None, new=None):
         super().__init__(None)
         from PySide6.QtWidgets import QLayout
         self.item = item
@@ -1390,7 +1409,7 @@ class ShareQR(FrontDialog):
         self.setAttribute(Qt.WA_DeleteOnClose)
         lay = QVBoxLayout(self)
         lay.setSizeConstraint(QLayout.SetFixedSize)
-        self.header(lay, tr("Internet link"), item["name"])
+        self.header(lay, title or tr("Internet link"), item["name"])
         qr = QrBox()
         qr.show_code(item["url"])
         lay.addWidget(qr, 0, Qt.AlignHCenter)
@@ -1410,13 +1429,22 @@ class ShareQR(FrontDialog):
         b.clicked.connect(lambda: QGuiApplication.clipboard().setText(item["url"]))
         c = QPushButton(tr("Close"))
         c.clicked.connect(self.close)
-        self.buttons(lay, b, c)
+        if new is not None:                                # already shared: or make a fresh link instead
+            n = QPushButton(tr("New link"))
+            n.setToolTip(tr("Share it again with a new link"))
+            n.clicked.connect(lambda: (self.close(), QTimer.singleShot(0, new)))
+            self.buttons(lay, b, n, c)
+        else:
+            self.buttons(lay, b, c)
         self._t = QTimer(self, interval=20000, timeout=self._tick)
         self._t.start()
         self._tick()
 
     def _tick(self):
         import time
+        if not self.item.get("expires"):
+            self.left.setText(tr("Kept until you delete it"))
+            return
         if self.item["expires"] <= time.time():
             self.close()                                   # the link has run out
             return
@@ -1559,7 +1587,7 @@ class InternetShare(FrontDialog):
             return
         self.url = val
         winsys.log(f"send to phone (internet): uploaded to {host}")
-        remember_share_link(val, self.shared_name, int(self.hours.currentData()))
+        remember_share_link(val, self.shared_name, int(self.hours.currentData()), share_key(self.paths))
         self.status.show()
         self.status.setText("<b>" + tr("Scan with your phone's camera") + "</b> — " +
                             tr("works on any network, even mobile data."))
@@ -1742,9 +1770,26 @@ def cloud_shares() -> list:
     return _jload("cloud_shares", []) if "_jload" in globals() else []
 
 
-def remember_cloud_share(path, expires):
-    lst = [x for x in cloud_shares() if x.get("path") != str(path)] + [{"path": str(path), "expires": expires}]
+def remember_cloud_share(path, expires, key="", url="", name=""):
+    old = next((x for x in cloud_shares() if x.get("path") == str(path)), {})
+    item = dict(old, path=str(path), expires=expires)
+    for k, v in (("key", key), ("url", url), ("name", name)):
+        if v:
+            item[k] = v
+    lst = [x for x in cloud_shares() if x.get("path") != str(path)] + [item]
     settings().setValue("cloud_shares", json.dumps(lst, ensure_ascii=False))
+
+
+def live_share(kind, paths):
+    """A link made earlier for these same files that still works: {"url", "name", "expires"} or None."""
+    key = share_key(paths)
+    if kind == "internet":
+        return next((x for x in share_links() if x.get("key") == key), None)
+    for x in cloud_shares():
+        if x.get("key") == key and x.get("url") and (not x.get("expires") or x["expires"] > time.time()) \
+                and Path(x["path"]).exists():
+            return {"url": x["url"], "name": x.get("name") or Path(x["path"]).name, "expires": x.get("expires", 0)}
+    return None
 
 
 def clean_cloud_shares():
@@ -1906,8 +1951,8 @@ class CloudShare(FrontDialog):
                 return
             self.dest = val
             m = int(self.keep.currentData())
-            if m:
-                remember_cloud_share(val, time.time() + m * 60)
+            remember_cloud_share(val, time.time() + m * 60 if m else 0, share_key(self.paths),
+                                 name=self.paths[0].name if len(self.paths) == 1 else Path(val).name)
             winsys.log(f"send to phone (cloud): {val}")
             self.status.setText("")
             self.qr.busy(tr("Waiting for {cloud} to take the file…", cloud=self.cloud.currentText()))
@@ -1949,6 +1994,10 @@ class CloudShare(FrontDialog):
 
     def _show(self, url):
         self.url = url
+        if self.dest is not None:
+            m = int(self.keep.currentData())
+            remember_cloud_share(self.dest, next((x["expires"] for x in cloud_shares() if x.get("path") == str(self.dest)),
+                                                 time.time() + m * 60 if m else 0), url=url)
         self.status.setText("<b>" + tr("Scan with your phone's camera") + "</b> — " +
                             tr("works on any network, even mobile data."))
         self.qr.show_code(url)
@@ -2125,7 +2174,32 @@ class Actions:
 
     def phone(self, paths, p):
         chooser = SendChooser(paths)
-        if chooser.exec() != QDialog.Accepted:
+        ok = chooser.exec() == QDialog.Accepted
+        choice = chooser.choice if ok else None
+        mode = {"wifi": "wifi", "pclink": "tunnel"}.get(choice)
+        key = share_key(paths)
+        live = getattr(self.app, "_live_phone", {})
+        for k, w in list(live.items()):                    # a share left with Back: same way again = same window
+            try:
+                gone = w.ended or (not w.isVisible() and k != (mode, key))
+            except RuntimeError:
+                gone = True
+            if gone:
+                live.pop(k, None)
+                try:
+                    if not w.ended:
+                        w.close()                          # left with Back and something else chosen: stop it
+                except RuntimeError:
+                    pass
+        self.app._live_phone = live
+        if not ok:
+            return
+        if (mode, key) in live:
+            w = live[(mode, key)]
+            w.back = lambda: self.phone(paths, p)
+            w.show()
+            w.raise_()
+            w.activateWindow()
             return
         if chooser.choice == "quick":
             self.quick_share(paths)
@@ -2137,12 +2211,22 @@ class Actions:
             w.back = lambda: self.phone(paths, p)
             self.app._phone_windows = getattr(self.app, "_phone_windows", [])
             self.app._phone_windows.append(w)
+            if isinstance(w, PhoneShare):
+                self.app._live_phone[(w.mode, key)] = w
             w.show()
             w.raise_()
         if chooser.choice == "pclink":
             self.app._ensure_model("cloudflared", tr("Link from this PC"),
                                    lambda: open_window(PhoneShare(paths, mode="tunnel")))
             return
+        if chooser.choice in ("internet", "cloud"):        # already shared and the link still works: the same code
+            item = live_share(chooser.choice, paths)
+            if item:
+                fresh = (lambda: open_window(InternetShare(paths))) if chooser.choice == "internet" else \
+                    (lambda: open_window(CloudShare(paths)))
+                open_window(ShareQR(item, tr("Internet link") if chooser.choice == "internet" else tr("Cloud link"),
+                                    new=fresh))
+                return
         if chooser.choice == "cloud":
             open_window(CloudShare(paths))
             return
