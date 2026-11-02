@@ -670,7 +670,7 @@ class PhoneShare(FrontDialog):
         self.count = QLabel()
         lay.addWidget(self.count)
         stop = QPushButton(tr("Stop sharing"))
-        stop.clicked.connect(self.close)
+        stop.clicked.connect(self._stop_now)                 # the button says it: stop, no question
         if mode == "tunnel":
             self.copy_b = QPushButton(tr("Copy link"))
             self.copy_b.setObjectName("primary")
@@ -831,6 +831,10 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
 
     def sharing(self):
         return not self.ended
+
+    def _stop_now(self):
+        self._leaving = True
+        self.close()
 
     def stop_question(self):
         what = self.paths[0].name if len(self.paths) == 1 else tr("{n} files", n=len(self.paths))
@@ -7150,114 +7154,379 @@ class DrawPad(QDialog):
         return _clean_signature(tmp, dst)
 
 
+def _scan_icon(kind, color) -> "QIcon":
+    """Line icons for Fix alignment's tool row."""
+    from PySide6.QtGui import QIcon
+    pm = QPixmap(48, 48)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor(color), 3.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    if kind in ("left", "right"):
+        p.drawRoundedRect(QRectF(14, 20, 20, 20), 3, 3)          # the page
+        path = QPainterPath()
+        if kind == "left":
+            path.moveTo(34, 12)
+            path.cubicTo(28, 6, 16, 6, 11, 14)
+            p.drawPath(path)
+            p.drawPolyline([QPointF(9, 6), QPointF(10, 15), QPointF(18, 14)])
+        else:
+            path.moveTo(14, 12)
+            path.cubicTo(20, 6, 32, 6, 37, 14)
+            p.drawPath(path)
+            p.drawPolyline([QPointF(39, 6), QPointF(38, 15), QPointF(30, 14)])
+    elif kind == "auto":
+        pen.setStyle(Qt.DotLine)
+        p.setPen(pen)
+        p.drawRoundedRect(QRectF(9, 9, 30, 30), 4, 4)
+        p.setPen(QPen(QColor(color), 3.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawPolyline([QPointF(17, 31), QPointF(17, 20), QPointF(31, 20), QPointF(31, 31)])
+    else:                                                       # "all": the whole picture
+        for sx, sy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+            cx, cy = 24 + sx * 14, 24 + sy * 14
+            p.drawLine(QPointF(cx, cy), QPointF(cx - sx * 9, cy - sy * 9))
+            p.drawPolyline([QPointF(cx - sx * 8, cy), QPointF(cx, cy), QPointF(cx, cy - sy * 8)])
+    p.end()
+    return QIcon(pm)
+
+
+def _pil_to_qimage(img) -> QImage:
+    img = img.convert("RGB")
+    data = img.tobytes("raw", "RGB")
+    return QImage(data, img.width, img.height, img.width * 3, QImage.Format_RGB888).copy()
+
+
 class CornerPicker(QWidget):
-    """Fix alignment: the photo with the page's four corners found for you; drag any corner onto the page's
-    real corner. value() -> JSON corners (0..1) for engine.image_scan."""
-    BOX = 520
+    """Fix alignment (like a scanner app): the photo with the page's corners found for you — drag any corner
+    (a magnifier shows exactly where) — and a live preview of the result in each look, with rotate left/right.
+    value() -> JSON {"corners", "look", "rotate"} for engine.image_scan."""
+    VIEW_W, VIEW_H = 470, 560
+    PREV_W, PREV_H = 300, 400
+    LOOKS = engine.SCAN_LOOKS
 
     def __init__(self, path):
         super().__init__()
-        from PySide6.QtGui import QImageReader
-        r = QImageReader(str(path))
-        r.setAutoTransform(True)                           # phone photos: the right way up, like the result
-        img = r.read()
-        if img.isNull():
-            import io as _io
-            pil = engine.open_image(path)
-            buf = _io.BytesIO()
-            pil.convert("RGB").save(buf, "PNG")
-            img = QImage.fromData(buf.getvalue())
-        if img.isNull():
-            raise ValueError(r.errorString())
-        self.img = img.scaled(self.BOX, self.BOX, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        try:
-            self.found = engine.detect_document(engine.open_image(path))
-        except Exception as e:
-            winsys.log(f"fix alignment: {e}")
-            self.found = None
-        self.whole = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
-        self.pts = [list(p) for p in (self.found or [[0.04, 0.04], [0.96, 0.04], [0.96, 0.96], [0.04, 0.96]])]
+        from PySide6.QtWidgets import QButtonGroup, QToolButton
+        self.path = str(path)
+        self.pil = None                     # the photo, at most ~1400 px (enough for the view and the preview)
+        self.img = None                     # the same, scaled to the view
+        self.found = None
+        self.pts = None
+        self.look = settings().value("scan_look", self.LOOKS[0])
+        if self.look not in self.LOOKS:
+            self.look = self.LOOKS[0]
+        self.rot = 0
         self.drag = None
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
+        self._ver = 0                        # preview: newest request, and the result coming back from the thread
+        self._done = None
+        self._busy = False
+        self._loaded = None
+        self._angle = 0
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(18)
+        left = QVBoxLayout()
+        left.setSpacing(8)
         self.view = QWidget()
-        self.view.setFixedSize(self.img.width() + 24, self.img.height() + 24)
+        self.view.setFixedSize(self.VIEW_W, self.VIEW_H)
         self.view.setMouseTracking(True)
         self.view.paintEvent = self._paint
         self.view.mousePressEvent = self._press
         self.view.mouseMoveEvent = self._move
-        self.view.mouseReleaseEvent = lambda e: setattr(self, "drag", None)
-        lay.addWidget(self.view, 0, Qt.AlignHCenter)
-        hint = QLabel(tr("Drag the corners onto the corners of the page.") if self.found else
-                      tr("No page edge found: drag the corners onto the corners of the page."))
-        hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
-        hint.setAlignment(Qt.AlignCenter)
-        lay.addWidget(hint)
-        row = QHBoxLayout()
-        b1 = QPushButton(tr("Find the page"))
-        b1.setEnabled(self.found is not None)
-        b1.clicked.connect(lambda: self._set(self.found))
-        b2 = QPushButton(tr("Whole picture"))
-        b2.clicked.connect(lambda: self._set(self.whole))
-        row.addStretch(1)
-        row.addWidget(b1)
-        row.addWidget(b2)
-        row.addStretch(1)
-        lay.addLayout(row)
+        self.view.mouseReleaseEvent = self._release
+        left.addWidget(self.view, 0, Qt.AlignHCenter)
+        self.hint = QLabel(tr("Finding the page…"))
+        self.hint.setObjectName("sub")
+        self.hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        self.hint.setAlignment(Qt.AlignCenter)
+        left.addWidget(self.hint)
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
+        css = (f"QToolButton{{background:transparent;color:{theme.hexc('text')};border:none;border-radius:10px;"
+               f"padding:6px 4px;font:600 9pt 'Segoe UI'}} QToolButton:hover{{background:{theme.hexc('hover')}}}"
+               f"QToolButton:disabled{{color:{theme.hexc('dim')}}}")
+        self.tool_btns = {}
+        for kind, label, fn in (("left", tr("Left"), lambda: self._rotate(-90)), ("right", tr("Right"), lambda: self._rotate(90)),
+                                ("auto", tr("Find the page"), lambda: self._set(self.found)),
+                                ("all", tr("Whole picture"), lambda: self._set([[0, 0], [1, 0], [1, 1], [0, 1]]))):
+            b = QToolButton()
+            b.setIcon(_scan_icon(kind, theme.hexc("text")))
+            b.setIconSize(QSize(26, 26))
+            b.setText(label)
+            b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            b.setStyleSheet(css)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setMinimumWidth(104)
+            b.clicked.connect(fn)
+            self.tool_btns[kind] = b
+            tools.addWidget(b)
+        self.tool_btns["auto"].setEnabled(False)
+        left.addLayout(tools)
+        root.addLayout(left)
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        cap = QLabel(tr("Preview"))
+        cap.setStyleSheet(f"color:{theme.hexc('dim')};font:600 9pt 'Segoe UI'")
+        right.addWidget(cap)
+        self.prev = QLabel()
+        self.prev.setFixedSize(self.PREV_W, self.PREV_H)
+        self.prev.setAlignment(Qt.AlignCenter)
+        self.prev.setStyleSheet(f"background:{theme.hexc('surface')};border:1px solid {theme.hexc('border')};"
+                                f"border-radius:12px")
+        right.addWidget(self.prev)
+        cap2 = QLabel(tr("Look"))
+        cap2.setStyleSheet(f"color:{theme.hexc('dim')};font:600 9pt 'Segoe UI'")
+        right.addWidget(cap2)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        self.chips = {}
+        chip_css = (f"QToolButton{{background:transparent;color:{theme.hexc('dim')};border:2px solid transparent;"
+                    f"border-radius:10px;padding:4px;font:600 8pt 'Segoe UI'}}"
+                    f"QToolButton:hover{{background:{theme.hexc('hover')}}}"
+                    f"QToolButton:checked{{border-color:{theme.hexc('accent')};color:{theme.hexc('text')}}}")
+        short = {"Clean document": tr("Clean"), "Original colours": tr("Original"), "Black & white": tr("B&W"),
+                 "Grayscale": tr("Gray")}
+        for look in self.LOOKS:
+            b = QToolButton()
+            b.setCheckable(True)
+            b.setChecked(look == self.look)
+            b.setText(short.get(look, tr(look)))
+            b.setToolTip(tr(look))
+            b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            b.setIconSize(QSize(58, 76))
+            b.setStyleSheet(chip_css)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, lk=look: self._set_look(lk))
+            self.group.addButton(b)
+            self.chips[look] = b
+            chips.addWidget(b)
+        right.addLayout(chips)
+        right.addStretch(1)
+        root.addLayout(right)
+        self._poll = QTimer(self, interval=60, timeout=self._update)
+        self._poll.start()
+        self._debounce = QTimer(self, singleShot=True, interval=180, timeout=self._render)
 
-    def _set(self, pts):
-        if pts:
-            self.pts = [list(p) for p in pts]
+        def load():                                       # off the main thread: open, shrink, find the page
+            try:
+                pil = engine.open_image(self.path)
+                pil.thumbnail((1400, 1400))
+                pil = pil.convert("RGB")
+                found = engine.detect_document(pil)
+                self._loaded = ("ok", pil, found)
+            except Exception as e:
+                self._loaded = ("err", str(e), None)
+        threading.Thread(target=load, daemon=True).start()
+
+    # ---- state
+    def _update(self):
+        if self._loaded is not None:
+            kind, val, found = self._loaded
+            self._loaded = None
+            if kind == "err":
+                self.hint.setText(f"<span style='color:{theme.hexc('danger')}'>{val}</span>")
+                return
+            self.pil = val
+            q = _pil_to_qimage(val)
+            self.img = q.scaled(self.VIEW_W - 28, self.VIEW_H - 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.found = found
+            self.tool_btns["auto"].setEnabled(found is not None)
+            self.pts = [list(p) for p in (found or [[0.04, 0.04], [0.96, 0.04], [0.96, 0.96], [0.04, 0.96]])]
+            self.hint.setText(tr("Drag the corners onto the corners of the page.") if found else
+                              tr("No page edge found: drag the corners onto the corners of the page."))
+            self.view.update()
+            self._render()
+        if self._done is not None:
+            ver, results = self._done
+            self._done = None
+            self._busy = False
+            if ver == self._ver:
+                for look, img in results.items():
+                    q = _pil_to_qimage(img)
+                    if look == self.look:
+                        self.prev.setPixmap(QPixmap.fromImage(q.scaled(self.PREV_W - 16, self.PREV_H - 16,
+                                                                      Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+                    self.chips[look].setIcon(QIcon(QPixmap.fromImage(q.scaled(58, 76, Qt.KeepAspectRatio,
+                                                                              Qt.SmoothTransformation))))
+                self._results = results
+            else:
+                self._render()
+        if self.pil is None:
+            self._angle = (self._angle + 12) % 360
             self.view.update()
 
-    def _to_view(self, p):
-        return QPointF(12 + p[0] * (self.img.width() - 1), 12 + p[1] * (self.img.height() - 1))
+    def _changed(self):
+        self._ver += 1
+        self.view.update()
+        self._debounce.start()
+
+    def _render(self):
+        """Straighten a small copy in every look, in the background; the newest request wins."""
+        if self.pil is None or self.pts is None:
+            return
+        if self._busy:
+            self._debounce.start()
+            return
+        self._busy = True
+        ver, pts, rot, pil = self._ver, [list(p) for p in self.pts], self.rot, self.pil
+
+        def work():
+            out = {}
+            try:
+                small = pil.copy()
+                small.thumbnail((700, 700))
+                for look in self.LOOKS:
+                    im = engine.straighten(small, pts, look)
+                    if rot:
+                        im = im.rotate(-rot, expand=True)
+                    out[look] = im
+            except Exception as e:
+                winsys.log(f"fix alignment preview: {e}")
+            self._done = (ver, out)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _set(self, pts):
+        if pts and self.pil is not None:
+            self.pts = [list(p) for p in pts]
+            self._changed()
+
+    def _rotate(self, deg):
+        self.rot = (self.rot + deg) % 360
+        self._changed()
+
+    def _set_look(self, look):
+        self.look = look
+        settings().setValue("scan_look", look)
+        res = getattr(self, "_results", {}).get(look)
+        if res is not None:
+            q = _pil_to_qimage(res)
+            self.prev.setPixmap(QPixmap.fromImage(q.scaled(self.PREV_W - 16, self.PREV_H - 16, Qt.KeepAspectRatio,
+                                                           Qt.SmoothTransformation)))
+
+    # ---- drawing and dragging
+    def _origin(self):
+        return QPointF((self.VIEW_W - self.img.width()) / 2, (self.VIEW_H - self.img.height()) / 2)
+
+    def _to_view(self, q):
+        o = self._origin()
+        return QPointF(o.x() + q[0] * (self.img.width() - 1), o.y() + q[1] * (self.img.height() - 1))
 
     def _paint(self, _e):
         p = QPainter(self.view)
         p.setRenderHint(QPainter.Antialiasing)
-        p.drawImage(12, 12, self.img)
+        r = QRectF(self.view.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(QPen(QColor(theme.hexc("border")), 1))
+        p.setBrush(QColor(theme.hexc("surface")))
+        p.drawRoundedRect(r, 14, 14)
+        if self.img is None:                              # still opening: a spinning wheel
+            c = r.center()
+            ring = QRectF(c.x() - 24, c.y() - 24, 48, 48)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(theme.hexc("border")), 5))
+            p.drawEllipse(ring)
+            p.setPen(QPen(QColor(theme.hexc("accent")), 5, Qt.SolidLine, Qt.RoundCap))
+            p.drawArc(ring, int(-self._angle * 16), 100 * 16)
+            return
+        o = self._origin()
+        p.drawImage(o, self.img)
         poly = QPolygonF([self._to_view(q) for q in self.pts])
         outside = QPainterPath()
-        outside.addRect(QRectF(12, 12, self.img.width(), self.img.height()))
+        outside.addRect(QRectF(o.x(), o.y(), self.img.width(), self.img.height()))
         inside = QPainterPath()
         inside.addPolygon(poly)
         inside.closeSubpath()
-        p.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 120))      # what will be cut away
+        p.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 130))      # what will be cut away
         accent = QColor(theme.hexc("accent"))
-        p.setPen(QPen(accent, 2))
-        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(accent, 2.5))
+        p.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 28))
         p.drawPolygon(poly)
+        for i in range(4):                                # edge middles: drag a whole side
+            a, b = self._to_view(self.pts[i]), self._to_view(self.pts[(i + 1) % 4])
+            m = (a + b) / 2
+            p.setPen(QPen(QColor("#ffffff"), 2))
+            p.setBrush(accent)
+            p.drawEllipse(m, 6, 6)
         for i, q in enumerate(self.pts):
             c = self._to_view(q)
-            p.setPen(QPen(QColor("#ffffff"), 2))
-            p.setBrush(accent if i != self.drag else QColor("#ffffff"))
-            p.drawEllipse(c, 9, 9)
+            p.setPen(QPen(QColor("#ffffff"), 2.5))
+            p.setBrush(QColor("#ffffff") if i == self.drag else accent)
+            p.drawEllipse(c, 10, 10)
+        if isinstance(self.drag, int):                    # magnifier: exactly where the corner is
+            c = self._to_view(self.pts[self.drag])
+            R, zoom = 58, 3.0
+            at = QPointF(o.x() + R + 10, o.y() + R + 10)
+            if c.x() < self.VIEW_W / 2 and c.y() < self.VIEW_H / 2:
+                at = QPointF(self.VIEW_W - o.x() - R - 10, o.y() + R + 10)
+            clip = QPainterPath()
+            clip.addEllipse(at, R, R)
+            p.save()
+            p.setClipPath(clip)
+            p.fillRect(QRectF(at.x() - R, at.y() - R, 2 * R, 2 * R), QColor("#000000"))
+            src = QRectF(c.x() - o.x() - R / zoom, c.y() - o.y() - R / zoom, 2 * R / zoom, 2 * R / zoom)
+            p.drawImage(QRectF(at.x() - R, at.y() - R, 2 * R, 2 * R), self.img, src)
+            p.restore()
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor("#ffffff"), 3))
+            p.drawEllipse(at, R, R)
+            p.setPen(QPen(accent, 1.5))
+            p.drawLine(QPointF(at.x() - 12, at.y()), QPointF(at.x() + 12, at.y()))
+            p.drawLine(QPointF(at.x(), at.y() - 12), QPointF(at.x(), at.y() + 12))
+
+    def _hit(self, pos):
+        if self.img is None:
+            return None
+        for i, q in enumerate(self.pts):
+            if (self._to_view(q) - pos).manhattanLength() < 26:
+                return i
+        for i in range(4):
+            m = (self._to_view(self.pts[i]) + self._to_view(self.pts[(i + 1) % 4])) / 2
+            if (m - pos).manhattanLength() < 20:
+                return ("side", i)
+        return None
 
     def _press(self, e):
-        pos = e.position()
-        near = min(range(4), key=lambda i: (self._to_view(self.pts[i]) - pos).manhattanLength())
-        if (self._to_view(self.pts[near]) - pos).manhattanLength() < 40:
-            self.drag = near
-            self._move(e)
+        self.drag = self._hit(e.position())
+        self._last = e.position()
+        self.view.update()
+
+    def _norm(self, pos):
+        o = self._origin()
+        return [min(1.0, max(0.0, (pos.x() - o.x()) / max(1, self.img.width() - 1))),
+                min(1.0, max(0.0, (pos.y() - o.y()) / max(1, self.img.height() - 1)))]
 
     def _move(self, e):
         pos = e.position()
         if self.drag is None:
-            near = any((self._to_view(q) - pos).manhattanLength() < 24 for q in self.pts)
-            self.view.setCursor(Qt.OpenHandCursor if near else Qt.ArrowCursor)
+            self.view.setCursor(Qt.OpenHandCursor if self._hit(pos) is not None else Qt.ArrowCursor)
             return
-        x = min(1.0, max(0.0, (pos.x() - 12) / max(1, self.img.width() - 1)))
-        y = min(1.0, max(0.0, (pos.y() - 12) / max(1, self.img.height() - 1)))
-        self.pts[self.drag] = [round(x, 4), round(y, 4)]
         self.view.setCursor(Qt.ClosedHandCursor)
+        if isinstance(self.drag, int):
+            self.pts[self.drag] = [round(v, 4) for v in self._norm(pos)]
+        else:                                             # a side: both of its corners move together
+            i = self.drag[1]
+            dx = (pos.x() - self._last.x()) / max(1, self.img.width() - 1)
+            dy = (pos.y() - self._last.y()) / max(1, self.img.height() - 1)
+            for k in (i, (i + 1) % 4):
+                self.pts[k] = [round(min(1.0, max(0.0, self.pts[k][0] + dx)), 4),
+                               round(min(1.0, max(0.0, self.pts[k][1] + dy)), 4)]
+        self._last = pos
+        self._changed()
+
+    def _release(self, _e):
+        self.drag = None
         self.view.update()
 
     def stop(self):
-        pass
+        self._poll.stop()
 
     def value(self):
-        return json.dumps(self.pts)
+        if self.pts is None:
+            return ""
+        return json.dumps({"corners": self.pts, "look": self.look, "rotate": self.rot})
 
 
 class SignPlacer(QWidget):
@@ -7799,7 +8068,11 @@ def ask_params(op, paths) -> dict | None:
     bb.rejected.connect(dlg.reject)
     lay.addWidget(bb)
     dlg.setMinimumWidth(680 if any(isinstance(t, (PageBoard, SignPlacer, WatermarkEditor)) for t in trims) else 620 if trims else 340)
-    if any(isinstance(t, (PageBoard, SignPlacer, WatermarkEditor)) for t in trims):
+    if any(isinstance(t, CornerPicker) for t in trims):
+        dlg.adjustSize()
+        scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        dlg.move(scr.availableGeometry().center() - QPoint(dlg.width() // 2, dlg.height() // 2))
+    elif any(isinstance(t, (PageBoard, SignPlacer, WatermarkEditor)) for t in trims):
         dlg.resize(760, 560)
         scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         dlg.move(scr.availableGeometry().center() - QPoint(380, 280))

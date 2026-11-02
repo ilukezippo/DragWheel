@@ -1231,9 +1231,137 @@ def image_tool(tag, transform, keep_ext=True, fmt_override=None):
 SCAN_LOOKS = ["Clean document", "Original colours", "Black & white", "Grayscale"]
 
 
+def _doc_lines(img):
+    """Straight edges in the photo (Hough lines voted by edge direction), the strongest of each direction."""
+    import math
+    import numpy as np
+    from PIL import ImageFilter
+    small = img.convert("L")
+    small.thumbnail((480, 480))
+    w, h = small.size
+    g = np.asarray(small.filter(ImageFilter.GaussianBlur(1.6)), dtype=np.float32)
+    gx = np.zeros_like(g); gy = np.zeros_like(g)
+    gx[1:-1,1:-1] = (g[1:-1,2:]-g[1:-1,:-2])*2 + (g[:-2,2:]-g[:-2,:-2]) + (g[2:,2:]-g[2:,:-2])
+    gy[1:-1,1:-1] = (g[2:,1:-1]-g[:-2,1:-1])*2 + (g[2:,:-2]-g[:-2,:-2]) + (g[2:,2:]-g[:-2,2:])
+    mag = np.hypot(gx, gy)
+    mag[:3,:]=0; mag[-3:,:]=0; mag[:,:3]=0; mag[:,-3:]=0
+    thr = max(np.percentile(mag, 80), 1e-3)
+    edge = mag > thr
+    ys, xs = np.nonzero(edge)
+    ang = np.arctan2(gy[ys, xs], gx[ys, xs])            # normal direction of the edge
+    th = np.mod(ang, np.pi)                              # 0..pi
+    nth = 180
+    tidx = (th / np.pi * nth).astype(int) % nth
+    diag = int(math.hypot(w, h)) + 1
+    acc = np.zeros((nth, 2 * diag), np.float32)
+    wts = mag[ys, xs] / mag[ys, xs].max()
+    for d in range(-3, 4):                               # vote only near the edge's own direction
+        t = (tidx + d) % nth
+        tt = t * np.pi / nth
+        r = (xs * np.cos(tt) + ys * np.sin(tt)).round().astype(int) + diag
+        np.add.at(acc, (t, r), wts)
+    # peaks with suppression
+    lines = []
+    big = acc.copy()
+    for dt in (-1, 0, 1):                                   # local peaks (theta wraps around)
+        for dr in (-2, -1, 0, 1, 2):
+            if dt == 0 and dr == 0:
+                continue
+            big = np.maximum(big, np.roll(np.roll(acc, dt, 0), dr, 1) + (1e-6 if (dt, dr) < (0, 0) else 0))
+    peaks = np.argwhere((acc >= big) & (acc > 0))
+    vals = acc[peaks[:, 0], peaks[:, 1]]
+    order = np.argsort(-vals)
+    hs, vs = [], []
+    for t, r in peaks[order]:
+        deg = t * 180.0 / nth
+        grp = hs if abs(deg - 90) < 35 else vs if (deg < 35 or deg > 145) else None
+        if grp is not None and len(grp) < 14 and not any(abs(t * np.pi / nth - q[0]) < 0.04 and abs(r - diag - q[1]) < 2 for q in grp):
+            grp.append((t * np.pi / nth, r - diag, acc[t, r]))
+        if len(hs) >= 14 and len(vs) >= 14:
+            break
+    lines = hs + vs
+    return lines, edge, (w, h)
+
+
+def _doc_quad(img):
+    """The page as the best-supported big four-sided shape made of those edges (like a scanner app)."""
+    import math
+    import numpy as np
+    from PIL import Image as I, ImageFilter
+    lines, edge, (w, h) = _doc_lines(img)
+    em = np.asarray(I.fromarray((edge*255).astype(np.uint8)).filter(ImageFilter.MaxFilter(5))) > 0
+    H, V = [], []
+    for th, r, s in lines:
+        # normal angle th: near 90deg -> horizontal line
+        (H if abs(math.degrees(th) - 90) < 35 else V if (math.degrees(th) < 35 or math.degrees(th) > 145) else []).append((th, r, s))
+    def inter(l1, l2):
+        t1, r1, _ = l1; t2, r2, _ = l2
+        A = np.array([[math.cos(t1), math.sin(t1)], [math.cos(t2), math.sin(t2)]])
+        if abs(np.linalg.det(A)) < 1e-6: return None
+        return np.linalg.solve(A, np.array([r1, r2]))
+    def support(p, q):
+        n = 60
+        xs = np.linspace(p[0], q[0], n).round().astype(int); ys = np.linspace(p[1], q[1], n).round().astype(int)
+        ok = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+        if ok.sum() < n * 0.8: return 0
+        return em[ys[ok], xs[ok]].mean()
+    best = None
+    seg = {}
+    def sup_cached(key, p, q):
+        if key not in seg:
+            seg[key] = support(p, q)
+        return seg[key]
+    X = {}
+    for a_i, a_ in enumerate(H):
+        for b_i, b_ in enumerate(V):
+            X[a_i, b_i] = inter(a_, b_)
+    hy = [l[1] / max(1e-6, math.sin(l[0])) for l in H]          # where each line crosses x=0, roughly
+    for i in range(len(H)):
+        for j in range(len(H)):
+            if hy[i] >= hy[j] or abs(hy[i] - hy[j]) < 0.25 * h:
+                continue
+            for k in range(len(V)):
+                for m in range(len(V)):
+                    if k == m:
+                        continue
+                    pts = [X[i, k], X[i, m], X[j, m], X[j, k]]
+                    if any(p is None for p in pts):
+                        continue
+                    if pts[0][0] >= pts[1][0] or abs(pts[1][0] - pts[0][0]) < 0.25 * w:
+                        continue
+                    P = np.array(pts)
+                    if (P[:, 0] < -0.03 * w).any() or (P[:, 0] > 1.03 * w).any() or (P[:, 1] < -0.03 * h).any() or (P[:, 1] > 1.03 * h).any():
+                        continue
+                    x, y = P[:, 0], P[:, 1]
+                    area = 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))) / (w * h)
+                    if area < 0.12:
+                        continue
+                    sup = [sup_cached(("h", i, k, m), pts[0], pts[1]), sup_cached(("v", m, i, j), pts[1], pts[2]),
+                           sup_cached(("h", j, k, m), pts[3], pts[2]), sup_cached(("v", k, i, j), pts[0], pts[3])]
+                    if min(sup) < 0.6:
+                        continue
+                    score = area * np.mean(sup) ** 3
+                    if best is None or score > best[0]:
+                        best = (score, P, sup, area)
+    if best is None:
+        return None
+    return [[round(float(np.clip(x / (w - 1), 0, 1)), 4), round(float(np.clip(y / (h - 1), 0, 1)), 4)] for x, y in best[1]]
+
+
 def detect_document(img):
     """The four corners of the page in a photo, [[x, y]…] from 0 to 1 (top-left, top-right, bottom-right,
     bottom-left), or None when no clear page stands out from the background."""
+    try:
+        q = _doc_quad(img)
+        if q:
+            return q
+    except Exception:
+        pass
+    return _doc_bright(img)
+
+
+def _doc_bright(img):
+    """Fallback: the page as the bright area in the middle of a darker background."""
     import numpy as np
     Image, _ = _pil()
     from PIL import ImageDraw, ImageFilter
@@ -1317,15 +1445,22 @@ def straighten(img, corners, look="Clean document"):
 def image_scan(src, p):
     """Fix alignment: the page straightened as if scanned. Corners come from the picker, or are found."""
     img = open_image(src)
-    corners = None
+    corners, look, rot = None, p.get("Look") or "Clean document", 0
     try:
-        corners = json.loads(p.get("Corners") or "null")
+        spec = json.loads(p.get("Corners") or "null")
     except ValueError:
-        pass
+        spec = None
+    if isinstance(spec, dict):                               # from the Fix alignment window
+        corners, look, rot = spec.get("corners"), spec.get("look") or look, int(spec.get("rotate") or 0)
+    elif isinstance(spec, list):
+        corners = spec
     if not corners or len(corners) != 4:
         corners = detect_document(img) or [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
-    look = p.get("Look") or "Clean document"
+    if look not in SCAN_LOOKS:
+        look = SCAN_LOOKS[0]
     out = straighten(img, corners, look)
+    if rot % 360:
+        out = out.rotate(-(rot % 360), expand=True)
     e = ext_of(src)
     fmt = "png" if look == "Black & white" else ("jpg" if e in ("jpg", "jpeg", "heic", "heif", "webp", "avif") else
                                                   "png" if e in ("png", "bmp", "gif", "svg", "ico") else "jpg")
@@ -3574,8 +3709,7 @@ def tools(paths: list[str]) -> list[Op]:
         ops += [
             T("compress", "Compress", image_compress),
             T("edit", "Crop & Resize…", image_crop_resize, ui="crop"),
-            T("scan", "Fix alignment…", image_scan, ask=([("Corners", "@corners")] if n == 1 else []) +
-              [("Look", SCAN_LOOKS)]),
+            T("scan", "Fix alignment…", image_scan, ask=[("Corners", "@corners")] if n == 1 else [("Look", SCAN_LOOKS)]),
             T("rotate", "Rotate 90°", image_tool("rotated", lambda i, p: i.rotate(-90, expand=True))),
             T("flip", "Flip", image_tool("flipped", lambda i, p: i.transpose(0))),
             T("gray", "Grayscale", image_tool("gray", lambda i, p: i.convert("LA") if i.mode in ("RGBA", "LA") else i.convert("L"))),
