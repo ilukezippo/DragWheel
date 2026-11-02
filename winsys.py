@@ -501,7 +501,8 @@ BG_MENU = r"Software\Classes\Directory\Background\shell\DragWheel"   # right-cli
 
 
 def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image here",
-                     link_label: str = "Paste link to Float", float_label: str = "Open Float", sendto=None) -> None:
+                     link_label: str = "Paste link to Float", float_label: str = "Open Float", sendto=None,
+                     qr_label: str = "Read QR code on screen") -> None:
     """The DragWheel entries of Explorer's right-click menu. Send To is separate: sendto=True/False sets it,
     None leaves it as it is."""
     if not IS_WIN:
@@ -524,6 +525,11 @@ def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image her
             winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, "imageres.dll,-1004")
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zlink\command") as k:
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _quote(app_command()) + " --play-link")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zyqr") as k:      # before "Open Float"
+            winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, qr_label)
+            winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_path())
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zyqr\command") as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _quote(app_command()) + " --read-qr")
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zzfloat") as k:   # an empty float
             winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, float_label)
             winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_path())

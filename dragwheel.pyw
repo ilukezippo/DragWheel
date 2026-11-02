@@ -415,14 +415,52 @@ class FrontDialog(QDialog):
 
     back = None                          # set by Send to phone: reopens the chooser to pick another way
 
-    def back_button(self):
-        """A "Back" button (to choose another way to send), or None when this window wasn't opened from the chooser."""
-        b = QPushButton("←  " + tr("Back"))
+    def header(self, lay, title, sub=""):
+        """The top of the window: ‹ Back on the left (only when opened from the Send to phone chooser), the title in
+        the middle and, under it, what's being sent."""
+        from PySide6.QtWidgets import QToolButton
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        b = QToolButton()
+        b.setObjectName("back")
+        b.setText(tr("Back"))
+        b.setIcon(_chevron_icon(QGuiApplication.layoutDirection() == Qt.RightToLeft))
+        b.setIconSize(QSize(14, 14))
+        b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        b.setCursor(Qt.PointingHandCursor)
         b.setToolTip(tr("Choose another way to send"))
         b.clicked.connect(self._go_back)
         b.setVisible(False)
-        self._back_b = b
-        return b
+        pad = QWidget()                                   # same width on the right, so the title stays centred
+        pad.setFixedWidth(b.sizeHint().width())
+        pad.setVisible(False)
+        t = QLabel(title)
+        t.setObjectName("title")
+        t.setAlignment(Qt.AlignCenter)
+        row.addWidget(b, 0, Qt.AlignVCenter)
+        row.addWidget(t, 1)
+        row.addWidget(pad)
+        lay.addLayout(row)
+        self._back_b, self._back_pad = b, pad
+        if sub:
+            sl = QLabel(sub)
+            sl.setObjectName("sub")
+            sl.setAlignment(Qt.AlignCenter)
+            sl.setWordWrap(True)
+            sl.setFixedWidth(QR_W)
+            lay.addWidget(sl, 0, Qt.AlignHCenter)
+        lay.addSpacing(4)
+        return t
+
+    def buttons(self, lay, *btns):
+        """A row of buttons at the bottom."""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        for b in btns:
+            b.setMinimumHeight(34)
+            row.addWidget(b, 1)
+        lay.addSpacing(4)
+        lay.addLayout(row)
 
     def _go_back(self):
         go = self.back
@@ -433,6 +471,7 @@ class FrontDialog(QDialog):
     def showEvent(self, e):
         if getattr(self, "_back_b", None) is not None:
             self._back_b.setVisible(self.back is not None)
+            self._back_pad.setVisible(self.back is not None)
         super().showEvent(e)
         if not getattr(self, "_fronted", False):
             self._fronted = True
@@ -534,27 +573,26 @@ class PhoneShare(FrontDialog):
         lay = QVBoxLayout(self)
         from PySide6.QtWidgets import QLayout
         lay.setSizeConstraint(QLayout.SetFixedSize)          # the window always fits the code and the text
-        title = QLabel("<b>" + tr("Scan with your phone's camera") + "</b>")
-        title.setAlignment(Qt.AlignCenter)
-        lay.addWidget(title)
-        self.qr = QLabel()
-        self.qr.setAlignment(Qt.AlignCenter)
+        what = self.paths[0].name if len(self.paths) == 1 else tr("{n} files", n=len(self.paths))
+        self.header(lay, tr("Link from this PC") if mode == "tunnel" else tr("Same Wi-Fi"), what)
+        self.qr = QrBox()
         lay.addWidget(self.qr, 0, Qt.AlignHCenter)
         self.link = QLabel()
+        self.link.setObjectName("sub")
         self.link.setAlignment(Qt.AlignCenter)
+        self.link.setWordWrap(True)
+        self.link.setFixedWidth(QR_W)
         self.link.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        lay.addWidget(self.link)
+        lay.addWidget(self.link, 0, Qt.AlignHCenter)
         if len(self.ips) > 1:                              # several network adapters: let the user switch
             self.ip_box = QComboBox()
             for ip in self.ips:
                 self.ip_box.addItem(tr("Network address: {ip}", ip=ip), ip)
             self.ip_box.currentIndexChanged.connect(lambda _i: self._show_qr(self.ip_box.currentData()))
             lay.addWidget(self.ip_box)
-        what = self.paths[0].name if len(self.paths) == 1 else tr("{n} files", n=len(self.paths))
         if mode == "tunnel":
             self.url = ""
-            title.setText("<b>" + tr("Link from this PC") + "</b>")
-            self.link.setText(tr("Making the link…"))
+            self.qr.busy(tr("Making the link…"))
             info = QLabel(tr("Sharing {what}. The link works on any network, even mobile data. The file goes straight "
                              "from this PC through Cloudflare and isn't stored anywhere; the link ends when you close "
                              "this window, so keep it open until it's downloaded.", what=what))
@@ -563,27 +601,27 @@ class PhoneShare(FrontDialog):
             info = QLabel(tr("Sharing {what}. Your phone must be on the same Wi-Fi. If Windows asks, allow DragWheel on "
                              "private networks. Nothing goes through the internet; sharing stops when you close this window.",
                              what=what))
+        info.setObjectName("note")
         info.setWordWrap(True)
-        info.setFixedWidth(360)
+        info.setFixedWidth(QR_W)
         lay.addWidget(info)
         self.count = QLabel()
         lay.addWidget(self.count)
+        stop = QPushButton(tr("Stop sharing"))
+        stop.clicked.connect(self.close)
         if mode == "tunnel":
             self.copy_b = QPushButton(tr("Copy link"))
+            self.copy_b.setObjectName("primary")
             self.copy_b.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.url))
             self.copy_b.setEnabled(False)
-            lay.addWidget(self.copy_b)
+            self.buttons(lay, self.copy_b, stop)
         else:
             help_b = QPushButton(tr("Phone can't open it?"))
             help_b.clicked.connect(self._help)
-            lay.addWidget(help_b)
-        lay.addWidget(self.back_button())
-        stop = QPushButton(tr("Stop sharing"))
-        stop.clicked.connect(self.close)
-        lay.addWidget(stop)
+            self.buttons(lay, help_b, stop)
         self.diag = QLabel()
         self.diag.setWordWrap(True)
-        self.diag.setFixedWidth(360)
+        self.diag.setFixedWidth(QR_W)
         self.diag.setStyleSheet(f"color:{theme.hexc('danger')}")
         self.diag.hide()
         lay.insertWidget(lay.indexOf(self.count), self.diag)
@@ -631,18 +669,8 @@ class PhoneShare(FrontDialog):
     def _show_url(self, url):
         self.url = url
         winsys.log(f"send to phone: {self.url} (addresses: {', '.join(self.ips) or 'tunnel'})")
-        self.link.setText(f"<span style='color:{theme.hexc('dim')}'>{self.url}</span>")
-        try:
-            import io as _io
-            import segno
-            buf = _io.BytesIO()
-            segno.make(self.url, error="m").save(buf, kind="png", scale=7, border=3, dark="#000", light="#fff")
-            pm = QPixmap.fromImage(QImage.fromData(buf.getvalue()))
-            self.qr.setPixmap(pm)
-            self.qr.setFixedSize(pm.size())               # never squeezed: a stretched code can't be scanned
-            self.adjustSize()
-        except Exception as e:
-            winsys.log(f"qr: {e}")
+        self.link.setText(self.url)
+        self.qr.show_code(self.url)
 
     def _help(self):
         box = QMessageBox(self)
@@ -726,6 +754,7 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
                 self._show_url(f"{self._tunnel_url}/{self._token}/")
                 self.copy_b.setEnabled(True)
             elif self._tunnel_err:
+                self.qr.idle(tr("No link"))
                 self.link.setText(f"<span style='color:{theme.hexc('danger')}'>{self._tunnel_err}</span>")
                 self._tunnel_err = ""
         if self._diag_lines is not None:
@@ -974,6 +1003,374 @@ def qr_pixmap(text, scale=7) -> QPixmap:
     return QPixmap.fromImage(QImage.fromData(buf.getvalue()))
 
 
+QR_W = 372                    # content width of the Send to phone windows
+
+
+def _chevron_icon(rtl=False) -> "QIcon":
+    from PySide6.QtGui import QIcon
+    icons = QIcon()
+    for mode, col in ((QIcon.Normal, theme.hexc("dim")), (QIcon.Active, theme.hexc("text"))):
+        pm = QPixmap(28, 28)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(col), 3.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        pts = [QPointF(17, 6), QPointF(9, 14), QPointF(17, 22)]
+        if rtl:
+            pts = [QPointF(28 - q.x(), q.y()) for q in pts]
+        p.drawPolyline(pts)
+        p.end()
+        icons.addPixmap(pm, mode)
+    return icons
+
+
+def qr_image(text) -> QImage:
+    """The QR code as a tiny 1-pixel-per-module picture (drawn bigger without smoothing, so it stays sharp)."""
+    import segno
+    rows = list(segno.make(text, error="m").matrix_iter(scale=1, border=2))
+    n = len(rows)
+    img = QImage(n, n, QImage.Format_RGB32)
+    img.fill(QColor("#ffffff"))
+    black = QColor("#000000").rgb()
+    for y, row in enumerate(rows):
+        for x, v in enumerate(row):
+            if v:
+                img.setPixel(x, y, black)
+    return img
+
+
+class QrBox(QWidget):
+    """The place for a QR code: a spinning wheel inside it while the link is being made, then the code.
+    Clicking the code copies the link."""
+
+    def __init__(self, side=236, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(side, side)
+        self.url, self._img, self._busy, self._text, self._angle = "", None, False, "", 0
+        self._spin = QTimer(self, interval=16, timeout=self._tick)
+
+    def busy(self, text=""):
+        self._img, self._busy, self._text = None, True, text
+        self._spin.start()
+        self.setCursor(Qt.ArrowCursor)
+        self.update()
+
+    def idle(self, text=""):
+        self._img, self._busy, self._text = None, False, text
+        self._spin.stop()
+        self.setCursor(Qt.ArrowCursor)
+        self.update()
+
+    def set_text(self, text):
+        self._text = text
+        self.update()
+
+    def show_code(self, url):
+        self.url = url
+        self._busy = False
+        self._spin.stop()
+        try:
+            self._img = qr_image(url)
+        except Exception as e:
+            winsys.log(f"qr: {e}")
+            self._img = None
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(tr("Click to copy the link"))
+        self.update()
+
+    def mousePressEvent(self, e):
+        if self._img is not None and e.button() == Qt.LeftButton:
+            QGuiApplication.clipboard().setText(self.url)
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.showText(e.globalPosition().toPoint(), tr("Link copied"), self)
+
+    def _tick(self):
+        self._angle = (self._angle + 7) % 360
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if self._img is not None:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#ffffff"))
+            p.drawRoundedRect(r, 16, 16)
+            n = self._img.width()
+            k = max(1, int((self.width() - 12) // n))
+            size = n * k
+            off = (self.width() - size) / 2
+            p.setRenderHint(QPainter.SmoothPixmapTransform, False)
+            p.drawImage(QRectF(off, off, size, size), self._img)
+            return
+        p.setPen(QPen(QColor(theme.hexc("border")), 1.5))
+        p.setBrush(QColor(theme.hexc("surface")))
+        p.drawRoundedRect(r, 16, 16)
+        c = QPointF(self.width() / 2, self.height() / 2 - (12 if self._text else 0))
+        if self._busy:
+            ring = QRectF(c.x() - 26, c.y() - 26, 52, 52)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(theme.hexc("border")), 5))
+            p.drawEllipse(ring)
+            p.setPen(QPen(QColor(theme.hexc("accent")), 5, Qt.SolidLine, Qt.RoundCap))
+            p.drawArc(ring, int(-self._angle * 16), 100 * 16)
+        else:                                             # a faint QR mark: where the code will appear
+            dim = QColor(theme.hexc("dim"))
+            dim.setAlpha(110)
+            p.setPen(QPen(dim, 3))
+            p.setBrush(Qt.NoBrush)
+            for dx, dy in ((-26, -26), (6, -26), (-26, 6)):
+                p.drawRoundedRect(QRectF(c.x() + dx, c.y() + dy, 20, 20), 4, 4)
+            p.setPen(Qt.NoPen)
+            p.setBrush(dim)
+            for dx, dy in ((10, 10), (20, 10), (10, 20), (20, 20)):
+                p.drawRect(QRectF(c.x() + dx - 2, c.y() + dy - 2, 6, 6))
+        if self._text:
+            p.setPen(QColor(theme.hexc("dim")))
+            f = p.font()
+            f.setPointSizeF(9)
+            p.setFont(f)
+            p.drawText(QRectF(14, c.y() + 38, self.width() - 28, 44), Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap,
+                       self._text)
+
+
+def find_codes(img: QImage) -> list:
+    """QR codes (and other barcodes) in a picture: [{"text", "kind", "rect"}] with rect in the picture's pixels."""
+    import numpy as np
+    import zxingcpp
+    g = img.convertToFormat(QImage.Format_Grayscale8)
+    w, h, bpl = g.width(), g.height(), g.bytesPerLine()
+    arr = np.frombuffer(g.constBits(), np.uint8, count=bpl * h).reshape(h, bpl)[:, :w].copy()
+    out = []
+    for r in zxingcpp.read_barcodes(arr):
+        if not r.text:
+            continue
+        pos = r.position
+        pts = [pos.top_left, pos.top_right, pos.bottom_right, pos.bottom_left]
+        xs, ys = [q.x for q in pts], [q.y for q in pts]
+        out.append({"text": r.text, "kind": str(r.format),
+                    "rect": QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))})
+    return out
+
+
+def find_codes_in_file(path) -> list:
+    img = QImage(str(path))
+    if img.isNull():
+        try:
+            import io as _io
+            pil = engine.open_image(path)
+            buf = _io.BytesIO()
+            pil.convert("RGB").save(buf, "PNG")
+            img = QImage.fromData(buf.getvalue())
+        except Exception:
+            return []
+    codes = find_codes(img)
+    if not codes and max(img.width(), img.height()) < 1600:          # small codes: try again bigger
+        codes = find_codes(img.scaled(img.width() * 2, img.height() * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    return codes
+
+
+def _qr_meaning(text):
+    """(kind label, main text, fields [(label, value)], url to open or None)."""
+    t = text.strip()
+    low = t.lower()
+    if low.startswith(("http://", "https://")):
+        from urllib.parse import urlparse
+        return tr("Link"), t, [(tr("Website"), urlparse(t).netloc)], t
+    if low.startswith("wifi:"):
+        fields, parts, cur, esc = {}, [], "", False
+        for ch in t[5:]:                                  # fields end at ";"; "\\;" is a ; inside a value
+            if esc:
+                cur, esc = cur + ch, False
+            elif ch == "\\":
+                esc = True
+            elif ch == ";":
+                parts.append(cur)
+                cur = ""
+            else:
+                cur += ch
+        parts.append(cur)
+        for part in parts:
+            if ":" in part:
+                k, v = part.split(":", 1)
+                fields[k.upper()] = v
+        rows = [(tr("Network"), fields.get("S", "")), (tr("Password"), fields.get("P", ""))]
+        return tr("Wi-Fi network"), fields.get("S", ""), [x for x in rows if x[1]], None
+    if low.startswith("mailto:"):
+        return tr("Email"), t[7:], [], t
+    if low.startswith("tel:"):
+        return tr("Phone number"), t[4:], [], t
+    return tr("Text"), t, [], None
+
+
+class QrResult(FrontDialog):
+    """What a QR code says, with Open / Copy."""
+
+    def __init__(self, codes):
+        super().__init__(None)
+        from PySide6.QtWidgets import QLayout
+        self.setWindowTitle(f"{APP} — " + tr("QR code"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetFixedSize)
+        self.header(lay, tr("QR code") if len(codes) == 1 else tr("{n} codes", n=len(codes)))
+        for c in codes[:6]:
+            kind, main, fields, url = _qr_meaning(c["text"])
+            card = QFrame()
+            card.setObjectName("card")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(14, 12, 14, 12)
+            k = QLabel(kind.upper())
+            k.setObjectName("sub")
+            cl.addWidget(k)
+            m = QLabel(main)
+            m.setWordWrap(True)
+            m.setFixedWidth(QR_W - 28)
+            m.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            m.setTextFormat(Qt.PlainText)
+            cl.addWidget(m)
+            for label, value in fields:
+                f = QLabel(f"<span style='color:{theme.hexc('dim')}'>{label}:</span> {html_escape(value)}")
+                f.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                cl.addWidget(f)
+            btns = []
+            if url:
+                o = QPushButton(tr("Open"))
+                o.setObjectName("primary")
+                o.clicked.connect(lambda _=False, u=url: (QDesktopServices.openUrl(QUrl(u)), self.close()))
+                btns.append(o)
+            pw = dict(fields).get(tr("Password"))
+            if pw:
+                b = QPushButton(tr("Copy password"))
+                b.setObjectName("primary")
+                b.clicked.connect(lambda _=False, v=pw: QGuiApplication.clipboard().setText(v))
+                btns.append(b)
+            b = QPushButton(tr("Copy"))
+            b.clicked.connect(lambda _=False, v=c["text"], b=b: (QGuiApplication.clipboard().setText(v), b.setText(tr("Copied"))))
+            btns.append(b)
+            self.buttons(cl, *btns)
+            lay.addWidget(card)
+        close = QPushButton(tr("Close"))
+        close.clicked.connect(self.close)
+        self.buttons(lay, close)
+
+
+def html_escape(t):
+    import html as _h
+    return _h.escape(str(t))
+
+
+class QrScanOverlay(QWidget):
+    """Read QR code on screen: a still picture of one screen with the codes on it lit up. Click one to read it,
+    or drag a box around one. Esc cancels."""
+
+    def __init__(self, screen, shot, codes, done):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.shot, self.done = shot, done
+        dpr = shot.devicePixelRatio() or 1.0
+        self.dpr = dpr
+        self.codes = [dict(c, view=QRectF(c["rect"].x() / dpr, c["rect"].y() / dpr, c["rect"].width() / dpr,
+                                          c["rect"].height() / dpr).adjusted(-8, -8, 8, 8)) for c in codes]
+        self.hover, self.drag_from, self.drag_to, self.msg = None, None, None, ""
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CrossCursor)
+        self.setGeometry(screen.geometry())
+
+    def _hint(self, any_codes):
+        if self.msg:
+            return self.msg
+        return (tr("Click a QR code to read it — or drag a box around one. Esc to cancel.") if any_codes
+                else tr("No QR code found here. Drag a box around one, or press Esc."))
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.drawPixmap(self.rect(), self.shot)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 120))
+        accent = QColor(theme.hexc("accent"))
+        for i, c in enumerate(self.codes):
+            v = c["view"]
+            src = QRectF(v.x() * self.dpr, v.y() * self.dpr, v.width() * self.dpr, v.height() * self.dpr)
+            p.drawPixmap(v, self.shot, src)                       # the code itself stays bright
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(accent, 5 if i == self.hover else 3))
+            p.drawRoundedRect(v, 10, 10)
+        if self.drag_from is not None and self.drag_to is not None:
+            box = QRectF(self.drag_from, self.drag_to).normalized()
+            src = QRectF(box.x() * self.dpr, box.y() * self.dpr, box.width() * self.dpr, box.height() * self.dpr)
+            p.drawPixmap(box, self.shot, src)
+            p.setPen(QPen(accent, 2, Qt.DashLine))
+            p.drawRect(box)
+        text = self._hint(any(True for _ in self.codes))
+        f = p.font()
+        f.setPointSizeF(10.5)
+        f.setWeight(QFont.DemiBold)
+        p.setFont(f)
+        fm = QFontMetrics(f)
+        w = fm.horizontalAdvance(text) + 40
+        pill = QRectF((self.width() - w) / 2, 28, w, 40)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(28, 28, 30, 235))
+        p.drawRoundedRect(pill, 20, 20)
+        p.setPen(QColor("#ffffff"))
+        p.drawText(pill, Qt.AlignCenter, text)
+
+    def _at(self, pos):
+        return next((i for i, c in enumerate(self.codes) if c["view"].contains(QPointF(pos))), None)
+
+    def mouseMoveEvent(self, e):
+        pos = e.position()
+        if self.drag_from is not None and (pos - self.drag_from).manhattanLength() > 6:
+            self.drag_to = pos
+        h = self._at(pos)
+        if h != self.hover:
+            self.hover = h
+            self.setCursor(Qt.PointingHandCursor if h is not None else Qt.CrossCursor)
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.RightButton:
+            self.done(None)
+            return
+        self.drag_from, self.drag_to, self.msg = e.position(), None, ""
+
+    def mouseReleaseEvent(self, e):
+        if e.button() != Qt.LeftButton or self.drag_from is None:
+            return
+        if self.drag_to is None:                                  # a click
+            i = self._at(e.position())
+            self.drag_from = None
+            if i is not None:
+                self.done([self.codes[i]])
+            return
+        box = QRectF(self.drag_from, self.drag_to).normalized()
+        self.drag_from = self.drag_to = None
+        crop = self.shot.copy(QRectF(box.x() * self.dpr, box.y() * self.dpr, box.width() * self.dpr,
+                                     box.height() * self.dpr).toRect()).toImage()
+        codes = []
+        for k in (1, 2, 3):                                      # small codes read better a bit bigger
+            img = crop if k == 1 else crop.scaled(crop.width() * k, crop.height() * k, Qt.KeepAspectRatio,
+                                                   Qt.SmoothTransformation)
+            try:
+                codes = find_codes(img)
+            except Exception as ex:
+                winsys.log(f"read qr: {ex}")
+            if codes:
+                break
+        if codes:
+            self.done(codes)
+        else:
+            self.msg = tr("No QR code in that box. Try again, or press Esc.")
+            self.update()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.done(None)
+
+
 def _time_left(expires) -> str:
     import time
     m = max(1, int((expires - time.time()) // 60))
@@ -993,28 +1390,27 @@ class ShareQR(FrontDialog):
         self.setAttribute(Qt.WA_DeleteOnClose)
         lay = QVBoxLayout(self)
         lay.setSizeConstraint(QLayout.SetFixedSize)
-        head = QLabel(f"<b>{item['name']}</b>")
-        head.setFixedWidth(330)
-        head.setWordWrap(True)
-        lay.addWidget(head)
-        self.left = QLabel()
-        self.left.setStyleSheet(f"color:{theme.hexc('dim')}")
-        lay.addWidget(self.left)
-        qr = QLabel()
-        pm = qr_pixmap(item["url"])
-        qr.setPixmap(pm)
-        qr.setFixedSize(pm.size())
+        self.header(lay, tr("Internet link"), item["name"])
+        qr = QrBox()
+        qr.show_code(item["url"])
         lay.addWidget(qr, 0, Qt.AlignHCenter)
-        link = QLabel(f"<span style='color:{theme.hexc('dim')}'>{item['url']}</span>")
+        self.left = QLabel()
+        self.left.setObjectName("sub")
+        self.left.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self.left)
+        link = QLabel(item["url"])
+        link.setObjectName("sub")
+        link.setWordWrap(True)
+        link.setFixedWidth(QR_W)
         link.setTextInteractionFlags(Qt.TextSelectableByMouse)
         link.setAlignment(Qt.AlignCenter)
-        lay.addWidget(link)
+        lay.addWidget(link, 0, Qt.AlignHCenter)
         b = QPushButton(tr("Copy link"))
+        b.setObjectName("primary")
         b.clicked.connect(lambda: QGuiApplication.clipboard().setText(item["url"]))
-        lay.addWidget(b)
-        b = QPushButton(tr("Close"))
-        b.clicked.connect(self.close)
-        lay.addWidget(b)
+        c = QPushButton(tr("Close"))
+        c.clicked.connect(self.close)
+        self.buttons(lay, b, c)
         self._t = QTimer(self, interval=20000, timeout=self._tick)
         self._t.start()
         self._tick()
@@ -1045,10 +1441,18 @@ class InternetShare(FrontDialog):
             tr("{n} files (as one ZIP)", n=len(self.paths)) if len(self.paths) > 1 else self.paths[0].name + ".zip"
         if len(self.paths) == 1 and self.paths[0].is_file() and self.paths[0].suffix.lower() in BLOCKED_UPLOAD_EXT:
             what = self.paths[0].stem + ".zip — " + tr("programs are sent inside a ZIP, because file services refuse them")
-        head = QLabel(f"<b>{tr('Internet link')}</b><br><span style='color:{theme.hexc('dim')}'>{what}</span>")
-        head.setWordWrap(True)
-        head.setFixedWidth(360)
-        lay.addWidget(head)
+        self.header(lay, tr("Internet link"), what)
+        self.qr = QrBox()
+        self.qr.idle(tr("The QR code appears here"))
+        lay.addWidget(self.qr, 0, Qt.AlignHCenter)
+        self.link = QLabel()
+        self.link.setObjectName("sub")
+        self.link.setWordWrap(True)
+        self.link.setFixedWidth(QR_W)
+        self.link.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.link.setAlignment(Qt.AlignCenter)
+        self.link.hide()
+        lay.addWidget(self.link, 0, Qt.AlignHCenter)
         form = QFormLayout()
         self.host = QComboBox()
         for key, label, _m in HOST_CHOICES:
@@ -1062,46 +1466,32 @@ class InternetShare(FrontDialog):
                              "other sites. DragWheel gives the direct file link, but tell whoever opens it not to tap "
                              "anything else on that page."))
         self.ads.setWordWrap(True)
-        self.ads.setFixedWidth(360)
+        self.ads.setFixedWidth(QR_W)
         self.ads.setStyleSheet(f"color:{theme.hexc('danger')};font-size:9pt")
         lay.addWidget(self.ads)
         self.host.currentIndexChanged.connect(self._host_changed)
         self._host_changed()
         note = QLabel(tr("The file is uploaded to a free temporary file service and deleted automatically after about "
                          "that time. Anyone with the link can download it until then."))
+        note.setObjectName("note")
         note.setWordWrap(True)
-        note.setFixedWidth(360)
-        note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        note.setFixedWidth(QR_W)
         lay.addWidget(note)
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 1000)
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(8)
-        self.bar.hide()
-        lay.addWidget(self.bar)
         self.status = QLabel()
         self.status.setWordWrap(True)
-        self.status.setFixedWidth(360)
+        self.status.setFixedWidth(QR_W)
+        self.status.hide()
         lay.addWidget(self.status)
-        self.qr = QLabel()
-        self.qr.hide()
-        lay.addWidget(self.qr, 0, Qt.AlignHCenter)
-        self.link = QLabel()
-        self.link.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.link.setAlignment(Qt.AlignCenter)
-        self.link.hide()
-        lay.addWidget(self.link)
         self.go = QPushButton(tr("Upload and make a link"))
+        self.go.setObjectName("primary")
         self.go.clicked.connect(self._start)
-        lay.addWidget(self.go)
         self.copy = QPushButton(tr("Copy link"))
+        self.copy.setObjectName("primary")
         self.copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.url))
         self.copy.hide()
-        lay.addWidget(self.copy)
-        lay.addWidget(self.back_button())
         close = QPushButton(tr("Close"))
         close.clicked.connect(self.close)
-        lay.addWidget(close)
+        self.buttons(lay, self.go, self.copy, close)
         self._cancel = False
         self._frac = 0.0
         self._result = None
@@ -1124,8 +1514,8 @@ class InternetShare(FrontDialog):
         self.go.setEnabled(False)
         self.hours.setEnabled(False)
         self.host.setEnabled(False)
-        self.bar.show()
-        self.status.setText(tr("Uploading…"))
+        self.status.hide()
+        self.qr.busy(tr("Uploading…"))
         hours = self.hours.currentData()
         only = self.host.currentData()
 
@@ -1153,13 +1543,15 @@ class InternetShare(FrontDialog):
         self._poll.start()
 
     def _update(self):
-        self.bar.setValue(int(self._frac * 1000))
         if self._result is None:
+            if self._frac > 0:
+                self.qr.set_text(tr("Uploading…") + f"  {int(self._frac * 100)}%")
             return
         self._poll.stop()
         kind, val, host = self._result
-        self.bar.hide()
         if kind == "err":
+            self.qr.idle(tr("No link"))
+            self.status.show()
             self.status.setText(f"<span style='color:{theme.hexc('danger')}'>" + val.replace("\n", "<br>") + "</span>")
             self.go.setEnabled(True)
             self.hours.setEnabled(True)
@@ -1168,20 +1560,11 @@ class InternetShare(FrontDialog):
         self.url = val
         winsys.log(f"send to phone (internet): uploaded to {host}")
         remember_share_link(val, self.shared_name, int(self.hours.currentData()))
+        self.status.show()
         self.status.setText("<b>" + tr("Scan with your phone's camera") + "</b> — " +
                             tr("works on any network, even mobile data."))
-        try:
-            import io as _io
-            import segno
-            buf = _io.BytesIO()
-            segno.make(val, error="m").save(buf, kind="png", scale=7, border=3, dark="#000", light="#fff")
-            pm = QPixmap.fromImage(QImage.fromData(buf.getvalue()))
-            self.qr.setPixmap(pm)
-            self.qr.setFixedSize(pm.size())
-            self.qr.show()
-        except Exception as e:
-            winsys.log(f"qr: {e}")
-        self.link.setText(f"<span style='color:{theme.hexc('dim')}'>{val}</span>")
+        self.qr.show_code(val)
+        self.link.setText(val)
         self.link.show()
         self.go.hide()
         self.copy.show()
@@ -1299,16 +1682,31 @@ def _detect_clouds() -> list:
                     break
         except (OSError, ValueError, TypeError):
             pass
-        if gdrive is None:                      # otherwise: only local drives that exist (never network or CD drives)
-            import ctypes
+        if gdrive is None or not gdrive.is_dir():   # otherwise: the drive Google Drive puts up (it's labelled
+            import ctypes                           # "Google Drive"); never network or CD drives
+            gdrive = None
             mask = ctypes.windll.kernel32.GetLogicalDrives()
             for i in range(3, 26):
-                if mask & (1 << i):
-                    letter = chr(65 + i)
-                    if ctypes.windll.kernel32.GetDriveTypeW(f"{letter}:\\") == 3 and Path(f"{letter}:/My Drive").is_dir():
-                        gdrive = Path(f"{letter}:/My Drive")
-                        break
+                if not mask & (1 << i):
+                    continue
+                root = f"{chr(65 + i)}:\\"
+                if ctypes.windll.kernel32.GetDriveTypeW(root) not in (3, 4):
+                    continue
+                try:
+                    label = ctypes.create_unicode_buffer(261)
+                    ok = ctypes.windll.kernel32.GetVolumeInformationW(root, label, 261, None, None, None, None, 0)
+                    if (ok and "google" in label.value.lower()) or Path(root, "My Drive").is_dir():
+                        mine = Path(root, "My Drive")
+                        if not mine.is_dir():       # "My Drive" in another language: the first ordinary folder
+                            mine = next((d for d in sorted(Path(root).iterdir()) if d.is_dir() and not d.name.startswith(
+                                (".", "$")) and d.name not in ("Shared drives", "Other computers")), None)
+                        if mine is not None:
+                            gdrive = mine
+                            break
+                except OSError:
+                    continue
     add("Google Drive", gdrive)
+    add("Google Drive", Path.home() / "My Drive")                  # Google Drive set to mirror files into a folder
     add("Google Drive", Path.home() / "Google Drive")              # the older Backup and Sync folder
     add("iCloud Drive", Path.home() / "iCloudDrive")
     for base in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")):   # Dropbox writes where its folder is
@@ -1390,10 +1788,18 @@ class CloudShare(FrontDialog):
         lay.setSizeConstraint(QLayout.SetFixedSize)
         what = self.paths[0].name if len(self.paths) == 1 and self.paths[0].is_file() else \
             tr("{n} files (as one ZIP)", n=len(self.paths)) if len(self.paths) > 1 else self.paths[0].name + ".zip"
-        head = QLabel(f"<b>{tr('Cloud link')}</b><br><span style='color:{theme.hexc('dim')}'>{what}</span>")
-        head.setWordWrap(True)
-        head.setFixedWidth(380)
-        lay.addWidget(head)
+        self.header(lay, tr("Cloud link"), what)
+        self.qr = QrBox()
+        self.qr.idle(tr("The QR code appears here"))
+        lay.addWidget(self.qr, 0, Qt.AlignHCenter)
+        self.link = QLabel()
+        self.link.setObjectName("sub")
+        self.link.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.link.setAlignment(Qt.AlignCenter)
+        self.link.setWordWrap(True)
+        self.link.setFixedWidth(QR_W)
+        self.link.hide()
+        lay.addWidget(self.link, 0, Qt.AlignHCenter)
         form = QFormLayout()
         self.cloud = QComboBox()
         for name, folder in self.clouds:
@@ -1416,33 +1822,22 @@ class CloudShare(FrontDialog):
         lay.addLayout(form)
         note = QLabel(tr("A copy goes into a “DragWheel shares” folder in your cloud, and the cloud's own Share window "
                          "opens: choose who can open it and copy the link. The link works even when this PC is off."))
+        note.setObjectName("note")
         note.setWordWrap(True)
-        note.setFixedWidth(380)
-        note.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        note.setFixedWidth(QR_W)
         lay.addWidget(note)
         self.status = QLabel()
         self.status.setWordWrap(True)
-        self.status.setFixedWidth(380)
+        self.status.setFixedWidth(QR_W)
         lay.addWidget(self.status)
-        self.qr = QLabel()
-        self.qr.hide()
-        lay.addWidget(self.qr, 0, Qt.AlignHCenter)
-        self.link = QLabel()
-        self.link.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.link.setAlignment(Qt.AlignCenter)
-        self.link.setWordWrap(True)
-        self.link.setFixedWidth(380)
-        self.link.hide()
-        lay.addWidget(self.link)
         self.go = QPushButton(tr("Make a link"))
+        self.go.setObjectName("primary")
         self.go.clicked.connect(self._start)
-        lay.addWidget(self.go)
         self._note = note
         self._cloud_changed()
-        lay.addWidget(self.back_button())
         close = QPushButton(tr("Close"))
         close.clicked.connect(self.close)
-        lay.addWidget(close)
+        self.buttons(lay, self.go, close)
         self.dest = None
         self._copied = None
         self._clip_start = ""
@@ -1505,6 +1900,7 @@ class CloudShare(FrontDialog):
             kind, val = self._copied
             self._copied = None
             if kind == "err":
+                self.qr.idle(tr("No link"))
                 self.status.setText(f"<span style='color:{theme.hexc('danger')}'>{val}</span>")
                 self._poll.stop()
                 return
@@ -1513,7 +1909,8 @@ class CloudShare(FrontDialog):
             if m:
                 remember_cloud_share(val, time.time() + m * 60)
             winsys.log(f"send to phone (cloud): {val}")
-            self.status.setText(tr("Waiting for {cloud} to take the file…", cloud=self.cloud.currentText()))
+            self.status.setText("")
+            self.qr.busy(tr("Waiting for {cloud} to take the file…", cloud=self.cloud.currentText()))
             cloud = self.cloud.currentText()
 
             def ask():
@@ -1536,6 +1933,7 @@ class CloudShare(FrontDialog):
             return
         if self._shared is not None:
             ok, self._shared = self._shared, None
+            self.qr.busy(tr("Waiting for the link…"))
             if ok:
                 self.status.setText(tr("In {cloud}'s Share window, choose who can open it and copy the link. "
                                        "It appears here as a QR code.", cloud=self.cloud.currentText()))
@@ -1553,14 +1951,8 @@ class CloudShare(FrontDialog):
         self.url = url
         self.status.setText("<b>" + tr("Scan with your phone's camera") + "</b> — " +
                             tr("works on any network, even mobile data."))
-        try:
-            pm = qr_pixmap(url, 6)
-            self.qr.setPixmap(pm)
-            self.qr.setFixedSize(pm.size())
-            self.qr.show()
-        except Exception as e:
-            winsys.log(f"qr: {e}")
-        self.link.setText(f"<span style='color:{theme.hexc('dim')}'>{url}</span>")
+        self.qr.show_code(url)
+        self.link.setText(url)
         self.link.show()
         self.go.setText(tr("Copy link"))
         self.go.setEnabled(True)
@@ -1611,7 +2003,23 @@ class Actions:
             A("unblock", "Unblock", self.unblock, "downloaded files"),
             A("phone", "Send to phone", self.phone),
             A("shred", "Shred…", self.shred, "can't be undone"),
-        ]
+        ] + ([A("readqr", "Read QR code", self.read_qr)]
+             if paths and all(engine.EXT_CATEGORY.get(engine.ext_of(x)) == "image" for x in paths) else [])
+
+    def read_qr(self, paths, p):
+        """What the QR codes in these pictures say."""
+        def work(state):
+            out = []
+            for f in paths:
+                out += find_codes_in_file(f)
+            return out
+
+        def finish(codes):
+            if codes:
+                self.app.show_qr_result(codes)
+            else:
+                self.app.toast.show_msg(tr("Read QR code"), tr("No QR code found in this picture."), "err", 5000)
+        self._background(tr("Read QR code"), Path(paths[0]).name, work, finish)
 
     def rename(self, paths, p):
         dlg = BatchRenameDialog(paths)
@@ -5735,6 +6143,11 @@ QLabel#appname{font:700 20pt 'Segoe UI';color:$text} QLabel#tagline{color:$dim;f
 QLabel#version{color:$accent;font:600 10pt 'Segoe UI'} QLabel#dim{color:$dim;font:9pt 'Segoe UI'}
 QFrame#card{background:$surface;border:1px solid $border;border-radius:10px}
 QFrame#card QLabel{background:transparent}
+QToolButton#back{background:transparent;color:$dim;border:none;border-radius:8px;padding:5px 10px 5px 4px;font:600 9pt 'Segoe UI'}
+QToolButton#back:hover{background:$hover;color:$text}
+QLabel#title{font:700 12pt 'Segoe UI';color:$text} QLabel#sub{color:$dim;font:9pt 'Segoe UI'} QLabel#note{color:$dim;font:9pt 'Segoe UI'}
+QPushButton#primary{background:$accent;color:$on_accent} QPushButton#primary:hover{background:$accent2}
+QPushButton#primary:disabled{background:$button;color:$dim}
 """
 
 
@@ -8232,7 +8645,7 @@ def import_settings(path) -> int:
         if "menu" in win or "sendto" in win:
             winsys.set_context_menu(bool(win.get("menu", winsys.context_menu_enabled())),
                                     paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
-                                    float_label=tr("Open Float"), sendto=bool(win.get("sendto", winsys.sendto_enabled())))
+                                    float_label=tr("Open Float"), qr_label=tr("Read QR code on screen"), sendto=bool(win.get("sendto", winsys.sendto_enabled())))
         if "full_menu" in win and bool(win["full_menu"]) != winsys.full_menu_enabled():
             winsys.set_full_menu(bool(win["full_menu"]))
             winsys.restart_explorer()
@@ -9288,7 +9701,7 @@ class SettingsDialog(QDialog):
         try:
             winsys.set_startup(self.startup.isChecked())
             winsys.set_context_menu(self.menu.isChecked(), paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
-                                    float_label=tr("Open Float"), sendto=self.sendto.isChecked())
+                                    float_label=tr("Open Float"), qr_label=tr("Read QR code on screen"), sendto=self.sendto.isChecked())
         except Exception as e:
             QMessageBox.warning(self, APP, tr("Couldn't update Windows integration:") + f"\n{e}")
         self.accept()
@@ -10262,6 +10675,7 @@ class DragWheelApp(QObject):
         self._first_action = menu.addAction(tr("Convert files…"), self.pick_files)
         menu.addAction(tr("Save image from clipboard"), self.save_clipboard_image)
         menu.addAction(tr("Paste link to Float"), self.play_link)
+        menu.addAction(tr("Read QR code on screen"), lambda: QTimer.singleShot(300, self.read_qr_on_screen))
         recent = menu.addMenu(tr("Recent results"))
         recent.aboutToShow.connect(lambda m=recent: self._fill_recent(m))
         self._qr_menu = menu.addMenu(tr("Send to phone — show QR code"))
@@ -10738,6 +11152,49 @@ class DragWheelApp(QObject):
         w.come_forward()
         w.activateWindow()
         w.setFocus()
+
+    def read_qr_on_screen(self):
+        """Tray or desktop right-click → Read QR code on screen: a still of each screen with its codes lit up."""
+        if getattr(self, "_qr_overlays", None):
+            return
+        shots = []
+        for sc in QGuiApplication.screens():
+            pm = sc.grabWindow(0)
+            try:
+                codes = find_codes(pm.toImage())
+            except Exception as e:
+                winsys.log(f"read qr: {e}")
+                codes = []
+            shots.append((sc, pm, codes))
+        winsys.log(f"read qr: {sum(len(c) for _s, _p, c in shots)} code(s) on {len(shots)} screen(s)")
+        overlays = []
+
+        def done(codes):
+            for o in overlays:
+                o.close()
+            self._qr_overlays = None
+            if codes:
+                self.show_qr_result(codes)
+        for sc, pm, codes in shots:
+            overlays.append(QrScanOverlay(sc, pm, codes, done))
+        self._qr_overlays = overlays
+        under = QGuiApplication.screenAt(QCursor.pos())
+        for o, (sc, _p, _c) in zip(overlays, shots):
+            o.show()
+            o.raise_()
+            if sc is under:
+                o.activateWindow()
+                o.setFocus()
+                winsys.bring_to_front(int(o.winId()))
+
+    def show_qr_result(self, codes):
+        winsys.log(f"read qr: {len(codes)} code(s) read")
+        w = QrResult(codes)
+        self._phone_windows = getattr(self, "_phone_windows", [])
+        self._phone_windows.append(w)
+        w.show()
+        w.raise_()
+        w.activateWindow()
 
     def play_link(self, target=None, url=None):
         """Play the link on the clipboard (YouTube and other sites, or a direct media link) in a float.
@@ -11731,7 +12188,7 @@ def main():
     try:
         if winsys.context_menu_enabled():
             winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
-                                    float_label=tr("Open Float"))
+                                    float_label=tr("Open Float"), qr_label=tr("Read QR code on screen"))
     except Exception as e:
         winsys.log(f"context menu refresh failed: {e}")
 
@@ -11769,6 +12226,9 @@ def main():
             if "--play-link" in msg.get("flags", []):
                 app.play_link()
                 return
+            if "--read-qr" in msg.get("flags", []):
+                QTimer.singleShot(300, app.read_qr_on_screen)
+                return
             if "--send-phone" in msg.get("flags", []) and msg.get("paths"):
                 app.actions.phone(msg["paths"], {})
                 return
@@ -11787,12 +12247,12 @@ def main():
         if settings().value("installer", "") != "1":   # the installer already applied the user's choice
             try:
                 winsys.set_context_menu(True, paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
-                                    float_label=tr("Open Float"), sendto=True)
+                                    float_label=tr("Open Float"), qr_label=tr("Read QR code on screen"), sendto=True)
             except Exception:
                 pass
         pass
     if (first_run or settings().value("tour_at_start", "true") == "true") and not paths and not (
-            flags & {"--send-phone", "--play-link", "--paste-here", "--open-float"}):
+            flags & {"--send-phone", "--play-link", "--paste-here", "--open-float", "--read-qr"}):
         QTimer.singleShot(600, app.show_tour)         # until "Don't show this again" is ticked
     if "--send-phone" in flags and paths:
         QTimer.singleShot(300, lambda: app.actions.phone(paths, {}))
@@ -11800,6 +12260,8 @@ def main():
         QTimer.singleShot(300, app.open_empty_float)
     elif "--play-link" in flags:
         QTimer.singleShot(400, app.play_link)
+    elif "--read-qr" in flags:
+        QTimer.singleShot(500, app.read_qr_on_screen)
     elif "--paste-here" in flags:
         QTimer.singleShot(300, lambda: app.save_clipboard_image(paths[0] if paths else None))
     elif paths:

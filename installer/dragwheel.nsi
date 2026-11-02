@@ -261,6 +261,9 @@ Section "$(SecMenuName)" SecMenu
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink" "MUIVerb" "$(PlayLink)"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink" "Icon" "imageres.dll,-1004"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zlink\command" "" '"$INSTDIR\${EXE}" --play-link'
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zyqr" "MUIVerb" "$(ReadQr)"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zyqr" "Icon" "$INSTDIR\${EXE},0"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zyqr\command" "" '"$INSTDIR\${EXE}" --read-qr'
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zzfloat" "MUIVerb" "$(OpenFloat)"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zzfloat" "Icon" "$INSTDIR\${EXE},0"
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\DragWheel\shell\zzfloat\command" "" '"$INSTDIR\${EXE}" --open-float'
@@ -428,6 +431,8 @@ LangString PasteHere      ${LANG_ENGLISH} "Save clipboard image here"
 LangString PasteHere      ${LANG_ARABIC}  "حفظ صورة الحافظة هنا"
 LangString OpenFloat      ${LANG_ENGLISH} "Open Float"
 LangString OpenFloat      ${LANG_ARABIC}  "فتح نافذة عائمة"
+LangString ReadQr         ${LANG_ENGLISH} "Read QR code on screen"
+LangString ReadQr         ${LANG_ARABIC}  "قراءة رمز QR على الشاشة"
 LangString PlayLink       ${LANG_ENGLISH} "Paste link to Float"
 LangString PlayLink       ${LANG_ARABIC}  "لصق رابط في النافذة العائمة"
 LangString UpdateNotNow   ${LANG_ENGLISH} "The update was cancelled so your running jobs can finish. Run setup again when they're done."
