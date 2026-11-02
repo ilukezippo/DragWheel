@@ -462,11 +462,67 @@ class FrontDialog(QDialog):
         lay.addSpacing(4)
         lay.addLayout(row)
 
+    _leaving = False
+    keep_hides = False                   # "Keep sharing" hides the window (the share lives in it)
+
+    def sharing(self) -> bool:
+        """Something this window shares that could be stopped."""
+        return False
+
+    def stop_sharing(self):
+        pass
+
+    def stop_question(self) -> str:
+        return ""
+
+    def _ask_stop(self):
+        """"stop", "keep" or None (stay here)."""
+        box = QMessageBox(self)
+        box.setWindowTitle(f"{APP} — " + tr("Send to phone"))
+        box.setStyleSheet(i18n.css(DIALOG_CSS))
+        box.setText("<b>" + tr("Stop sharing?") + "</b>")
+        box.setInformativeText(self.stop_question())
+        stop = box.addButton(tr("Stop sharing"), QMessageBox.DestructiveRole)
+        keep = box.addButton(tr("Keep sharing"), QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel).setText(tr("Cancel"))
+        box.setDefaultButton(keep)
+        box.exec()
+        return "stop" if box.clickedButton() is stop else "keep" if box.clickedButton() is keep else None
+
+    def leave_ok(self, e=None) -> bool:
+        """Closing with X: ask whether to stop sharing. False = the window stays (or only hides)."""
+        if self._leaving or not self.sharing():
+            return True
+        r = self._ask_stop()
+        if r is None:
+            if e is not None:
+                e.ignore()
+            return False
+        if r == "keep" and self.keep_hides:
+            if e is not None:
+                e.ignore()
+            self.hide()
+            return False
+        if r == "stop":
+            self.stop_sharing()
+        self._leaving = True
+        return True
+
     def _go_back(self):
         go = self.back
-        if getattr(self, "keep_on_back", False):           # still sharing: choosing it again brings it back
-            self.hide()
+        if not self._leaving and self.sharing():
+            r = self._ask_stop()
+            if r is None:
+                return
+            if r == "keep" and self.keep_hides:            # still sharing: the tray (or choosing it again) brings it back
+                self.hide()
+            else:
+                if r == "stop":
+                    self.stop_sharing()
+                self._leaving = True
+                self.close()
         else:
+            self._leaving = True
             self.close()
         if go:
             QTimer.singleShot(0, go)
@@ -491,7 +547,7 @@ class PhoneShare(FrontDialog):
         import urllib.parse
         self.mode = mode                 # "wifi": phones on this network · "tunnel": anywhere, through Cloudflare
         self.tunnel = None
-        self.keep_on_back = True
+        self.keep_hides = True
         self.key = share_key(paths)
         self.ended = False
         self.setWindowTitle(f"{APP} — " + tr("Send to phone"))
@@ -773,7 +829,17 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
         if self.hits:
             self.count.setText(tr("Downloaded {n} time(s) — last: {name}", n=self.hits, name=self._last))
 
+    def sharing(self):
+        return not self.ended
+
+    def stop_question(self):
+        what = self.paths[0].name if len(self.paths) == 1 else tr("{n} files", n=len(self.paths))
+        return tr("Stop sharing ends the link for {what}. Keep sharing hides this window and the link keeps "
+                  "working; open it again from the tray (Send to phone).", what=what)
+
     def closeEvent(self, e):
+        if not self.leave_ok(e):
+            return
         self.ended = True
         try:
             self.server.shutdown()
@@ -1440,6 +1506,21 @@ class ShareQR(FrontDialog):
         self._t.start()
         self._tick()
 
+    def sharing(self):
+        return bool(self.item.get("path")) and Path(self.item["path"]).exists()
+
+    def stop_question(self):
+        return tr("Stop sharing deletes the copy from your cloud, so the link stops working. Keep sharing leaves "
+                  "it until its time runs out.")
+
+    def stop_sharing(self):
+        stop_cloud_share(self.item["path"])
+
+    def closeEvent(self, e):
+        if not self.leave_ok(e):
+            return
+        super().closeEvent(e)
+
     def _tick(self):
         import time
         if not self.item.get("expires"):
@@ -1780,6 +1861,18 @@ def remember_cloud_share(path, expires, key="", url="", name=""):
     settings().setValue("cloud_shares", json.dumps(lst, ensure_ascii=False))
 
 
+def stop_cloud_share(path):
+    """Stop sharing now: the cloud copy goes (to the cloud's recycle bin), so its link stops working."""
+    try:
+        Path(path).unlink(missing_ok=True)
+        winsys.log(f"cloud link stopped: {Path(path).name}")
+    except OSError as e:
+        winsys.log(f"cloud link: couldn't delete {path}: {e}")
+        return
+    settings().setValue("cloud_shares", json.dumps([x for x in cloud_shares() if x.get("path") != str(path)],
+                                                   ensure_ascii=False))
+
+
 def live_share(kind, paths):
     """A link made earlier for these same files that still works: {"url", "name", "expires"} or None."""
     key = share_key(paths)
@@ -1788,7 +1881,8 @@ def live_share(kind, paths):
     for x in cloud_shares():
         if x.get("key") == key and x.get("url") and (not x.get("expires") or x["expires"] > time.time()) \
                 and Path(x["path"]).exists():
-            return {"url": x["url"], "name": x.get("name") or Path(x["path"]).name, "expires": x.get("expires", 0)}
+            return {"url": x["url"], "name": x.get("name") or Path(x["path"]).name, "expires": x.get("expires", 0),
+                    "path": x["path"]}
     return None
 
 
@@ -1890,7 +1984,19 @@ class CloudShare(FrontDialog):
         self._closed = False
         self._poll = QTimer(self, interval=400, timeout=self._update)
 
+    def sharing(self):
+        return self.dest is not None and Path(self.dest).exists()
+
+    def stop_question(self):
+        return tr("Stop sharing deletes the copy from {cloud}, so the link stops working. Keep sharing leaves it "
+                  "until the time you chose.", cloud=self.cloud.currentText())
+
+    def stop_sharing(self):
+        stop_cloud_share(self.dest)
+
     def closeEvent(self, e):
+        if not self.leave_ok(e):
+            return
         self._closed = True
         super().closeEvent(e)
 
@@ -2179,18 +2285,13 @@ class Actions:
         mode = {"wifi": "wifi", "pclink": "tunnel"}.get(choice)
         key = share_key(paths)
         live = getattr(self.app, "_live_phone", {})
-        for k, w in list(live.items()):                    # a share left with Back: same way again = same window
+        for k, w in list(live.items()):                    # shares kept going: same way again = same window
             try:
-                gone = w.ended or (not w.isVisible() and k != (mode, key))
+                gone = w.ended
             except RuntimeError:
                 gone = True
             if gone:
                 live.pop(k, None)
-                try:
-                    if not w.ended:
-                        w.close()                          # left with Back and something else chosen: stop it
-                except RuntimeError:
-                    pass
         self.app._live_phone = live
         if not ok:
             return
@@ -7049,6 +7150,116 @@ class DrawPad(QDialog):
         return _clean_signature(tmp, dst)
 
 
+class CornerPicker(QWidget):
+    """Fix alignment: the photo with the page's four corners found for you; drag any corner onto the page's
+    real corner. value() -> JSON corners (0..1) for engine.image_scan."""
+    BOX = 520
+
+    def __init__(self, path):
+        super().__init__()
+        from PySide6.QtGui import QImageReader
+        r = QImageReader(str(path))
+        r.setAutoTransform(True)                           # phone photos: the right way up, like the result
+        img = r.read()
+        if img.isNull():
+            import io as _io
+            pil = engine.open_image(path)
+            buf = _io.BytesIO()
+            pil.convert("RGB").save(buf, "PNG")
+            img = QImage.fromData(buf.getvalue())
+        if img.isNull():
+            raise ValueError(r.errorString())
+        self.img = img.scaled(self.BOX, self.BOX, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        try:
+            self.found = engine.detect_document(engine.open_image(path))
+        except Exception as e:
+            winsys.log(f"fix alignment: {e}")
+            self.found = None
+        self.whole = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+        self.pts = [list(p) for p in (self.found or [[0.04, 0.04], [0.96, 0.04], [0.96, 0.96], [0.04, 0.96]])]
+        self.drag = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.view = QWidget()
+        self.view.setFixedSize(self.img.width() + 24, self.img.height() + 24)
+        self.view.setMouseTracking(True)
+        self.view.paintEvent = self._paint
+        self.view.mousePressEvent = self._press
+        self.view.mouseMoveEvent = self._move
+        self.view.mouseReleaseEvent = lambda e: setattr(self, "drag", None)
+        lay.addWidget(self.view, 0, Qt.AlignHCenter)
+        hint = QLabel(tr("Drag the corners onto the corners of the page.") if self.found else
+                      tr("No page edge found: drag the corners onto the corners of the page."))
+        hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
+        hint.setAlignment(Qt.AlignCenter)
+        lay.addWidget(hint)
+        row = QHBoxLayout()
+        b1 = QPushButton(tr("Find the page"))
+        b1.setEnabled(self.found is not None)
+        b1.clicked.connect(lambda: self._set(self.found))
+        b2 = QPushButton(tr("Whole picture"))
+        b2.clicked.connect(lambda: self._set(self.whole))
+        row.addStretch(1)
+        row.addWidget(b1)
+        row.addWidget(b2)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+    def _set(self, pts):
+        if pts:
+            self.pts = [list(p) for p in pts]
+            self.view.update()
+
+    def _to_view(self, p):
+        return QPointF(12 + p[0] * (self.img.width() - 1), 12 + p[1] * (self.img.height() - 1))
+
+    def _paint(self, _e):
+        p = QPainter(self.view)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.drawImage(12, 12, self.img)
+        poly = QPolygonF([self._to_view(q) for q in self.pts])
+        outside = QPainterPath()
+        outside.addRect(QRectF(12, 12, self.img.width(), self.img.height()))
+        inside = QPainterPath()
+        inside.addPolygon(poly)
+        inside.closeSubpath()
+        p.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 120))      # what will be cut away
+        accent = QColor(theme.hexc("accent"))
+        p.setPen(QPen(accent, 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawPolygon(poly)
+        for i, q in enumerate(self.pts):
+            c = self._to_view(q)
+            p.setPen(QPen(QColor("#ffffff"), 2))
+            p.setBrush(accent if i != self.drag else QColor("#ffffff"))
+            p.drawEllipse(c, 9, 9)
+
+    def _press(self, e):
+        pos = e.position()
+        near = min(range(4), key=lambda i: (self._to_view(self.pts[i]) - pos).manhattanLength())
+        if (self._to_view(self.pts[near]) - pos).manhattanLength() < 40:
+            self.drag = near
+            self._move(e)
+
+    def _move(self, e):
+        pos = e.position()
+        if self.drag is None:
+            near = any((self._to_view(q) - pos).manhattanLength() < 24 for q in self.pts)
+            self.view.setCursor(Qt.OpenHandCursor if near else Qt.ArrowCursor)
+            return
+        x = min(1.0, max(0.0, (pos.x() - 12) / max(1, self.img.width() - 1)))
+        y = min(1.0, max(0.0, (pos.y() - 12) / max(1, self.img.height() - 1)))
+        self.pts[self.drag] = [round(x, 4), round(y, 4)]
+        self.view.setCursor(Qt.ClosedHandCursor)
+        self.view.update()
+
+    def stop(self):
+        pass
+
+    def value(self):
+        return json.dumps(self.pts)
+
+
 class SignPlacer(QWidget):
     """Shows a page with your signature on it: drag it into place, drag its corner to size it,
     ◀ ▶ to choose the page. value() -> JSON for engine.pdf_sign."""
@@ -7541,12 +7752,13 @@ def ask_params(op, paths) -> dict | None:
             edits[name] = tw
             trims.append(tw)
             continue
-        if default in ("@pages", "@sign", "@watermark"):     # PDF page grid / signature / watermark preview
+        if default in ("@pages", "@sign", "@watermark", "@corners"):   # page grid / signature / watermark / corners
             try:
                 w = (PageBoard(paths) if default == "@pages" else SignPlacer(paths) if default == "@sign"
-                     else WatermarkEditor(paths))
+                     else CornerPicker(paths[0]) if default == "@corners" else WatermarkEditor(paths))
             except Exception as e:
-                message(APP, tr("Couldn't open this PDF") + f"<br><small>{e}</small>")
+                message(APP, (tr("Couldn't open this picture") if default == "@corners" else tr("Couldn't open this PDF"))
+                        + f"<br><small>{e}</small>")
                 return None
             form.addRow(w)
             edits[name] = w
@@ -7600,7 +7812,7 @@ def ask_params(op, paths) -> dict | None:
             tw.stop()
     if not ok:
         return None
-    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview, PageBoard, SignPlacer, WatermarkEditor)) else e.text())
+    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview, PageBoard, SignPlacer, WatermarkEditor, CornerPicker)) else e.text())
             for k, e in edits.items()}
 
 
@@ -7952,8 +8164,50 @@ def run_my_slice(spec, paths):
         subprocess.Popen(cmd, cwd=str(Path(g[0]).parent), shell=True)
 
 
+# How the wheels come: the slices most people use, the rest hidden (Settings → Wheel slices shows them all)
+DEFAULT_WHEEL_LAYOUT = {
+    "convert/image": {"order": ["to_png", "to_webp", "to_heic", "to_avif", "to_tiff", "to_bmp", "to_gif", "to_ico", "to_tga", "to_jp2", "to_icns", "to_pdf", "to_jpg", "to_jpeg"],
+                     "hidden": ["to_heic", "to_avif", "to_tiff", "to_bmp", "to_tga", "to_jp2", "to_icns"]},
+    "tool/image": {"order": ["compress", "edit", "scan", "rotate", "flip", "gray", "strip", "resize", "removebg", "ocr", "upscale", "sharpen", "watermark", "blurfaces", "zip", "protect_zip", "splitparts"],
+                  "hidden": ["rotate", "flip", "gray", "strip", "resize", "splitparts"]},
+    "tool/video": {"order": ["compress", "720p", "trim", "mute", "rotate", "snapshot", "speed", "gif", "social", "ringtone", "transcribe", "zip", "protect_zip", "splitparts"],
+                  "hidden": ["compress", "720p", "mute", "speed", "gif", "transcribe", "protect_zip", "splitparts"]},
+    "tool/audio": {"order": ["compress", "trim", "normalize", "mono", "fade", "ringtone", "transcribe", "zip", "protect_zip", "splitparts"],
+                  "hidden": ["normalize", "mono", "protect_zip", "splitparts"]},
+    "tool/pdf": {"order": ["compress", "split", "pages", "rotate", "images", "protect", "arrange", "numbers", "watermark", "sign", "gray", "count", "zip", "protect_zip", "splitparts"],
+                "hidden": ["compress", "numbers", "gray", "count", "zip", "protect_zip", "splitparts"]},
+    "tool/document": {"order": ["count", "zip", "protect_zip", "splitparts"],
+                     "hidden": ["count", "zip", "protect_zip"]},
+    "convert/document": {"order": ["to_pdf", "to_odt", "to_rtf", "to_txt", "to_html", "to_docx"],
+                        "hidden": ["to_odt"]},
+    "convert/spreadsheet": {"order": ["to_csv", "to_tsv", "to_json", "to_html", "to_md", "to_pdf", "to_ods", "to_xlsx"],
+                           "hidden": ["to_ods"]},
+    "tool/spreadsheet": {"order": ["zip", "protect_zip", "splitparts"],
+                        "hidden": []},
+    "tool/slides": {"order": ["count", "zip", "protect_zip", "splitparts"],
+                   "hidden": []},
+    "convert/video": {"order": ["to_mp4", "to_mov", "to_mkv", "to_webm", "to_avi", "to_wmv", "to_hevc", "to_gif", "to_mp3", "to_m4a", "to_mkv_hevc"],
+                     "hidden": ["to_webm", "to_avi", "to_gif", "to_m4a"]},
+    "convert/audio": {"order": ["to_mp3", "to_m4a", "to_wav", "to_flac", "to_ogg", "to_opus", "to_aiff", "to_wma", "to_ac3"],
+                     "hidden": ["to_opus", "to_aiff", "to_ac3"]},
+    "convert/pdf": {"order": ["to_docx", "to_docx_flow", "to_png", "to_jpg", "to_txt", "to_md", "to_html", "to_cbz"],
+                   "hidden": []},
+    "convert/slides": {"order": ["to_pdf", "to_png", "to_jpg", "to_pptx", "to_odp"],
+                      "hidden": []},
+    "convert/archive": {"order": ["to_zip", "to_7z", "to_rar", "to_tar", "to_tar.gz", "to_tar.bz2", "to_tar.xz"],
+                       "hidden": []},
+    "convert/ebook": {"order": ["to_pdf", "to_txt", "to_md", "to_html"],
+                     "hidden": []},
+    "convert/comic": {"order": ["to_pdf", "to_cbz"],
+                     "hidden": []},
+    "action/*": {"order": ["copy", "path", "move", "copyto", "terminal", "float", "reveal", "openwith", "rename", "hash", "unblock", "phone", "shred", "readqr"],
+                "hidden": ["copy", "move", "copyto", "reveal", "openwith", "hash"]},
+}
+
+
 def wheel_layout() -> dict:
-    return _jload("wheel_layout", {})
+    """Your order and hidden slices per wheel and file type; a wheel you haven't changed is as DragWheel comes."""
+    return dict(DEFAULT_WHEEL_LAYOUT, **_jload("wheel_layout", {}))
 
 
 def apply_wheel_layout(mode, category, ops):
@@ -8463,7 +8717,10 @@ class WheelLayoutDialog(QDialog):
         self.preview.show_ops(self.mode.currentData(), paths, shown, hover)
 
     def _reset(self):
-        self.layouts.pop(self._key, None)
+        if self._key in DEFAULT_WHEEL_LAYOUT:              # back to how DragWheel comes
+            self.layouts[self._key] = json.loads(json.dumps(DEFAULT_WHEEL_LAYOUT[self._key]))
+        else:
+            self.layouts.pop(self._key, None)
         self._key = None
         self._load()
 
@@ -8738,13 +8995,46 @@ def import_settings(path) -> int:
     return len(data["settings"])
 
 
+class StallWatch:
+    """Writes to the log what DragWheel was busy with whenever it stops responding for a moment (a playing float
+    would stutter then), so the cause can be found and moved off the main thread."""
+    LIMIT = 0.3
+
+    def __init__(self, parent):
+        self.beat = time.monotonic()
+        self.main = threading.get_ident()
+        self._t = QTimer(parent, interval=50, timeout=self._tick)
+        self._t.start()
+        threading.Thread(target=self._watch, daemon=True, name="stall-watch").start()
+
+    def _tick(self):
+        self.beat = time.monotonic()
+
+    def _watch(self):
+        reported, since = None, 0.0
+        while True:
+            time.sleep(0.1)
+            beat = self.beat
+            lag = time.monotonic() - beat
+            if lag > self.LIMIT and reported != beat and time.monotonic() - since > 3:
+                frame = sys._current_frames().get(self.main)
+                where = " < ".join(f"{Path(f.filename).stem}:{f.name}:{f.lineno}"
+                                   for f in reversed(traceback.extract_stack(frame)[-7:])) if frame else "?"
+                reported, since = beat, time.monotonic()
+                while self.beat == beat and time.monotonic() - beat < 30:     # how long it lasts
+                    time.sleep(0.05)
+                winsys.log(f"stall {time.monotonic() - beat:.2f}s: {where}")
+
+
 class SettingsDialog(QDialog):
     """Changing the language applies immediately (the window rebuilds itself in the new
     language, keeping unsaved edits). Cancel switches the language back."""
 
-    def __init__(self, app: "DragWheelApp"):
+    def __init__(self, app: "DragWheelApp", lazy=False):
         super().__init__(None)
         self.app = app
+        self._lazy = lazy             # built ahead of time: the pages are put in one at a time, so a playing
+        self._pending = []            # float never stops for long
         self.setWindowIcon(app_icon())
         self.setMinimumWidth(660)
         self.orig_lang = settings().value("language", "")
@@ -8916,6 +9206,7 @@ class SettingsDialog(QDialog):
         self.outer.addWidget(self.body)
         root = QVBoxLayout(self.body)
         root.setContentsMargins(12, 8, 12, 12)
+        self._finish_pages()
         def scroll(page):                          # long pages scroll instead of growing past the screen
             from PySide6.QtWidgets import QScrollArea
             area = QScrollArea()
@@ -8966,14 +9257,24 @@ class SettingsDialog(QDialog):
                 lay.addStretch(1)
             it = QListWidgetItem(nav_icon(icon), "  " + tr(title))
             self.nav.addItem(it)
-            self.stack.addWidget(scroll(page))
+            if self._lazy and not self.isVisible() and self.stack.count() != keep_tab:
+                self._pending.append((self.stack.count(), page))
+                self.stack.addWidget(QWidget())                  # filled in a moment (_next_page)
+            else:
+                self.stack.addWidget(scroll(page))
+        self._scroll = scroll
         for k in self._groups:                        # (Updates stays on the About page)
             if k != "Updates":
                 winsys.log(f"settings: section {k} has no page")
-        for w in old:
-            w.deleteLater()
+        self._old = old
+        if not self._pending:
+            for w in old:
+                w.deleteLater()
+        else:
+            QTimer.singleShot(150, self._next_page)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.nav.setCurrentRow(min(keep_tab, self.nav.count() - 1))
+        self.nav.currentRowChanged.connect(lambda _r: self._finish_pages())
         body.addWidget(self.nav)
         body.addWidget(self.stack, 1)
         self.tabs = self.nav                          # keeps the page you were on when the language changes
@@ -8988,8 +9289,41 @@ class SettingsDialog(QDialog):
         root.addWidget(bb)
         self.adjustSize()
         scr = (self.screen() or QGuiApplication.primaryScreen()).availableGeometry()
-        widest = max(self.stack.widget(i).widget().sizeHint().width() for i in range(self.stack.count()))
+        widest = max([self.stack.widget(i).widget().sizeHint().width() for i in range(self.stack.count())
+                      if hasattr(self.stack.widget(i), "widget")] + [600])
         self.resize(min(scr.width() - 40, max(900, widest + 236 + 70)), min(scr.height() - 80, 720))
+
+    def _put_page(self, i, page):
+        cur = self.stack.currentIndex()
+        old = self.stack.widget(i)
+        self.stack.insertWidget(i, self._scroll(page))
+        self.stack.removeWidget(old)
+        old.deleteLater()
+        self.stack.setCurrentIndex(cur)
+
+    def _next_page(self):
+        """Put in one more page, then wait a little (each takes a moment for Qt to style)."""
+        if not self._pending:
+            return
+        self._put_page(*self._pending.pop(0))
+        if self._pending:
+            QTimer.singleShot(120, self._next_page)
+        else:
+            for w in self._old:
+                w.deleteLater()
+
+    def showEvent(self, e):
+        self._finish_pages()
+        super().showEvent(e)
+
+    def _finish_pages(self):
+        """Opened (or a page clicked) before every page was in: put the rest in now."""
+        while self._pending:
+            self._put_page(*self._pending.pop(0))
+        if getattr(self, "_old", None):
+            for w in self._old:
+                w.deleteLater()
+            self._old = []
 
     def _key_taken(self, owner, spec):
         """One key does one thing: a key you give to this wheel is taken off any other."""
@@ -10713,6 +11047,8 @@ class DragWheelApp(QObject):
         self.predownload()
         self._prebuild_settings(6000)
         QTimer.singleShot(3000, refresh_clouds)
+        self._stall_watch = StallWatch(self)
+        QApplication.instance().aboutToQuit.connect(self._end_shares)
         self._cloud_timer = QTimer(self, interval=10 * 60 * 1000, timeout=clean_cloud_shares)
         self._cloud_timer.start()
         QTimer.singleShot(20000, clean_cloud_shares)
@@ -10785,13 +11121,31 @@ class DragWheelApp(QObject):
         sub = self._qr_menu
         sub.clear()
         links = share_links()
-        sub.menuAction().setVisible(bool(links))           # only while an internet link is still alive
+        short = lambda n: n if len(n) <= 40 else n[:37] + "…"
+        live = []
+        for (mode, _k), w in list(getattr(self, "_live_phone", {}).items()):
+            try:
+                if not w.ended:
+                    live.append(w)
+            except RuntimeError:
+                pass
+        clouds = [x for x in cloud_shares() if x.get("url") and Path(x.get("path", "")).exists()
+                  and (not x.get("expires") or x["expires"] > time.time())]
+        sub.menuAction().setVisible(bool(links or live or clouds))   # only while something is shared
+        for w in live:
+            name = w.paths[0].name if len(w.paths) == 1 else tr("{n} files", n=len(w.paths))
+            way = tr("Link from this PC") if w.mode == "tunnel" else tr("Same Wi-Fi")
+            sub.addAction(f"{short(name)}   ·   {way}", lambda _=False, w=w: (w.show(), w.raise_(), w.activateWindow()))
         for it in links:
-            name = it["name"] if len(it["name"]) <= 40 else it["name"][:37] + "…"
-            sub.addAction(f"{name}   ·   {_time_left(it['expires'])}", lambda _=False, it=it: self._show_qr(it))
+            sub.addAction(f"{short(it['name'])}   ·   {_time_left(it['expires'])}", lambda _=False, it=it: self._show_qr(it))
+        for x in clouds:
+            it = {"url": x["url"], "name": x.get("name") or Path(x["path"]).name, "expires": x.get("expires", 0),
+                  "path": x["path"]}
+            left = _time_left(it["expires"]) if it["expires"] else tr("Cloud link")
+            sub.addAction(f"{short(it['name'])}   ·   {left}", lambda _=False, it=it: self._show_qr(it, tr("Cloud link")))
 
-    def _show_qr(self, it):
-        w = ShareQR(it)
+    def _show_qr(self, it, title=None):
+        w = ShareQR(it, title)
         self._phone_windows = getattr(self, "_phone_windows", [])
         self._phone_windows.append(w)
         w.show()
@@ -11270,6 +11624,16 @@ class DragWheelApp(QObject):
                 o.activateWindow()
                 o.setFocus()
                 winsys.bring_to_front(int(o.winId()))
+
+    def _end_shares(self):
+        """Quitting: shares that live in a window end without asking."""
+        for w in list(getattr(self, "_phone_windows", [])):
+            try:
+                w._leaving = True
+                if isinstance(w, PhoneShare) and not w.ended:
+                    w.close()
+            except RuntimeError:
+                pass
 
     def show_qr_result(self, codes):
         winsys.log(f"read qr: {len(codes)} code(s) read")
@@ -11922,11 +12286,11 @@ class DragWheelApp(QObject):
     def _do_prebuild_settings(self):
         if getattr(self, "_settings_dlg", None) is not None or getattr(self, "_settings_spare", None) is not None:
             return
-        if any(f.player is not None and f._playing() for f in self.floats) or self.wheel.is_open() or self.running:
-            self._prebuild_settings(15000)          # not now: it would make the video stutter
+        if self.wheel.is_open():
+            self._prebuild_settings(15000)          # not while the wheel is up
             return
         try:
-            dlg = SettingsDialog(self)
+            dlg = SettingsDialog(self, lazy=True)   # page by page, so a playing video doesn't stop
         except Exception as e:
             winsys.log(f"settings prebuild: {e}")
             return

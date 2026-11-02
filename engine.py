@@ -1227,6 +1227,111 @@ def image_tool(tag, transform, keep_ext=True, fmt_override=None):
     return f
 
 
+# ---- Fix alignment (like a document scanner app): find the page's four corners, straighten it, clean it up
+SCAN_LOOKS = ["Clean document", "Original colours", "Black & white", "Grayscale"]
+
+
+def detect_document(img):
+    """The four corners of the page in a photo, [[x, y]…] from 0 to 1 (top-left, top-right, bottom-right,
+    bottom-left), or None when no clear page stands out from the background."""
+    import numpy as np
+    Image, _ = _pil()
+    from PIL import ImageDraw, ImageFilter
+    small = img.convert("L")
+    small.thumbnail((420, 420))
+    w, h = small.size
+    a = np.asarray(small.filter(ImageFilter.GaussianBlur(2)), dtype=np.float64)
+    hist = np.bincount(a.astype(np.uint8).ravel(), minlength=256).astype(np.float64)
+    total, best, t_best = a.size, -1.0, 128                  # Otsu: the split between page and background
+    cum, cum_mean, mean_all = 0.0, 0.0, float((hist * np.arange(256)).sum())
+    for t in range(256):
+        cum += hist[t]
+        cum_mean += t * hist[t]
+        if cum == 0 or cum == total:
+            continue
+        m0, m1 = cum_mean / cum, (mean_all - cum_mean) / (total - cum)
+        var = cum * (total - cum) * (m0 - m1) ** 2
+        if var > best:
+            best, t_best = var, t
+    mask = Image.fromarray(((a > t_best) * 255).astype(np.uint8))
+    mask = mask.filter(ImageFilter.MinFilter(5)).filter(ImageFilter.MaxFilter(5))   # no specks, no thin lines
+    seed = (w // 2, h // 2)
+    if mask.getpixel(seed) != 255:                           # the page usually covers the middle
+        return None
+    ImageDraw.floodfill(mask, seed, 128)
+    m = np.asarray(mask) == 128
+    share = m.mean()
+    if share < 0.12 or share > 0.985:                        # nothing stands out, or it's the whole photo
+        return None
+    ys, xs = np.nonzero(m)
+    s_, d_ = xs + ys, xs - ys
+    pts = [(xs[s_.argmin()], ys[s_.argmin()]), (xs[d_.argmax()], ys[d_.argmax()]),
+           (xs[s_.argmax()], ys[s_.argmax()]), (xs[d_.argmin()], ys[d_.argmin()])]
+    return [[round(float(x) / (w - 1), 4), round(float(y) / (h - 1), 4)] for x, y in pts]
+
+
+def _perspective_coeffs(dst, src):
+    import numpy as np
+    rows, rhs = [], []
+    for (x, y), (X, Y) in zip(dst, src):
+        rows.append([x, y, 1, 0, 0, 0, -X * x, -X * y])
+        rhs.append(X)
+        rows.append([0, 0, 0, x, y, 1, -Y * x, -Y * y])
+        rhs.append(Y)
+    return [float(v) for v in np.linalg.solve(np.array(rows, dtype=np.float64), np.array(rhs, dtype=np.float64))]
+
+
+def straighten(img, corners, look="Clean document"):
+    import math
+    Image, ImageOps = _pil()
+    from PIL import ImageFilter
+    W, H = img.size
+    pts = [(x * (W - 1), y * (H - 1)) for x, y in corners]
+    tl, tr, br, bl = pts
+    dist = lambda a, b: math.hypot(a[0] - b[0], a[1] - b[1])
+    w = int(round(max(dist(tl, tr), dist(bl, br))))
+    h = int(round(max(dist(tl, bl), dist(tr, br))))
+    if w < 8 or h < 8:
+        raise ConversionError("The corners are too close together")
+    coeffs = _perspective_coeffs([(0, 0), (w, 0), (w, h), (0, h)], pts)
+    out = img.convert("RGB").transform((w, h), Image.PERSPECTIVE, coeffs, Image.BICUBIC)
+    if look in ("Clean document", "Black & white"):
+        import numpy as np
+        gray = out.convert("L")
+        k = max(1, max(w, h) // 300)                        # the paper's light, without the ink (worked out small)
+        small = gray.resize((max(1, w // k), max(1, h // k)), Image.BILINEAR)
+        bg = small.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.MinFilter(3)) \
+            .filter(ImageFilter.GaussianBlur(4)).resize((w, h), Image.BILINEAR)
+        light = np.maximum(np.asarray(bg, dtype=np.float32), 1.0)[..., None] / 255.0   # how lit each spot is
+        if look == "Black & white":                          # paper white, ink black, shadows gone
+            flat = np.asarray(gray, dtype=np.float32)[..., None] / light
+            return Image.fromarray(np.where(flat[..., 0] > 200, 255, 0).astype(np.uint8), "L")
+        flat = np.clip(np.asarray(out, dtype=np.float32) / light * 0.97, 0, 255).astype(np.uint8)   # even light
+        flat = ImageOps.autocontrast(Image.fromarray(flat, "RGB"), cutoff=1)
+        return flat.filter(ImageFilter.UnsharpMask(radius=2, percent=80, threshold=2))
+    if look == "Grayscale":
+        return ImageOps.autocontrast(out.convert("L"), cutoff=1)
+    return out
+
+
+def image_scan(src, p):
+    """Fix alignment: the page straightened as if scanned. Corners come from the picker, or are found."""
+    img = open_image(src)
+    corners = None
+    try:
+        corners = json.loads(p.get("Corners") or "null")
+    except ValueError:
+        pass
+    if not corners or len(corners) != 4:
+        corners = detect_document(img) or [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+    look = p.get("Look") or "Clean document"
+    out = straighten(img, corners, look)
+    e = ext_of(src)
+    fmt = "png" if look == "Black & white" else ("jpg" if e in ("jpg", "jpeg", "heic", "heif", "webp", "avif") else
+                                                  "png" if e in ("png", "bmp", "gif", "svg", "ico") else "jpg")
+    return save_image(out, out_for(src, fmt, "scanned"), fmt)
+
+
 def _resize(img, p):
     pct = float(str(p["Scale %"]).strip("% ")) / 100.0
     if not 0 < pct <= 10:
@@ -3469,6 +3574,8 @@ def tools(paths: list[str]) -> list[Op]:
         ops += [
             T("compress", "Compress", image_compress),
             T("edit", "Crop & Resize…", image_crop_resize, ui="crop"),
+            T("scan", "Fix alignment…", image_scan, ask=([("Corners", "@corners")] if n == 1 else []) +
+              [("Look", SCAN_LOOKS)]),
             T("rotate", "Rotate 90°", image_tool("rotated", lambda i, p: i.rotate(-90, expand=True))),
             T("flip", "Flip", image_tool("flipped", lambda i, p: i.transpose(0))),
             T("gray", "Grayscale", image_tool("gray", lambda i, p: i.convert("LA") if i.mode in ("RGBA", "LA") else i.convert("L"))),
