@@ -1140,8 +1140,8 @@ def open_image(src):
     Image, ImageOps = _pil()
     if ext_of(src) == "svg":
         import pymupdf
-        doc = pymupdf.open(str(src))
-        pix = doc[0].get_pixmap(dpi=192, alpha=True)
+        with pymupdf.open(str(src)) as doc:
+            pix = doc[0].get_pixmap(dpi=192, alpha=True)
         img = Image.open(io.BytesIO(pix.tobytes("png")))
         img.load()
         return img
@@ -1675,9 +1675,38 @@ def images_to_pdf(paths, p):
 # ----------------------------------------------------------------------------
 # PDF / EPUB  (PyMuPDF)
 # ----------------------------------------------------------------------------
+class _MuOpen:
+    """PyMuPDF, but every document opened during a job is remembered and closed when the job ends, so DragWheel
+    never keeps a PDF locked (Windows won't let you rename or delete a file that's still open)."""
+
+    def __getattr__(self, name):
+        import pymupdf
+        return getattr(pymupdf, name)
+
+    def open(self, *a, **k):
+        import pymupdf
+        doc = pymupdf.open(*a, **k)
+        if not hasattr(_ctx, "docs"):
+            _ctx.docs = []
+        _ctx.docs.append(doc)
+        return doc
+
+    Document = open
+
+
+def close_pdfs():
+    """Close the PDFs this thread opened (called after every job)."""
+    docs, _ctx.docs = getattr(_ctx, "docs", []), []
+    for d in docs:
+        try:
+            if not d.is_closed:
+                d.close()
+        except Exception:
+            pass
+
+
 def _mu():
-    import pymupdf
-    return pymupdf
+    return _MuOpen()
 
 
 def pdf_to_images(fmt, dpi=200):
@@ -3729,6 +3758,7 @@ def run_op(op: Op, paths: list[str], params: dict | None = None,
         raise
     finally:
         _ctx.token = None
+        close_pdfs()
 
 
 def _cleanup(token: CancelToken):

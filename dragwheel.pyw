@@ -413,7 +413,26 @@ class FrontDialog(QDialog):
         super().__init__(parent)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
 
+    back = None                          # set by Send to phone: reopens the chooser to pick another way
+
+    def back_button(self):
+        """A "Back" button (to choose another way to send), or None when this window wasn't opened from the chooser."""
+        b = QPushButton("←  " + tr("Back"))
+        b.setToolTip(tr("Choose another way to send"))
+        b.clicked.connect(self._go_back)
+        b.setVisible(False)
+        self._back_b = b
+        return b
+
+    def _go_back(self):
+        go = self.back
+        self.close()
+        if go:
+            QTimer.singleShot(0, go)
+
     def showEvent(self, e):
+        if getattr(self, "_back_b", None) is not None:
+            self._back_b.setVisible(self.back is not None)
         super().showEvent(e)
         if not getattr(self, "_fronted", False):
             self._fronted = True
@@ -558,6 +577,7 @@ class PhoneShare(FrontDialog):
             help_b = QPushButton(tr("Phone can't open it?"))
             help_b.clicked.connect(self._help)
             lay.addWidget(help_b)
+        lay.addWidget(self.back_button())
         stop = QPushButton(tr("Stop sharing"))
         stop.clicked.connect(self.close)
         lay.addWidget(stop)
@@ -1078,6 +1098,7 @@ class InternetShare(FrontDialog):
         self.copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.url))
         self.copy.hide()
         lay.addWidget(self.copy)
+        lay.addWidget(self.back_button())
         close = QPushButton(tr("Close"))
         close.clicked.connect(self.close)
         lay.addWidget(close)
@@ -1205,7 +1226,7 @@ class SendChooser(FrontDialog):
                 ("pclink", "pclink", tr("Link from this PC"), tr("A link that works anywhere, served from this PC while the window is open. Nothing is uploaded."), True),
                 ("cloud", "cloud", tr("Cloud link"),
                  tr("A share link from your {cloud}. Works even when this PC is off.", cloud=cloud_names) if clouds
-                 else tr("Needs OneDrive, Google Drive, iCloud Drive, Dropbox or Box set up on this PC."), True),
+                 else tr("A share link from OneDrive, Google Drive, iCloud Drive, Dropbox or Box. Works even when this PC is off."), True),
                 ("bluetooth", "bluetooth", tr("Bluetooth"), tr("Slower, but needs no network. Android phones paired to this PC."), True),
                 ("wifi", "wifi", tr("Same Wi-Fi"), tr("The phone downloads directly from this PC. Routers and firewalls can block it."), True)):
             b = QPushButton()
@@ -1242,6 +1263,11 @@ class SendChooser(FrontDialog):
         self.accept()
 
 
+CLOUD_APPS = [("OneDrive", "https://www.microsoft.com/microsoft-365/onedrive/download"),
+              ("Google Drive", "https://www.google.com/drive/download/"),
+              ("iCloud Drive", "https://apps.microsoft.com/detail/9pktq5699m62"),
+              ("Dropbox", "https://www.dropbox.com/install"),
+              ("Box", "https://www.box.com/resources/downloads/drive")]
 _CLOUDS = None          # [(name, folder)] found in the background (looking can be slow: drives, network)
 
 
@@ -1372,7 +1398,15 @@ class CloudShare(FrontDialog):
         self.cloud = QComboBox()
         for name, folder in self.clouds:
             self.cloud.addItem(name, str(folder))
+        have = {n.split(" (")[0] for n, _ in self.clouds}
+        missing = [(n, url) for n, url in CLOUD_APPS if n not in have]
+        if missing:                                   # the others: a quick way to get them
+            if self.clouds:
+                self.cloud.insertSeparator(self.cloud.count())
+            for n, url in missing:
+                self.cloud.addItem(tr("{cloud} — not set up on this PC", cloud=n), "get:" + url)
         self.cloud.setCurrentIndex(max(0, self.cloud.findText(settings().value("cloud_last", ""))))
+        self.cloud.currentIndexChanged.connect(self._cloud_changed)
         form.addRow(tr("Cloud"), self.cloud)
         self.keep = QComboBox()
         for m, label in self.KEEP:
@@ -1403,6 +1437,9 @@ class CloudShare(FrontDialog):
         self.go = QPushButton(tr("Make a link"))
         self.go.clicked.connect(self._start)
         lay.addWidget(self.go)
+        self._note = note
+        self._cloud_changed()
+        lay.addWidget(self.back_button())
         close = QPushButton(tr("Close"))
         close.clicked.connect(self.close)
         lay.addWidget(close)
@@ -1417,7 +1454,23 @@ class CloudShare(FrontDialog):
         self._closed = True
         super().closeEvent(e)
 
+    def _cloud_changed(self, *_):
+        data = str(self.cloud.currentData() or "")
+        get = data.startswith("get:")
+        name = self.cloud.currentText().split(" — ")[0]
+        self.keep.setEnabled(not get)
+        self.go.setText(tr("Get {cloud}", cloud=name) if get else tr("Make a link"))
+        self._note.setText(tr("{cloud} isn't set up on this PC. Install it and sign in, then choose it here.", cloud=name)
+                           if get else tr("A copy goes into a “DragWheel shares” folder in your cloud, and the cloud's "
+                                          "own Share window opens: choose who can open it and copy the link. The link "
+                                          "works even when this PC is off."))
+
     def _start(self):
+        data = str(self.cloud.currentData() or "")
+        if data.startswith("get:"):
+            QDesktopServices.openUrl(QUrl(data[4:]))
+            refresh_clouds()
+            return
         settings().setValue("cloud_last", self.cloud.currentText())
         settings().setValue("cloud_keep", self.keep.currentData())
         self.go.setEnabled(False)
@@ -1673,6 +1726,7 @@ class Actions:
             self.bluetooth(paths)
             return
         def open_window(w):
+            w.back = lambda: self.phone(paths, p)
             self.app._phone_windows = getattr(self.app, "_phone_windows", [])
             self.app._phone_windows.append(w)
             w.show()
@@ -6388,6 +6442,13 @@ class PageBoard(QWidget):
 
     def stop(self):
         self._timer.stop()
+        for d in self.docs.values():                       # let go of the PDFs (else they can't be renamed/deleted)
+            try:
+                if d is not None:
+                    d.close()
+            except Exception:
+                pass
+        self.docs = {}
 
     def value(self):
         return json.dumps({"sources": self.sources, "pages": [[it["src"], it["page"], it["rot"]] for it in self.items]})
@@ -6501,7 +6562,8 @@ class SignPlacer(QWidget):
         import pymupdf
         self.pdf = next(x for x in paths if engine.EXT_CATEGORY.get(engine.ext_of(x)) == "pdf")
         self.doc = pymupdf.open(self.pdf)
-        self.page_i = self.doc.page_count - 1               # signatures usually go on the last page
+        self.pages = self.doc.page_count
+        self.page_i = self.pages - 1                        # signatures usually go on the last page
         dropped = next((x for x in paths if engine.EXT_CATEGORY.get(engine.ext_of(x)) == "image"), None)
         self.sig_path = None
         if dropped:
@@ -6539,7 +6601,7 @@ class SignPlacer(QWidget):
         from PySide6.QtWidgets import QButtonGroup, QRadioButton, QSpinBox
         side.addWidget(QLabel("<b>" + tr("Sign") + "</b>"))
         self.mode_group = QButtonGroup(self)
-        n = self.doc.page_count
+        n = self.pages
         self.modes = {}
         for key, label in (("this", tr("Only the page shown")), ("all", tr("All pages")),
                            ("range", tr("Pages from")), ("pick", tr("Pages I click"))):
@@ -6612,10 +6674,10 @@ class SignPlacer(QWidget):
 
     # page
     def _go(self, step):
-        self.page_i = max(0, min(self.doc.page_count - 1, self.page_i + step))
-        self.page_lbl.setText(tr("Page {i} of {n}", i=self.page_i + 1, n=self.doc.page_count))
+        self.page_i = max(0, min(self.pages - 1, self.page_i + step))
+        self.page_lbl.setText(tr("Page {i} of {n}", i=self.page_i + 1, n=self.pages))
         self.prev_b.setEnabled(self.page_i > 0)
-        self.next_b.setEnabled(self.page_i < self.doc.page_count - 1)
+        self.next_b.setEnabled(self.page_i < self.pages - 1)
         self._page_img = _render_page(self.doc, self.page_i, 900)
         if self.mode is not None:
             self._signed_label()
@@ -6641,7 +6703,7 @@ class SignPlacer(QWidget):
         self.view.update()
 
     def signed_pages(self):
-        n = self.doc.page_count
+        n = self.pages
         if self.mode == "all":
             return list(range(n))
         if self.mode == "range":
@@ -6660,7 +6722,7 @@ class SignPlacer(QWidget):
         pages = self.signed_pages()
         if not pages:
             txt = tr("No page signed yet")
-        elif len(pages) == self.doc.page_count and len(pages) > 1:
+        elif len(pages) == self.pages and len(pages) > 1:
             txt = tr("Signed on every page")
         else:
             txt = tr("Signed pages: {list}", list=", ".join(str(i + 1) for i in pages[:12]) + ("…" if len(pages) > 12 else ""))
@@ -6820,7 +6882,10 @@ class SignPlacer(QWidget):
                 winsys.log(f"signature picture: {e}")
 
     def stop(self):
-        pass
+        try:
+            self.doc.close()                                # let go of the PDF
+        except Exception:
+            pass
 
     def value(self):
         if not self.sig_path:
@@ -6842,9 +6907,9 @@ class WatermarkEditor(QWidget):
         import pymupdf
         self.pdf = next(x for x in paths if engine.EXT_CATEGORY.get(engine.ext_of(x)) == "pdf")
         self.logo = next((x for x in paths if engine.EXT_CATEGORY.get(engine.ext_of(x)) == "image"), None)
-        src = pymupdf.open(self.pdf)
         self.first = pymupdf.open()
-        self.first.insert_pdf(src, from_page=0, to_page=0)
+        with pymupdf.open(self.pdf) as src:                 # only the first page is kept; the file is let go
+            self.first.insert_pdf(src, from_page=0, to_page=0)
         try:
             saved = json.loads(settings().value("pdf_watermark", "") or "{}")
         except ValueError:
@@ -10571,7 +10636,7 @@ class DragWheelApp(QObject):
         names = [k for k in s.childKeys() if s.value(k) == "1"]
         s.endGroup()
         labels = {"isnet": tr("Remove background"), "whisper-small": tr("Transcribe…").rstrip("…"),
-                  "yt-dlp": tr("Paste link to Float")}
+                  "yt-dlp": tr("Paste link to Float"), "cloudflared": tr("Link from this PC")}
         todo = [n for n in names if n in engine.MODELS]
 
         def nxt():

@@ -287,6 +287,9 @@ SectionGroup "$(SecDlGroup)" SecDl
   Section /o "$(SecDlLinks)" SecDlLinks
     WriteRegStr HKCU "${SETTINGS_KEY}\predownload" "yt-dlp" "1"
   SectionEnd
+  Section /o "$(SecDlTunnel)" SecDlTunnel
+    WriteRegStr HKCU "${SETTINGS_KEY}\predownload" "cloudflared" "1"
+  SectionEnd
 SectionGroupEnd
 
 Section /o "$(SecDesktopName)" SecDesktop
@@ -302,6 +305,7 @@ SectionEnd
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDlBg}    "$(SecDlBgDesc)"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDlSpeech} "$(SecDlSpeechDesc)"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDlLinks} "$(SecDlLinksDesc)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDlTunnel} "$(SecDlTunnelDesc)"
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Function .onInit
@@ -472,6 +476,10 @@ LangString SecDlSpeechDesc ${LANG_ENGLISH} "Turns speech in videos and recording
 LangString SecDlSpeechDesc ${LANG_ARABIC}  "يحوّل الكلام في الفيديو والتسجيلات إلى ترجمة ونص، بما فيها العربية (الأدوات ← تفريغ). يعمل دون إنترنت."
 LangString SecDlLinksDesc ${LANG_ENGLISH} "Lets Float play links from YouTube and about 1,800 other sites (Paste link to Float)."
 LangString SecDlLinksDesc ${LANG_ARABIC}  "يتيح للنافذة العائمة تشغيل روابط يوتيوب ونحو 1800 موقع آخر (تشغيل الرابط المنسوخ)."
+LangString SecDlTunnel     ${LANG_ENGLISH} "Send to phone: Link from this PC — Cloudflare tunnel (60 MB)"
+LangString SecDlTunnel     ${LANG_ARABIC}  "إرسال إلى الهاتف: رابط من هذا الجهاز — نفق Cloudflare (60 ميغابايت)"
+LangString SecDlTunnelDesc ${LANG_ENGLISH} "Makes a link that works on any network, served straight from this PC while the window is open. Nothing is uploaded and no account is needed."
+LangString SecDlTunnelDesc ${LANG_ARABIC}  "ينشئ رابطاً يعمل على أي شبكة، يُقدَّم مباشرة من هذا الجهاز ما دامت النافذة مفتوحة. لا يُرفع أي شيء ولا يلزم حساب."
 LangString SecCoreName    ${LANG_ENGLISH} "${APPNAME} (required)"
 LangString SecCoreName    ${LANG_ARABIC}  "${APPNAME} (مطلوب)"
 LangString SecMenuName    ${LANG_ENGLISH} "Explorer right-click menu and Send To"

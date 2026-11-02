@@ -7,6 +7,10 @@
 - Internet links: a service that refuses your network is skipped straight away instead of uploading half the file first; programs go as *Name.zip* (not *Name.exe.zip*, which some services refuse) and files are sent with their real type
 - Opening Send to phone (and its windows) no longer makes a playing float stop for a second: clouds and network addresses are looked up in the background
 - The Send to phone window no longer outlines the way you used last time
+- **Back** button in each Send to phone window, to choose another way
+- Cloud link lists every cloud it supports; one that isn't set up on this PC offers to get it
+- The installer can download Cloudflare's tunnel tool ahead of time (optional, under one-time downloads)
+- **Fixed:** a PDF you'd used in Manage pages, Sign or Watermark (or any PDF tool) stayed locked until DragWheel was closed, so it couldn't be renamed or deleted
 - The Send to phone windows come to the front when they open but no longer stay on top of everything
 - Windows 11: the right-click option is now called *Use the full right-click menu (like Windows 10)*, which is what it does — Windows' short menu only takes signed, packaged apps
 - **Choose the file service** for an internet link: Automatic (Litterbox, then 0x0.st, then uguu.se, which all give the file itself), or one of them, or tmpfiles.org with a warning about the ads and pop-ups on its download page; each shows the link times it offers
