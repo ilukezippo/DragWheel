@@ -1,31 +1,33 @@
 # Changelog
 
-## 1.2.2 — not released yet
+## 1.2.2 — November 2026
 
-- **Two new ways to send to a phone:** *Link from this PC* makes a link that works on any network, served straight from this PC through a free Cloudflare tunnel while the window is open (nothing is uploaded); *Cloud link* puts a copy in your OneDrive, Google Drive, iCloud Drive, Dropbox or Box and uses its own Share or Copy link, so the link works even when this PC is off (the copy is deleted when the time you choose runs out)
-- **Cleaner Send to phone window:** an icon for each way, a bold name and a short line under it
-- Internet links: a service that refuses your network is skipped straight away instead of uploading half the file first; programs go as *Name.zip* (not *Name.exe.zip*, which some services refuse) and files are sent with their real type
-- Opening Send to phone (and its windows) no longer makes a playing float stop for a second: clouds and network addresses are looked up in the background
-- The Send to phone window no longer outlines the way you used last time
-- **Fix alignment…** for photos of documents (like a scanner app): DragWheel finds the page's edges and corners (even on a white table), you drag any corner or side with a magnifier showing exactly where, rotate left or right, and see a live preview of each look — clean document, original colours, black & white or grayscale. Several pictures at once are straightened automatically
-- **Stop sharing?** Closing a Send to phone window (X or Back) while something is shared asks first (the Stop sharing button just stops): Stop sharing ends it (a cloud link's copy is deleted), Keep sharing keeps it going; shares that are still going are listed in the tray under *Send to phone — show QR code*
-- **Smoother with a video playing:** Settings is prepared one page at a time in the background (it used to wait while a float played, then build all at once when opened), and DragWheel now notes in its log anything that holds it up for a moment, so the rest can be found and fixed
-- **Read QR code on screen** (tray menu and the desktop's right-click menu): the QR codes on your screens light up; click one (or drag a box around it) and DragWheel shows what it says — open a link, copy text, or copy a Wi-Fi password. Pictures get a *Read QR code* action too. Works offline
-- **Send to phone windows redone:** ‹ Back at the top left, the title in the middle, a space for the QR code with a spinning wheel inside it until the link is ready (with the upload percentage), and clear main buttons; click a QR code to copy its link
-- **Same file, same QR code:** choosing Internet link or Cloud link again for a file that's already shared shows the link you made (with the time left, and *New link* if you want a fresh one); Back from Same Wi-Fi or Link from this PC keeps sharing, and choosing it again brings the same window back
-- Cloud link finds Google Drive when it's set to mirror files into a *My Drive* folder, or uses another drive letter
-- Cloud link lists every cloud it supports; one that isn't set up on this PC offers to get it
-- The installer can download Cloudflare's tunnel tool ahead of time (optional, under one-time downloads)
-- **Fixed:** a PDF you'd used in Manage pages, Sign or Watermark (or any PDF tool) stayed locked until DragWheel was closed, so it couldn't be renamed or deleted
-- The Send to phone windows come to the front when they open but no longer stay on top of everything
-- Windows 11: the right-click option is now called *Use the full right-click menu (like Windows 10)*, which is what it does — Windows' short menu only takes signed, packaged apps
-- **Choose the file service** for an internet link: Automatic (Litterbox, then 0x0.st, then uguu.se, which all give the file itself), or one of them, or tmpfiles.org with a warning about the ads and pop-ups on its download page; each shows the link times it offers
-- When an upload fails, the message says what each service did (refused your network, cut the upload off, refused the file type…)
-- **Settings opens at once:** it's prepared ahead of time while nothing is playing, so a playing float no longer stops for a second when you open Settings
-- **Settings Config exports everything:** every option (also the ones you never changed), your keys, slices, presets, chains, Custom Slices, Auto Convert folders and saved links, plus starting with Windows and the right-click menus
-- **Floats that open with Windows** come back at the same place and size (the height is remembered too, and DragWheel waits for the screens to be ready after you sign in)
+### New tools
+- **Read QR code on screen** (tray menu and the desktop's right-click menu): the QR codes on your screens light up; click one, or drag a box around a small one, and DragWheel shows what it says — open a link, copy text, or copy a Wi-Fi password. Pictures get a *Read QR code* action too. Works offline
+- **Fix alignment…** for photos of documents, like a scanner app: DragWheel finds the page's edges and corners (even on a white table), you drag any corner or side with a magnifier showing exactly where, rotate left or right, and see a live preview of each look — clean document, original colours, black & white or grayscale. Several pictures at once are straightened automatically
+
+### Send to phone
+- **Two new ways:** *Link from this PC* makes a link that works on any network, served straight from this PC through a free Cloudflare tunnel while the window is open (nothing is uploaded); *Cloud link* puts a copy in your OneDrive, Google Drive, iCloud Drive, Dropbox or Box and uses its own Copy link, so the link works even when this PC is off (the copy is deleted when the time you choose runs out)
+- **Redone windows:** an icon for each way with a short line under it, ‹ Back at the top left to pick another way, a space for the QR code with a spinning wheel inside it until the link is ready (with the upload percentage), and clear main buttons; click a QR code to copy its link
+- **Same file, same QR code:** choosing Internet link or Cloud link again for a file that's already shared shows the link you made, with the time left and *New link* if you want a fresh one
+- **Stop sharing?** Closing a window with X or Back while something is shared asks whether to stop or keep sharing (the *Stop sharing* button just stops); shares that are still going are listed in the tray under *Send to phone — show QR code*
+- **Choose the file service** for an internet link: Automatic (Litterbox, then 0x0.st, then uguu.se, which all give the file itself), one of them, or tmpfiles.org with a warning about the ads and pop-ups on its download page; each shows the link times it offers
+- A service that refuses your network is skipped straight away instead of uploading half the file first; when an upload fails, the message says what each service did
+- Programs go as *Name.zip* (not *Name.exe.zip*, which some services refuse) and files are sent with their real type
+- Cloud link lists every cloud it supports (one that isn't set up offers to get it) and finds Google Drive in any of its setups
+- The windows come to the front when they open but no longer stay on top of everything
+
+### Float and Settings
+- **Smoother with a video playing:** Settings is prepared one page at a time in the background and opens at once, Send to phone looks for clouds and network addresses in the background, and DragWheel notes in its log anything that holds it up for a moment
 - **Reopen** on the float's right-click menu: closes it and opens it again at the same size and place, with the same file or link, from the same point
+- **Floats that open with Windows** come back at the same place and size
 - **Playing again after a long break:** a video paused for more than 10 minutes (or overnight) reopens fresh when you press play, instead of the sound coming back with a frozen picture
+- **Settings Config exports everything:** every option, your keys, slices, presets, chains, Custom Slices, Auto Convert folders and saved links, plus starting with Windows and the right-click menus
+- The installer can download every extra ahead of time (Remove background, Transcribe, Paste link to Float and Link from this PC), all optional
+- Windows 11: the right-click option is now called *Use the full right-click menu (like Windows 10)*, which is what it does — Windows' short menu only takes signed, packaged apps
+
+### Fixed
+- A PDF you'd used in Manage pages, Sign, Watermark or another PDF tool stayed locked until DragWheel was closed, so it couldn't be renamed or deleted
 
 ## 1.2.1 — October 2026
 

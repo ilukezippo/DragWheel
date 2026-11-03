@@ -42,7 +42,7 @@ from i18n import tr
 
 APP = "DragWheel"
 DONATE_URL = "https://buymeacoffee.com/ilukezippo"
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 ACCENT = QColor("#ff8a00")
 ACCENT_2 = QColor("#ffb347")

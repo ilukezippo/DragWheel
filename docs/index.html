@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DragWheel: free offline file converter for Windows</title>
-<meta name="description" content="Drag a file, tap a key, drop it on the wheel. DragWheel is a free, open-source file converter for Windows 10 and 11: images, video, audio, PDF, Office files and archives, converted on your PC. Nothing is uploaded.">
-<meta name="keywords" content="file converter windows, offline file converter, heic to jpg windows, image converter, video converter, pdf converter, zip to 7z, tangerine for windows, drag and drop converter, open source">
+<title>DragWheel: Free Drag and Drop File Converter for Windows (Offline)</title>
+<meta name="description" content="Free, open-source drag and drop file converter for Windows 10 and 11. Convert HEIC to JPG, PDF to Word, MP4 to MP3, WebP to PNG, compress videos, scan documents and read QR codes, all offline on your PC. Nothing is uploaded.">
+<meta name="keywords" content="file converter for windows, drag and drop file converter, offline file converter, free file converter, heic to jpg windows, pdf to word offline, mp4 to mp3, webp to png, video compressor, image converter, pdf converter, document scanner windows, qr code reader windows, send files to phone, zip to 7z, tangerine for windows, open source">
 <meta name="google-site-verification" content="DiGNlYJ88teqHM8-UsbhPpe2klvtJ_smCHBen7n93L0">
 <link rel="canonical" href="https://ilukezippo.github.io/DragWheel/">
 <link rel="icon" href="favicon.ico">
@@ -25,8 +25,8 @@
   "name": "DragWheel",
   "applicationCategory": "UtilitiesApplication",
   "operatingSystem": "Windows 10, Windows 11",
-  "softwareVersion": "1.2.1",
-  "description": "Offline drag-and-drop file converter and toolbox for Windows. Tap a key while dragging a file and drop it on a radial wheel to convert images, video, audio, PDF, Office files and archives.",
+  "softwareVersion": "1.2.2",
+  "description": "Free offline drag and drop file converter and toolbox for Windows. Tap a key while dragging a file and drop it on a radial wheel to convert images, video, audio, PDF, Office files and archives: HEIC to JPG, PDF to Word, MP4 to MP3 and more. Also scans documents from photos, reads QR codes on screen and sends files to your phone.",
   "url": "https://ilukezippo.github.io/DragWheel/",
   "downloadUrl": "https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe",
   "screenshot": "https://ilukezippo.github.io/DragWheel/img/og.jpg",
@@ -42,6 +42,9 @@
   "mainEntity": [
     {"@type": "Question", "name": "Is DragWheel free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. DragWheel is free and open source under the MIT License."}},
     {"@type": "Question", "name": "Does DragWheel upload my files?", "acceptedAnswer": {"@type": "Answer", "text": "No. Every conversion runs on your own PC. The only network connection is an optional daily update check against GitHub, which can be turned off."}},
+    {"@type": "Question", "name": "How do I convert HEIC to JPG on Windows for free?", "acceptedAnswer": {"@type": "Answer", "text": "Install DragWheel, drag the HEIC photo, tap Shift and drop it on JPG. The JPG is saved next to the original, on your PC, without uploading anything. Many photos at once work the same way."}},
+    {"@type": "Question", "name": "Can I convert PDF to Word offline?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. DragWheel converts PDF to Word (DOCX) on your PC and keeps the look of the page: same fonts and positions, real tables, and Arabic as right-to-left text."}},
+    {"@type": "Question", "name": "Can DragWheel read a QR code on my screen?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Choose Read QR code on screen from the tray or the desktop's right-click menu, click the code, and open the link, copy the text or copy the Wi-Fi password."}},
     {"@type": "Question", "name": "Is there a Tangerine for Windows?", "acceptedAnswer": {"@type": "Answer", "text": "DragWheel brings the Tangerine for Mac idea to Windows: tap a key while dragging a file and drop it on a wheel to convert it."}},
     {"@type": "Question", "name": "Why does Windows warn about the installer?", "acceptedAnswer": {"@type": "Answer", "text": "The installer is not code-signed yet, so Windows warns about new downloads. Releases are built by GitHub Actions from the public source code. If Edge holds the download, choose Keep, then Show more, then Keep anyway. If SmartScreen warns when you run it, choose More info, then Run anyway."}}
   ]
@@ -174,6 +177,8 @@ h2 { font-size: clamp(28px, 3.4vw, 40px); letter-spacing: -0.02em; line-height: 
 .formats dt { font-weight: 700; margin-bottom: 4px; }
 .formats dd { margin: 0; color: var(--muted); font-size: 15px; }
 .formats dd b { color: var(--ink); font-weight: 600; }
+.popular { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
+.popular li { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; font-size: 15px; font-weight: 500; }
 .note { font-size: 15px; color: var(--muted); margin-top: 26px; max-width: 70ch; }
 
 .faq { max-width: 760px; }
@@ -204,7 +209,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
     <a class="brand" href="./"><img src="img/icon.webp" alt="" width="30" height="30">DragWheel</a>
     <nav aria-label="Page">
       <a class="hide-sm" href="#how">How it works</a>
-      <a class="hide-sm" href="#new">New in 1.2.1</a>
+      <a class="hide-sm" href="#new">New in 1.2.2</a>
       <a class="hide-sm" href="#formats">Formats</a>
       <a href="https://github.com/ilukezippo/DragWheel">GitHub</a>
     </nav>
@@ -212,7 +217,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
   <div class="wrap split">
     <div>
       <h1><span>Drag a file.</span><span>Tap a key.</span><span>Drop it on the wheel.</span></h1>
-      <p class="lede">DragWheel is a free file converter for Windows that appears under your cursor while you drag. Turn a HEIC photo into a JPG, shrink a video or pack a folder into a 7Z in one gesture, without opening an app or uploading anything.</p>
+      <p class="lede">DragWheel is a free drag and drop file converter for Windows that appears under your cursor while you drag. Turn a HEIC photo into a JPG, a PDF into Word, an MP4 into an MP3, shrink a video or pack a folder into a 7Z in one gesture, without opening an app or uploading anything.</p>
       <div class="cta">
         <a class="btn btn-main btn-big" data-dl href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.1/DragWheel-Setup-1.2.1.exe">
           <svg class="dl-icon" viewBox="-24 -24 48 48" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><circle r="20" stroke-opacity=".3"/><path d="M0 -10 V8 M-8 1 L0 9 L8 1"/></svg>
@@ -220,7 +225,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
         </a>
         <a class="btn btn-quiet" href="https://github.com/ilukezippo/DragWheel">View source</a>
       </div>
-      <p class="fine">Version <span data-ver>1.2.1</span> for Windows 10 and 11 (64-bit). Free and open source, MIT License.</p>
+      <p class="fine">Version <span data-ver>1.2.2</span> for Windows 10 and 11 (64-bit). Free and open source, MIT License.</p>
     </div>
 
     <div class="stage">
@@ -290,8 +295,19 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
 
   <section id="new">
     <div class="wrap">
-      <h2>New in 1.2.1</h2>
-      <p class="intro">Your keys, your way: any key or combination opens a wheel, PDF to Word keeps the look of the page, and a fresh Settings. <a href="https://github.com/ilukezippo/DragWheel/blob/main/CHANGELOG.md">Full changelog</a>.</p>
+      <h2>New in 1.2.2</h2>
+      <p class="intro">Read QR codes straight off your screen, turn photos of documents into clean scans, and Send to phone redone with new ways to share. <a href="https://github.com/ilukezippo/DragWheel/blob/main/CHANGELOG.md">Full changelog</a>.</p>
+      <dl class="formats">
+        <div><dt>Read QR code on screen</dt><dd>Every QR code on your screens lights up. Click one to open the link, copy the text or copy the Wi-Fi password. Pictures get a <b>Read QR code</b> action too, all offline.</dd></div>
+        <div><dt>Fix alignment</dt><dd>A document scanner for photos: DragWheel finds the page, straightens it and evens out the light. Drag the corners with a magnifier, rotate, and pick <b>Clean, Original, Black &amp; white or Grayscale</b> with a live preview.</dd></div>
+        <div><dt>Link from this PC</dt><dd>Send a file to any phone on any network, straight from your PC through a free Cloudflare tunnel. Nothing is uploaded and the link ends when you stop sharing.</dd></div>
+        <div><dt>Cloud link</dt><dd>Share through your own <b>OneDrive, Google Drive, iCloud Drive, Dropbox or Box</b>: the link works even when your PC is off, and the copy is removed when its time is up.</dd></div>
+        <div><dt>Send to phone, redone</dt><dd>A cleaner window with icons, Back to pick another way, a QR code with a loading wheel, the same QR code again for a file that's already shared, and a choice of file services.</dd></div>
+        <div><dt>Smoother with a video playing</dt><dd>Settings and Send to phone open without making a Float stutter, <b>Reopen</b> on the Float menu, and videos paused overnight play again properly.</dd></div>
+      </dl>
+
+      <h2 style="font-size:24px;margin-top:40px">Also in 1.2.1</h2>
+      <p class="intro">Your keys, your way: any key or combination opens a wheel, PDF to Word keeps the look of the page, and a fresh Settings.</p>
       <dl class="formats">
         <div><dt>Any key, any way</dt><dd>Give each wheel any key or combination, a mouse side button, or a key + click like Ctrl + right click. Open it while dragging, on the file under the mouse, or on the files you selected.</dd></div>
         <div><dt>PDF to Word that looks the same</dt><dd>Every line stays where it was, in the same font and size, tables become real Word tables, and Arabic is proper right-to-left text you can edit.</dd></div>
@@ -333,12 +349,26 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
     </div>
   </section>
 
+  <section id="popular">
+    <div class="wrap">
+      <h2>Popular conversions on Windows</h2>
+      <p class="intro">The things people do most with DragWheel, each one drag, tap and drop. Everything stays on your PC.</p>
+      <ul class="popular">
+        <li>Convert HEIC to JPG</li><li>PDF to Word (DOCX)</li><li>MP4 to MP3</li><li>WebP to PNG or JPG</li>
+        <li>Compress a video</li><li>Compress a PDF</li><li>Merge PDFs</li><li>Sign a PDF</li>
+        <li>Remove an image background</li><li>Scan a document from a photo</li><li>Read a QR code on screen</li>
+        <li>Word or PowerPoint to PDF</li><li>Excel to CSV</li><li>MOV to MP4</li><li>Video to GIF</li>
+        <li>Make a ringtone</li><li>Transcribe a video to subtitles</li><li>Zip or 7Z a folder</li><li>Send a file to your phone</li>
+      </ul>
+    </div>
+  </section>
+
   <section id="formats">
     <div class="wrap">
       <h2>What it converts</h2>
       <p class="intro">Everything runs on your PC with built-in ffmpeg, MuPDF and Pillow. No account, no upload, no telemetry.</p>
       <dl class="formats">
-        <div><dt>Images</dt><dd><b>To</b> PNG, JPG, WebP, HEIC, AVIF, TIFF, BMP, GIF, ICO, TGA, JPEG 2000, ICNS, PDF. Opens PSD, SVG, DDS, QOI and more.</dd></div>
+        <div><dt>Images</dt><dd><b>To</b> PNG, JPG, WebP, HEIC, AVIF, TIFF, BMP, GIF, ICO, TGA, JPEG 2000, ICNS, PDF. Opens PSD, SVG, DDS, QOI and more. Fix alignment of document photos, remove backgrounds, read QR codes.</dd></div>
         <div><dt>Video</dt><dd><b>To</b> MP4, MP4 H.265, MOV, MKV, WebM, AVI, WMV, GIF, or MP3 and M4A audio. Compress, trim, 720p, mute, snapshot, merge.</dd></div>
         <div><dt>Audio</dt><dd><b>To</b> MP3, M4A, WAV, FLAC, OGG, Opus, AIFF, WMA, AC3. Trim, normalize, mono, fade, merge.</dd></div>
         <div><dt>PDF</dt><dd><b>To</b> DOCX, PNG, JPG, TXT, Markdown, HTML, CBZ. Sign, arrange pages, watermark, page numbers, compress, split, extract, password-protect, merge.</dd></div>
@@ -346,7 +376,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
         <div><dt>Archives and folders</dt><dd><b>To</b> ZIP, 7Z, RAR, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, or extract them.</dd></div>
         <div><dt>Subtitles, e-books and comics</dt><dd>SRT, VTT and ASS subtitles, added to or taken out of videos; EPUB, MOBI, FB2 and XPS to PDF, text or images; CBR, CBZ and CB7 comics to PDF and back.</dd></div>
         <div><dt>Fonts</dt><dd>TTF, OTF, WOFF and WOFF2 to each other, or install a font with one drop.</dd></div>
-        <div><dt>File actions</dt><dd>Copy, move, copy path, rename in bulk, checksum, shred, send to phone, and Float: pin a file or play a link on top of every window.</dd></div>
+        <div><dt>File actions</dt><dd>Copy, move, copy path, rename in bulk, checksum, shred, send to phone (Quick Share, Wi-Fi, Bluetooth, internet, cloud link), and Float: pin a file or play a link on top of every window.</dd></div>
       </dl>
       <p class="note">Word, PowerPoint and Excel conversions use Microsoft Office if it's installed, otherwise LibreOffice. Creating RAR files needs WinRAR.</p>
     </div>
@@ -356,7 +386,10 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
     <div class="wrap faq">
       <h2>Questions</h2>
       <details><summary>Is DragWheel free?</summary><p>Yes. It's free and open source under the MIT License. If it saves you time, you can <a href="https://buymeacoffee.com/ilukezippo">buy the author a coffee</a>.</p></details>
-      <details><summary>Does it upload my files?</summary><p>No. Every conversion happens on your PC. DragWheel only goes online for things you ask for: the update check (you can turn it off), one-time downloads you agree to, links you play, and <em>Send to phone → Internet link</em>, which uploads the file you pick. See the <a href="https://github.com/ilukezippo/DragWheel/blob/main/PRIVACY.md">privacy policy</a>.</p></details>
+      <details><summary>Does it upload my files?</summary><p>No. Every conversion happens on your PC. DragWheel only goes online for things you ask for: the update check (you can turn it off), one-time downloads you agree to, links you play, and Send to phone: <em>Internet link</em> uploads the file you pick to a temporary file service, and <em>Cloud link</em> copies it into your own cloud. See the <a href="https://github.com/ilukezippo/DragWheel/blob/main/PRIVACY.md">privacy policy</a>.</p></details>
+      <details><summary>How do I convert HEIC to JPG on Windows?</summary><p>Drag the photo, tap <kbd>Shift</kbd> and drop it on <b>JPG</b>. The JPG is saved next to the original. Many photos at once work the same way, all offline.</p></details>
+      <details><summary>Can I convert PDF to Word offline?</summary><p>Yes. PDF to Word keeps the look of the page: same fonts and positions, real tables, and Arabic as right-to-left text you can edit. Nothing is uploaded.</p></details>
+      <details><summary>Can it read a QR code on my screen?</summary><p>Yes. Choose <i>Read QR code on screen</i> from the tray or the desktop's right-click menu and click the code. Open the link, copy the text, or copy a Wi-Fi password.</p></details>
       <details><summary>Is this a Tangerine for Windows?</summary><p>That's the idea. DragWheel brings the drag-tap-drop gesture of <a href="https://tangerineformac.com/">Tangerine for Mac</a> to Windows, with its own set of tools and actions.</p></details>
       <details><summary>Why does Windows warn about the installer?</summary><p>The installer isn't code-signed yet, so Windows warns about new downloads. Every release is built by GitHub Actions from the public source code. If Edge holds the download, choose <i>… → Keep</i>, then <i>Show more → Keep anyway</i>. If SmartScreen warns when you run it, choose <i>More info</i>, then <i>Run anyway</i>.</p></details>
       <details><summary>How do updates work?</summary><p>DragWheel checks GitHub once a day and offers <i>Download & install</i> when a new version is out. Your settings are kept.</p></details>

@@ -62,12 +62,20 @@ Results are saved next to the original (`photo.webp`, `clip compressed.mp4`, …
 
 All keys can be changed in **Settings** (tray icon → Settings).
 
+## What's new in 1.2.2
+
+- **Read QR code on screen:** the QR codes on your screens light up, click one and open the link, copy the text or copy the Wi-Fi password. Works offline
+- **Fix alignment** for photos of documents, like a scanner app: finds the page's corners, straightens it, evens out the light, with a live preview of each look and rotate left/right
+- **Send to phone, redone:** *Link from this PC* (works on any network, nothing uploaded) and *Cloud link* (OneDrive, Google Drive, iCloud Drive, Dropbox, Box), a QR code that's ready with a spinner while it loads, the same QR code again for a file that's already shared, and *Stop sharing?* when you close
+- **Smoother with a video playing:** Settings and Send to phone open without making a Float stutter; *Reopen* on the Float menu
+- **Fixed:** a PDF used in a PDF tool no longer stays locked
+
 ## What's new in 1.2
 
 - **PDF tools:** sign (draw or drop your signature, on one page, all pages or a range), arrange pages by dragging (drop more PDFs or pictures in), watermark with live preview, page numbers, grayscale, unlock, word count
 - **Comics, fonts, subtitles and archives:** CBR/CBZ/CB7 to PDF and back, font conversion and install, add or extract subtitles, split and join big files, password-protected ZIP/7Z, fix garbled Arabic text
 - **Float, the mini player:** play YouTube and ~1,800 sites (copy a link, right-click → *Play copied link in Float*), live streams, quality menu, repeat and loop, saved links, subtitles, keyboard media keys with a big on-screen sign
-- **Send to phone:** Quick Share, Bluetooth, or a temporary internet link with a QR code (5 minutes to 72 hours)
+- **Send to phone:** Quick Share, Bluetooth, the same Wi-Fi, or a temporary internet link with a QR code (5 minutes to 72 hours)
 - **Make it yours:** choose and reorder slices (with a live preview), presets like *WebP · quality 80 · max 1920 px*, chains like *resize → WebP → ZIP*, your own commands, results next to the file / in a folder / replacing it / on the clipboard, export and import settings
 - **Everyday:** recent results in the tray, a queue for many files, Undo, watch folders, a command line (`dragwheel convert *.heic --to jpg`), quick preview (tap Space while dragging), wheel animations, sounds, high contrast
 - **AI, offline:** remove backgrounds, blur faces, speech to text in many languages including Arabic
