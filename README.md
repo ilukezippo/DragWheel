@@ -21,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://ilukezippo.github.io/DragWheel/#video"><img src="docs/video/dragwheel-poster.jpg" width="640" alt="Watch DragWheel in 60 seconds"></a><br>
-  <sub>▶ <a href="https://ilukezippo.github.io/DragWheel/#video">Watch DragWheel in 60 seconds</a></sub>
+  <a href="https://ilukezippo.github.io/DragWheel/#video"><img src="docs/video/dragwheel-poster.jpg" width="640" alt="Watch how DragWheel works"></a><br>
+  <sub>▶ <a href="https://ilukezippo.github.io/DragWheel/#video">Watch how DragWheel works</a> (under 2 minutes)</sub>
 </p>
 
 <p align="center">
