@@ -32,6 +32,17 @@ Every service above, like any website, receives your IP address as part of the c
 
 Uninstalling DragWheel removes the program, its settings and its Explorer integration.
 
+## DragWheel for Browser
+
+DragWheel for Browser is the optional extension for Chrome, Edge, Brave and Firefox. **It collects no data and sends nothing to the developer or to any server.**
+
+- It talks only to the DragWheel app on your own computer, through the browser's *native messaging*.
+- **Play in DragWheel Float:** when you choose it, the address of the video, song, link or page you clicked is passed to DragWheel on your PC, which plays it the way a browser would.
+- **Save image as…:** when you choose it, the extension reads that one picture from the page (the same file your browser already loaded) and passes it to DragWheel on your PC, which saves it in the format you picked in your Downloads folder.
+- It runs only when you click one of its menu items or its toolbar button. It doesn't read, record or track the pages you visit, and keeps no history.
+- It asks for access to all websites only so those right-click items work on any site you choose to use them on.
+- No analytics, no advertising, no remote code. Nothing is sold or shared.
+
 ## Contact
 
 Questions: open an issue at https://github.com/ilukezippo/DragWheel/issues
