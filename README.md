@@ -21,6 +21,11 @@
 </p>
 
 <p align="center">
+  <a href="https://ilukezippo.github.io/DragWheel/#video"><img src="docs/video/dragwheel-poster.jpg" width="640" alt="Watch DragWheel in 60 seconds"></a><br>
+  <sub>▶ <a href="https://ilukezippo.github.io/DragWheel/#video">Watch DragWheel in 60 seconds</a></sub>
+</p>
+
+<p align="center">
   <sub>Downloads the latest installer straight away. Prefer no install? Get <a href="https://github.com/ilukezippo/DragWheel/releases/download/v1.2.2/DragWheel-Portable-1.2.2.zip">the portable ZIP</a>.</sub>
 </p>
 

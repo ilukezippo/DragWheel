@@ -38,6 +38,19 @@
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
+  "@type": "VideoObject",
+  "name": "DragWheel in 60 seconds: free drag and drop file converter for Windows",
+  "description": "How to use DragWheel: drag a file, tap a key and drop it on the wheel to convert HEIC to JPG, video to MP3 and more, all offline. Plus Float, Send to phone, PDF tools and 14 languages.",
+  "thumbnailUrl": "https://ilukezippo.github.io/DragWheel/video/dragwheel-poster.jpg",
+  "uploadDate": "2026-11-05",
+  "duration": "PT1M5S",
+  "contentUrl": "https://ilukezippo.github.io/DragWheel/video/dragwheel.mp4",
+  "embedUrl": "https://ilukezippo.github.io/DragWheel/#video"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
   "@type": "FAQPage",
   "mainEntity": [
     {"@type": "Question", "name": "Is DragWheel free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. DragWheel is free and open source under the MIT License."}},
@@ -177,6 +190,8 @@ h2 { font-size: clamp(28px, 3.4vw, 40px); letter-spacing: -0.02em; line-height: 
 .formats dt { font-weight: 700; margin-bottom: 4px; }
 .formats dd { margin: 0; color: var(--muted); font-size: 15px; }
 .formats dd b { color: var(--ink); font-weight: 600; }
+.video-box { border-radius: 18px; overflow: hidden; box-shadow: 0 30px 70px rgba(0,0,0,0.28); background: #16171a; aspect-ratio: 16 / 9; }
+.video-box video { display: block; width: 100%; height: 100%; }
 .popular { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
 .popular li { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; font-size: 15px; font-weight: 500; }
 .note { font-size: 15px; color: var(--muted); margin-top: 26px; max-width: 70ch; }
@@ -208,6 +223,7 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
   <div class="wrap bar">
     <a class="brand" href="./"><img src="img/icon.webp" alt="" width="30" height="30">DragWheel</a>
     <nav aria-label="Page">
+      <a class="hide-sm" href="#video">Video</a>
       <a class="hide-sm" href="#how">How it works</a>
       <a class="hide-sm" href="#new">New in 1.2.2</a>
       <a class="hide-sm" href="#formats">Formats</a>
@@ -253,6 +269,19 @@ footer nav { display: flex; flex-wrap: wrap; gap: 20px; }
 </div>
 
 <main>
+  <section id="video">
+    <div class="wrap">
+      <h2>See it in 60 seconds</h2>
+      <p class="intro">How to use DragWheel, and what it can do for you: drag a file, tap a key, drop it on the wheel.</p>
+      <div class="video-box">
+        <video controls preload="metadata" playsinline poster="video/dragwheel-poster.jpg" width="1920" height="1080">
+          <source src="video/dragwheel.mp4" type="video/mp4">
+          Your browser can't play this video. <a href="video/dragwheel.mp4">Download it</a> instead.
+        </video>
+      </div>
+    </div>
+  </section>
+
   <section id="how">
     <div class="wrap">
       <h2>How it works</h2>
