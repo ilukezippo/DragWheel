@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code signing policy · DragWheel</title>
+<meta name="description" content="How DragWheel's Windows releases are built and signed: SignPath.io, certificate by SignPath Foundation; who builds, reviews and approves each release; and what the app sends over the network.">
+<link rel="canonical" href="https://ilukezippo.github.io/DragWheel/code-signing.html">
+<link rel="icon" href="favicon.ico">
+<style>
+:root { --bg: #f4f5f7; --ink: #1d1f23; --muted: #5b616b; --card: #fff; --line: #dfe2e7; --orange: #ff8c1a; }
+@media (prefers-color-scheme: dark) { :root { --bg: #18191c; --ink: #eceef1; --muted: #a3a9b2; --card: #222327; --line: #34363c; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.6 "Segoe UI", system-ui, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 48px 20px 64px; }
+a { color: var(--orange); }
+h1 { font-size: 34px; line-height: 1.2; margin: 0 0 8px; }
+h2 { font-size: 21px; margin: 36px 0 8px; }
+.lede { color: var(--muted); margin: 0 0 24px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+.back { display: inline-block; margin-bottom: 24px; text-decoration: none; }
+ul { padding-left: 22px; }
+</style>
+</head>
+<body>
+<main>
+  <a class="back" href="./">‹ DragWheel</a>
+  <h1>Code signing policy</h1>
+  <p class="lede">How DragWheel's Windows releases are built and signed, who is responsible, and what the app sends over the network.</p>
+
+  <div class="card">
+    <b>Free code signing provided by <a href="https://signpath.io">SignPath.io</a>, certificate by <a href="https://signpath.org">SignPath Foundation</a>.</b>
+    <p style="margin:8px 0 0">DragWheel has applied to the SignPath Foundation program. Once approved, every Windows release (the installer and <code>DragWheel.exe</code>) is signed this way.</p>
+  </div>
+
+  <h2>How releases are built</h2>
+  <ul>
+    <li>Every release is built from the public source code at <a href="https://github.com/ilukezippo/DragWheel">github.com/ilukezippo/DragWheel</a> by GitHub Actions. Nothing is built on a personal computer.</li>
+    <li>The tests run on Windows for every change before anything is released.</li>
+    <li>Only DragWheel's own files, built from this repository, are signed. Third-party tools that DragWheel downloads on request (for example <i>yt-dlp</i> or <i>cloudflared</i>) keep their own publishers' signatures.</li>
+  </ul>
+
+  <h2>Team roles</h2>
+  <ul>
+    <li><b>Committers and reviewers:</b> <a href="https://github.com/ilukezippo">ilukezippo</a> (BoYaqoub). Contributions from others are reviewed before they are merged.</li>
+    <li><b>Approvers:</b> <a href="https://github.com/ilukezippo">ilukezippo</a>. Every signing request is approved by hand.</li>
+  </ul>
+  <p>All team members use multi-factor authentication for GitHub and SignPath.</p>
+
+  <h2>Privacy</h2>
+  <p>DragWheel converts files on your own computer and never uploads them for conversions. It collects no usage statistics or personal data. It goes online only for the things listed in the <a href="https://github.com/ilukezippo/DragWheel/blob/main/PRIVACY.md">privacy policy</a>: the daily update check (it can be turned off in Settings), one-time downloads you agree to, links you play, and Send to phone when you choose it.</p>
+
+  <h2>Installing and removing</h2>
+  <p>The installer asks before it changes anything (startup, right-click menu, browser extension are all options you can untick). <i>Settings › Apps</i> in Windows removes DragWheel and everything it added.</p>
+
+  <h2>Reporting a problem</h2>
+  <p>If you think a signed DragWheel file is harmful or was not built from this project, please <a href="https://github.com/ilukezippo/DragWheel/issues">open an issue</a>.</p>
+</main>
+</body>
+</html>
