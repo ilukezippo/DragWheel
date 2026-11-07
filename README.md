@@ -14,6 +14,7 @@
   <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/ilukezippo/DragWheel?color=2b2c30" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-2b2c30" alt="Windows 10 and 11">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2b2c30" alt="MIT License"></a>
+  <a href="../../stargazers"><img src="https://img.shields.io/github/stars/ilukezippo/DragWheel?style=flat&color=ff8c1a" alt="GitHub stars"></a>
 </p>
 
 <p align="center">
@@ -21,8 +22,8 @@
 </p>
 
 <p align="center">
-  <a href="https://ilukezippo.github.io/DragWheel/#video"><img src="docs/video/dragwheel-poster.jpg" width="640" alt="Watch how DragWheel works"></a><br>
-  <sub>▶ <a href="https://ilukezippo.github.io/DragWheel/#video">Watch how DragWheel works</a> (under 2 minutes)</sub>
+  <a href="https://ilukezippo.github.io/DragWheel/#video"><img src="assets/demo.gif" width="720" alt="Drag a HEIC photo, tap Shift, drop it on JPG: DragWheel converts it next to the original"></a><br>
+  <sub>▶ <a href="https://ilukezippo.github.io/DragWheel/#video">Watch the full video</a> (under 2 minutes): Float, sticky notes, photo and PDF editing, Send to phone</sub>
 </p>
 
 <p align="center">
@@ -39,6 +40,8 @@
 </p>
 
 ![The three wheels: Convert, Tools, Actions](shots/combo.png)
+
+<p align="center"><sub>If DragWheel saves you time, a ⭐ star on this page helps other people find it.</sub></p>
 
 ---
 
