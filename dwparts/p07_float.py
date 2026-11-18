@@ -65,10 +65,42 @@ def _parse_subtitles(path) -> list[tuple[int, int, str]]:
     return cues
 
 
-# TODO RECOVER ['_make_sparse'] (line 67)
+def _make_sparse(f):
+    """Windows: mark a file sparse, so setting a big size doesn't write gigabytes of zeros first."""
+    if not winsys.IS_WIN:
+        return
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        h = msvcrt.get_osfhandle(f.fileno())
+        ret = wintypes.DWORD(0)
+        if not ctypes.windll.kernel32.DeviceIoControl(wintypes.HANDLE(h), 0x900C4, None, 0, None, 0,   # FSCTL_SET_SPARSE
+                                                      ctypes.byref(ret), None):
+            winsys.log(f"stream cache: sparse failed ({ctypes.GetLastError()})")
+    except Exception as e:
+        winsys.log(f"stream cache: sparse: {e}")
 
 
-# TODO RECOVER ['_set_file_size'] (line 84)
+def _set_file_size(f, size):
+    """Give a file its full size at once. Python's truncate() on Windows grows a file by writing zeros (3 s for a
+    long video, on the main thread); SetEndOfFile just moves the end, and a sparse file then costs nothing."""
+    if winsys.IS_WIN:
+        try:
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+            k = ctypes.windll.kernel32
+            h = wintypes.HANDLE(msvcrt.get_osfhandle(f.fileno()))
+            f.flush()
+            if k.SetFilePointerEx(h, ctypes.c_longlong(size), None, 0) and k.SetEndOfFile(h):
+                k.SetFilePointerEx(h, ctypes.c_longlong(0), None, 0)
+                f.seek(0)
+                return
+            winsys.log(f"stream cache: SetEndOfFile failed ({ctypes.GetLastError()})")
+        except Exception as e:
+            winsys.log(f"stream cache: size: {e}")
+    f.truncate(size)
 
 
 class StreamCache:
@@ -89,11 +121,11 @@ class StreamCache:
         if not size:                                     # YouTube links carry the length (clen=…)
             import urllib.parse as _up
             size = (_up.parse_qs(_up.urlparse(url).query).get("clen") or [0])[0]
-        self.size = int(size or 0) or self._probe_size()
-        if not self.size:
-            raise OSError("size unknown")
-        self.n = (self.size + self.CHUNK - 1) // self.CHUNK
-        self.have = bytearray(self.n)
+        self.size = int(size or 0)
+        self.ready = threading.Event()     # the temp file is ready (or the cache gave up: failed)
+        self.failed = False
+        self.n = 0
+        self.have = bytearray(0)
         self.busy = set()
         self.fails = 0
         self.forbidden = 0       # chunks refused in a row (403): the link has expired
@@ -102,10 +134,8 @@ class StreamCache:
         self.closed = False
         self.cond = threading.Condition()
         self.flock = threading.Lock()
-        fd, self.tmp = tempfile.mkstemp(prefix="dragwheel-stream-", suffix=".bin")
-        os.close(fd)
-        self.f = open(self.tmp, "r+b")
-        self.f.truncate(self.size)
+        self.f = None
+        self.tmp = None
         cache = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -120,7 +150,19 @@ class StreamCache:
                 b = int(m.group(2)) if m.group(2) else cache.size - 1
                 return a, min(b, cache.size - 1), True
 
+            def _not_cached(h):
+                """No size (the site doesn't say): the player gets the original address instead."""
+                if cache.ready.wait(15) and not cache.failed:
+                    return False
+                h.send_response(302)
+                h.send_header("Location", cache.url)
+                h.send_header("Content-Length", "0")
+                h.end_headers()
+                return True
+
             def do_HEAD(h):
+                if h._not_cached():
+                    return
                 h.send_response(200)
                 h.send_header("Content-Type", "video/mp4")
                 h.send_header("Content-Length", str(cache.size))
@@ -128,6 +170,8 @@ class StreamCache:
                 h.end_headers()
 
             def do_GET(h):
+                if h._not_cached():
+                    return
                 a, b, partial = h._range()
                 if a >= cache.size:
                     h.send_response(416)
@@ -167,8 +211,36 @@ class StreamCache:
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.local = f"http://127.0.0.1:{self.server.server_address[1]}/media"
-        for _ in range(self.WORKERS):
-            threading.Thread(target=self._worker, daemon=True).start()
+        if self.size:
+            self._start(self.size)
+        else:                                            # ask the site for the size off the main thread
+            threading.Thread(target=lambda: self._start(self._probe_size()), daemon=True).start()
+
+    def _start(self, size):
+        """Reserve the temp file and start downloading. Runs at once when the size is known, else after asking."""
+        import tempfile
+        try:
+            if not size or self.closed:
+                raise OSError("size unknown")
+            fd, tmp = tempfile.mkstemp(prefix="dragwheel-stream-", suffix=".bin")
+            os.close(fd)
+            f = open(tmp, "r+b")
+            _make_sparse(f)
+            _set_file_size(f, size)
+            with self.cond:
+                self.size, self.tmp, self.f = int(size), tmp, f
+                self.n = (self.size + self.CHUNK - 1) // self.CHUNK
+                self.have = bytearray(self.n)
+            if self.closed:                              # the float closed meanwhile
+                self.close()
+                return
+            for _ in range(self.WORKERS):
+                threading.Thread(target=self._worker, daemon=True).start()
+        except Exception as e:
+            self.failed = True
+            winsys.log(f"stream cache not used: {e}")
+        finally:
+            self.ready.set()
 
     def _request(self, a, b, timeout=20):
         import urllib.request
@@ -223,11 +295,15 @@ class StreamCache:
                         data = r.read()
                     if len(data) == b - a + 1:
                         with self.flock:
+                            if self.closed:                    # the file is gone
+                                return
                             self.f.seek(a)
                             self.f.write(data)
                         ok = True
                         break
                 except Exception as e:
+                    if self.closed:
+                        return
                     refused = getattr(e, "code", None) == 403
                     if attempt == 2 or refused:
                         winsys.log(f"stream cache: chunk {i} failed: {e}")
@@ -254,14 +330,15 @@ class StreamCache:
             self.closed = True
             self.cond.notify_all()
         try:
-            self.server.shutdown()
-            self.server.server_close()
+            _stop_server(self.server)
         except Exception:
             pass
         try:
             with self.flock:
-                self.f.close()
-            os.remove(self.tmp)
+                if self.f is not None:
+                    self.f.close()
+            if self.tmp:
+                os.remove(self.tmp)
         except OSError:
             pass
 
@@ -379,22 +456,28 @@ class LiveRelay:
             except Exception:
                 pass
         try:
-            self.server.shutdown()
-            self.server.server_close()
+            _stop_server(self.server)
         except Exception:
             pass
 
 
-# TODO RECOVER ['_SAVED_LINKS'] (line 461)
+_SAVED_LINKS = (None, [])
 
 
 def saved_links() -> list:
-    """Links played in Float, newest first: [{"url", "title"}]."""
+    """Links played in Float, newest first: [{"url", "title"}]. (Read again only when the setting changed: a
+    playing link float asks for its name on every frame while the controls show.)"""
+    global _SAVED_LINKS
+    raw = settings().value("float_links", "[]") or "[]"
+    if raw == _SAVED_LINKS[0]:
+        return [dict(x) for x in _SAVED_LINKS[1]]
     try:
-        v = json.loads(settings().value("float_links", "[]") or "[]")
-        return [x for x in v if isinstance(x, dict) and x.get("url")]
+        v = json.loads(raw)
+        v = [x for x in v if isinstance(x, dict) and x.get("url")]
     except (TypeError, ValueError):
-        return []
+        v = []
+    _SAVED_LINKS = (raw, v)
+    return [dict(x) for x in v]
 
 
 def remember_link(url, title):
@@ -793,34 +876,239 @@ def _clipboard_media_file():
     return None
 
 
-# TODO RECOVER ['LABEL_COLORS'] (line 877)
+LABEL_COLORS = [("White", "#ffffff"), ("Black", "#1c1e22"), ("Orange", "#ff8c1a"), ("Yellow", "#ffd84d"),
+                ("Red", "#ef4b45"), ("Green", "#5fd38d"), ("Blue", "#5aa9ff"), ("Pink", "#ff7eb6")]
 
 
-# TODO RECOVER ['_LABELS'] (line 881)
+_LABELS = (None, {})      # the float_labels setting as read last time (it's read while painting)
 
 
-# TODO RECOVER ['_float_labels'] (line 884)
+def _float_labels() -> dict:
+    global _LABELS
+    raw = settings().value("float_labels", "{}") or "{}"
+    if raw != _LABELS[0]:
+        try:
+            d = json.loads(raw)
+            _LABELS = (raw, d if isinstance(d, dict) else {})
+        except (ValueError, TypeError):
+            _LABELS = (raw, {})
+    return {k: dict(v) for k, v in _LABELS[1].items()}
 
 
-# TODO RECOVER ['float_label'] (line 896)
+def float_label(path) -> dict:
+    return dict(_float_labels().get(str(Path(path)), {})) if path else {}
 
 
-# TODO RECOVER ['set_float_label'] (line 900)
+def set_float_label(path, style: dict) -> None:
+    d = _float_labels()
+    key = str(Path(path))
+    style = {k: v for k, v in style.items() if v not in (None, "")}
+    if style:
+        d[key] = style
+    else:
+        d.pop(key, None)
+    settings().setValue("float_labels", json.dumps(d, ensure_ascii=False))
 
 
-# TODO RECOVER ['_shell_pixmap'] (line 911)
+def _shell_pixmap(path):
+    """The big icon Explorer shows for a file (custom icons of .url and .lnk shortcuts too), else Qt's."""
+    got = None
+    if winsys.IS_WIN and str(path).lower().endswith(".url"):
+        chosen = winsys.url_shortcut_icon(str(path))    # (Explorer itself shows a .url's own icon small)
+        if chosen:
+            got = winsys.icon_from_file(*chosen)
+    if got is None and winsys.IS_WIN:
+        got = winsys.shell_icon(str(path))
+    if got:
+        w, h, data = got
+        img = QImage(data, w, h, w * 4, QImage.Format_ARGB32).copy()
+        if not img.isNull():
+            return QPixmap.fromImage(img)
+    from PySide6.QtCore import QFileInfo
+    from PySide6.QtWidgets import QFileIconProvider
+    return QFileIconProvider().icon(QFileInfo(str(path))).pixmap(256, 256)
 
 
-# TODO RECOVER ['float_icon_pixmap'] (line 930)
+def float_icon_pixmap(path):
+    """The icon a float of an app, folder, shortcut or file shows: the one you chose (right-click → Name and icon →
+    Change icon…), else the one Explorer shows."""
+    custom = float_label(path).get("icon") if path else None
+    if custom and Path(custom).exists():
+        pm = QPixmap(custom)
+        if not pm.isNull():
+            return pm
+    return _shell_pixmap(path)
 
 
-# TODO RECOVER ['float_icons_folder'] (line 941)
+def float_icons_folder() -> Path:
+    return Path(engine.models_dir()).parent / "float icons"
 
 
-# TODO RECOVER ['save_float_icon'] (line 945)
+def save_float_icon(source) -> str | None:
+    """Make an icon from a picture, an .ico, or a program/shortcut's own icon, and keep a copy of it (so it stays
+    even if the original moves). Returns the copy's path."""
+    import hashlib
+    ext = Path(source).suffix.lower()
+    pm = _shell_pixmap(source) if ext in (".exe", ".dll", ".lnk", ".url", ".msi") else QPixmap(str(source))
+    if pm.isNull() and ext not in (".exe", ".dll", ".lnk", ".url", ".msi"):
+        try:                                            # HEIC, AVIF… that Qt can't read
+            im = engine.open_image(str(source)).convert("RGBA")
+            q = QImage(im.tobytes("raw", "RGBA"), im.width, im.height, im.width * 4, QImage.Format_RGBA8888)
+            pm = QPixmap.fromImage(q.copy())
+        except Exception:
+            return None
+    if pm.isNull():
+        return None
+    if max(pm.width(), pm.height()) > 256:
+        pm = pm.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    folder = float_icons_folder()
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / (hashlib.sha1(f"{source}{os.path.getmtime(source)}".encode("utf-8", "replace")).hexdigest()[:16] + ".png")
+    return str(dest) if pm.save(str(dest), "PNG") else None
 
 
-# TODO RECOVER ['FloatNameDialog'] (line 968)
+class FloatNameDialog(FrontDialog):
+    """Float → right-click → Name → Font, size and colour…: changes show on the float as you pick them."""
+
+    def __init__(self, fw):
+        super().__init__(fw)
+        from PySide6.QtWidgets import QFontComboBox, QLayout, QSlider, QCheckBox, QLineEdit, QToolButton, QGridLayout
+        self.fw = fw
+        self.old = float_label(fw.path)
+        self.st = dict(self.old)
+        self.setWindowTitle(f"{APP} — " + tr("Name"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetFixedSize)
+        self.header(lay, tr("The name under the icon"), tr("Only this float changes, not the file or app itself."))
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+        self.show_cb = QCheckBox(tr("Show the name"))
+        self.show_cb.setChecked(not fw._name_hidden())
+        self.show_cb.toggled.connect(lambda on: self._set(
+            "hide", None if on == (settings().value("float_hide_name", "false") != "true") else not on))
+        form.addWidget(self.show_cb, 0, 0, 1, 2)
+        self.hover_cb = QCheckBox(tr("Auto hide name"))
+        self.hover_cb.setToolTip(tr("The name fades in when you point at the float and hides when you move away"))
+        self.hover_cb.setChecked(bool(self.st.get("hover")))
+        self.hover_cb.setEnabled(self.show_cb.isChecked())
+        self.hover_cb.toggled.connect(lambda on: self._set("hover", True if on else None))
+        self.show_cb.toggled.connect(self.hover_cb.setEnabled)
+        form.addWidget(self.hover_cb, 1, 0, 1, 2)
+
+        form.addWidget(QLabel(tr("Name")), 2, 0)
+        self.name = QLineEdit(self.st.get("name", ""))
+        self.name.setPlaceholderText(fw._default_label())
+        self.name.textChanged.connect(lambda t: self._set("name", t.strip() or None))
+        form.addWidget(self.name, 2, 1)
+
+        form.addWidget(QLabel(tr("Font")), 3, 0)
+        self.font = QFontComboBox()
+        self.font.setCurrentFont(QFont(self.st.get("font") or "Segoe UI"))
+        self.font.currentFontChanged.connect(
+            lambda f: self._set("font", None if f.family() == "Segoe UI" else f.family()))
+        form.addWidget(self.font, 3, 1)
+
+        form.addWidget(QLabel(tr("Size")), 4, 0)
+        srow = QHBoxLayout()
+        self.size = QSlider(Qt.Horizontal)
+        self.size.setRange(6, 40)
+        self.size.setValue(int(self.st.get("size") or round(fw._auto_label_pt())))
+        self.auto = QCheckBox(tr("Automatic"))
+        self.auto.setToolTip(tr("Grows and shrinks with the icon"))
+        self.auto.setChecked(not self.st.get("size"))
+        self.size.setEnabled(not self.auto.isChecked())
+        self.size_l = QLabel(str(self.size.value()))
+        self.size_l.setMinimumWidth(22)
+        self.size.valueChanged.connect(lambda v: (self.size_l.setText(str(v)), self._set("size", v)))
+        self.auto.toggled.connect(lambda on: (self.size.setEnabled(not on),
+                                              self._set("size", None if on else self.size.value())))
+        srow.addWidget(self.size, 1)
+        srow.addWidget(self.size_l)
+        srow.addWidget(self.auto)
+        form.addLayout(srow, 4, 1)
+        self.bold = QCheckBox(tr("Bold"))
+        self.bold.setChecked(self.st.get("bold", True))
+        self.bold.toggled.connect(lambda on: self._set("bold", None if on else False))
+        form.addWidget(self.bold, 5, 1)
+
+        form.addWidget(QLabel(tr("Colour")), 6, 0)
+        crow = QHBoxLayout()
+        crow.setSpacing(6)
+        self.swatches = []
+        for cname, hexc in LABEL_COLORS:
+            b = QToolButton()
+            b.setFixedSize(24, 24)
+            b.setToolTip(tr(cname))
+            b.setCursor(Qt.PointingHandCursor)
+            b.setProperty("hex", hexc)
+            b.clicked.connect(lambda _=False, h=hexc: self._color(h))
+            crow.addWidget(b)
+            self.swatches.append(b)
+        other = QPushButton(tr("Other…"))
+        other.clicked.connect(self._pick)
+        crow.addWidget(other)
+        crow.addStretch(1)
+        form.addLayout(crow, 6, 1)
+        lay.addLayout(form)
+        self._paint_swatches()
+
+        reset = QPushButton(tr("Back to normal"))
+        reset.clicked.connect(self._reset)
+        cancel = QPushButton(tr("Cancel"))
+        cancel.clicked.connect(self.reject)
+        done = QPushButton(tr("Done"))
+        done.setObjectName("primary")
+        done.setDefault(True)
+        done.clicked.connect(self.accept)
+        self.buttons(lay, reset, cancel, done)
+        self.rejected.connect(lambda: (set_float_label(fw.path, self.old), fw.update()))
+
+    def _set(self, key, value):
+        if value is None:
+            self.st.pop(key, None)
+        else:
+            self.st[key] = value
+        set_float_label(self.fw.path, self.st)
+        self.fw.update()
+
+    def _color(self, hexc):
+        self._set("color", None if hexc.lower() == "#ffffff" else hexc)
+        self._paint_swatches()
+
+    def _pick(self):
+        from PySide6.QtWidgets import QColorDialog
+        c = QColorDialog.getColor(QColor(self.st.get("color") or "#ffffff"), self, tr("Colour"))
+        if c.isValid():
+            self._color(c.name())
+
+    def _paint_swatches(self):
+        cur = (self.st.get("color") or "#ffffff").lower()
+        for b in self.swatches:
+            h = b.property("hex")
+            ring = "#ff8c1a" if h.lower() == cur else "rgba(128,128,128,0.55)"
+            width = 3 if h.lower() == cur else 1
+            b.setStyleSheet(f"QToolButton {{ background: {h}; border: {width}px solid {ring}; border-radius: 12px; }}")
+
+    def _reset(self):
+        self.st = {}
+        set_float_label(self.fw.path, {})
+        for w, v in ((self.name, ""),):
+            w.blockSignals(True)
+            w.setText(v)
+            w.blockSignals(False)
+        for w, fn in ((self.font, lambda: self.font.setCurrentFont(QFont("Segoe UI"))),
+                      (self.auto, lambda: self.auto.setChecked(True)), (self.bold, lambda: self.bold.setChecked(True)),
+                      (self.hover_cb, lambda: self.hover_cb.setChecked(False)),
+                      (self.show_cb, lambda: self.show_cb.setChecked(settings().value("float_hide_name", "false") != "true"))):
+            w.blockSignals(True)
+            fn()
+            w.blockSignals(False)
+        self.size.setEnabled(False)
+        self._paint_swatches()
+        self.fw.update()
 
 
 class FloatWindow(QWidget):
@@ -828,7 +1116,7 @@ class FloatWindow(QWidget):
         """A float you just opened shows in front of other windows, even when it isn't set to stay on top."""
         self.raise_()
         if not getattr(self, "on_top", True):
-            QTimer.singleShot(60, lambda: winsys.bring_to_front(int(self.winId())))
+            QTimer.singleShot(60, self, lambda: winsys.bring_to_front(int(self.winId())))
 
     closed = Signal()
     page_ready = Signal(object, object)    # path, QImage of a document's first page (from a thread)
@@ -864,10 +1152,17 @@ class FloatWindow(QWidget):
         self._drop_hover = False
         self.pin_id = None               # set when this float reopens with Windows
         self._pin_timer = QTimer(self, singleShot=True, interval=500, timeout=self._save_pin)
+        self._no_keep = False            # "Keep open after restart" turned off for this float
+        self._keep_timer = QTimer(self, interval=5000, timeout=self._keep_tick)
+        self._keep_timer.start()
+        self._tb_state = None
+        self._tb_timer = QTimer(self, interval=1000, timeout=self._taskbar_tick)
+        self._tb_timer.start()
         self.companion = None
         self._relay = None
         self.repeat = settings().value("float_repeat", "off")     # off | one | all
         self._play_now = play
+        self.free_shape = bool((pin or {}).get("free", False))     # Keep aspect ratio off
         self._load(path, link)
         self.move(QCursor.pos() - QPoint(self.width() // 2, 40))
         self._resume_ms = int((pin or {}).get("pos") or 0)     # where playback was before an update
@@ -876,6 +1171,7 @@ class FloatWindow(QWidget):
         if pin is not None:
             self.pin_id = pin.get("id")
             self._place_from(pin)
+        QTimer.singleShot(1500, self._keep_tick)
         # show the controls briefly so people know they exist, then let them fade
         QTimer.singleShot(1600, self._maybe_hide_controls)
 
@@ -894,7 +1190,7 @@ class FloatWindow(QWidget):
             self.aspect = w / max(1, h)               # the shape it had (a video corrects it with its first frame)
         self._apply_size(w, h or self._height_for(w))
         if QGuiApplication.screenAt(at + QPoint(20, 20)) is None and tries < 20:
-            QTimer.singleShot(1000, lambda: self._place_from(pin, tries + 1))
+            QTimer.singleShot(1000, self, lambda: self._place_from(pin, tries + 1))
             return
         if QGuiApplication.screenAt(at + QPoint(20, 20)) is not None:
             self.move(at)
@@ -960,9 +1256,7 @@ class FloatWindow(QWidget):
             else:
                 self._set_cover(engine.cover_art(path))
         if self.src is None:
-            from PySide6.QtCore import QFileInfo
-            from PySide6.QtWidgets import QFileIconProvider
-            self.src = QFileIconProvider().icon(QFileInfo(path)).pixmap(256, 256)
+            self.src = float_icon_pixmap(path)
         if self.kind == "image":
             w = 300 if self.aspect >= 1 else int(300 * self.aspect)
         elif self.kind == "video":
@@ -1008,7 +1302,89 @@ class FloatWindow(QWidget):
         else:
             forget_played(it["key"])                     # the file was moved or deleted
 
+    # ---- the name under an app's or folder's icon (right-click → Name and icon)
+    def _default_label(self) -> str:
+        pp = Path(self.path or "")
+        return pp.name if pp.is_dir() or not pp.suffix else pp.stem
+
+    def _auto_label_pt(self) -> float:
+        return max(7.0, min(22.0, self._icon_rect().width() * 0.085))
+
+    def _name_hidden(self) -> bool:
+        hide = float_label(self.path).get("hide") if self.path and not self.link else None
+        return quick_setting("float_hide_name", "false") == "true" if hide is None else bool(hide)
+
+    def _set_name_shown(self, on):
+        st = float_label(self.path)
+        default_shown = settings().value("float_hide_name", "false") != "true"
+        if on == default_shown:
+            st.pop("hide", None)                         # as Settings says
+        else:
+            st["hide"] = not on
+        set_float_label(self.path, st)
+        self.update()
+
+    def _set_name_hover(self, on):
+        st = float_label(self.path)
+        st["hover"] = True if on else None
+        set_float_label(self.path, st)
+        self.update()
+
+    def _change_icon(self):
+        """Right-click → Name and icon → Change icon…: any picture (PNG, JPG, ICO, WebP…) or the icon of a program
+        or shortcut. Only this float changes, not the file itself."""
+        from PySide6.QtWidgets import QFileDialog
+        self.activateWindow()
+        winsys.set_foreground(int(self.winId()))
+        f, _ = QFileDialog.getOpenFileName(
+            self, tr("Change icon…"), str(Path.home() / "Pictures"),
+            tr("Pictures and icons") + " (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.ico *.svg *.heic *.exe *.dll *.lnk);;"
+            + tr("All files") + " (*.*)")
+        if not f:
+            return
+        dest = save_float_icon(f)
+        if not dest:
+            if _APP is not None:
+                _APP.toast.show_msg(tr("Change icon…"), tr("Couldn't use that file as an icon"), "err", 5000)
+            return
+        self._set_icon(dest)
+
+    def _set_icon(self, icon_path):
+        st = float_label(self.path)
+        old = st.get("icon")
+        st["icon"] = icon_path
+        set_float_label(self.path, st)
+        if old and old != icon_path and str(float_icons_folder()) in old:
+            try:
+                Path(old).unlink(missing_ok=True)        # our copy of the icon it had before
+            except OSError:
+                pass
+        self.src = float_icon_pixmap(self.path)
+        self._scaled = None
+        self.update()
+
+    def _rename_float(self):
+        from PySide6.QtWidgets import QInputDialog
+        self.activateWindow()
+        winsys.set_foreground(int(self.winId()))
+        st = float_label(self.path)
+        name, ok = QInputDialog.getText(self, tr("Rename"), tr("Name under the icon (empty = the file's name)"),
+                                        text=st.get("name") or self._default_label())
+        if ok:
+            name = name.strip()
+            st["name"] = name if name and name != self._default_label() else None
+            set_float_label(self.path, st)
+            self.update()
+
+    def _name_style(self):
+        self.activateWindow()
+        winsys.set_foreground(int(self.winId()))
+        FloatNameDialog(self).exec()
+        self.update()
+
     def display_name(self):
+        if not self.link and self.path and float_label(self.path).get("name"):
+            return float_label(self.path)["name"]
         if self.link:
             keys = (self.link.get("saved"), self.link.get("page"))
             saved = next((x for x in saved_links() if x["url"] in keys), None)
@@ -1242,10 +1618,17 @@ class FloatWindow(QWidget):
             c.setPosition(ms)
 
     # ---- previous / next file in the same folder
-    def _siblings(self):
+    def _siblings(self, fresh=False):
+        """The other files of the same kind in this file's folder, in name order (for ⏮ ⏭). Looked up at most every
+        few seconds: painting the controls asks for it on every video frame, and scanning a big folder (Downloads)
+        that often made the video stutter while the mouse was over the float."""
         import re
         if self.link:
             return []
+        now = time.monotonic()
+        cached = getattr(self, "_sib_cache", None)
+        if not fresh and cached and cached[0] == self.path and now - cached[1] < 5:
+            return cached[2]
         cat = engine.EXT_CATEGORY.get(engine.ext_of(self.path))
         here = Path(self.path)
         try:
@@ -1254,10 +1637,12 @@ class FloatWindow(QWidget):
         except OSError:
             return []
         natural = lambda t: [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", Path(t).name)]
-        return sorted(files, key=natural)
+        files = sorted(files, key=natural)
+        self._sib_cache = (self.path, now, files)
+        return files
 
-    def _neighbour(self, step):
-        files = self._siblings()
+    def _neighbour(self, step, fresh=False):
+        files = self._siblings(fresh)
         try:
             i = [os.path.normcase(f) for f in files].index(os.path.normcase(self.path))
         except ValueError:
@@ -1266,7 +1651,7 @@ class FloatWindow(QWidget):
         return files[j] if 0 <= j < len(files) else None
 
     def _step(self, step):
-        nxt = self._neighbour(step)
+        nxt = self._neighbour(step, fresh=True)
         if nxt:
             self._play_now = True
             self._load(nxt)
@@ -1343,11 +1728,11 @@ class FloatWindow(QWidget):
             return
         if status == QMediaPlayer.EndOfMedia and (self.repeat == "all" or settings().value("float_autoplay", "true") == "true"):
             if self._neighbour(1):
-                QTimer.singleShot(300, lambda: self._step(1))
+                QTimer.singleShot(300, self, lambda: self._step(1))
             elif self.repeat == "all":                       # end of the folder: back to the first one
                 files = self._siblings() if not self.link else []
                 if len(files) > 1:
-                    QTimer.singleShot(300, lambda f=files[0]: (setattr(self, "_play_now", True), self._load(f)))
+                    QTimer.singleShot(300, self, lambda f=files[0]: (setattr(self, "_play_now", True), self._load(f)))
                 else:
                     self.player.setPosition(0)
                     self.player.play()
@@ -1372,9 +1757,10 @@ class FloatWindow(QWidget):
             a = img.width() / max(1, img.height())
             if abs(a - (self.aspect or 0)) > 0.01:
                 self.aspect = a
-                tl = self.pos()
-                self._apply_size(self.width(), self._height_for(self.width()))
-                self.move(tl)
+                if not self.free_shape:                  # any shape: the size stays as you made it
+                    tl = self.pos()
+                    self._apply_size(self.width(), self._height_for(self.width()))
+                    self.move(tl)
         self.update()
 
     def _on_subtitle(self, text):
@@ -1662,9 +2048,17 @@ class FloatWindow(QWidget):
             if (paused is not None and time.monotonic() - paused > self.LONG_PAUSE and self.kind == "video"
                     and _APP is not None):
                 # after hours (or a night asleep) the player and the video link are stale: the sound came back
-                # but the picture and the window froze. Reopen it fresh, same place, size and point in the video.
-                winsys.log(f"float: playing again after {int((time.monotonic() - paused) / 60)} min paused — reopening")
-                self.reopen(play=True)
+                # but the picture and the window froze. Start it fresh in this same window, from the same point.
+                winsys.log(f"float: playing again after {int((time.monotonic() - paused) / 60)} min paused — fresh start")
+                self._paused_at = None
+                pos = self.player.position()
+                if self.link and self.link.get("page"):
+                    self._resume_ms = pos
+                    self.refresh_link()                  # a fresh address from the site
+                    return
+                self._play_now = True
+                self._load(self.path, self.link)
+                self._resume_ms = pos
                 return
             self._paused_at = None
             if self.player.duration() and self.player.position() >= self.player.duration() - 200:
@@ -1672,20 +2066,35 @@ class FloatWindow(QWidget):
             self.player.play()
 
     # ---------------------------------------------------------------- geometry
+    def _ratio(self):
+        """The shape resizing keeps: the picture's or video's, unless Keep aspect ratio is off for this float."""
+        return None if getattr(self, "free_shape", False) else self.aspect
+
+    def set_keep_ratio(self, on):
+        self.free_shape = not on
+        if on and self.aspect:                           # back to the picture's shape
+            tl = self.pos()
+            self._apply_size(self.width(), self._height_for(self.width()))
+            self.move(tl)
+        self._scaled = None
+        self.update()
+        self._pin_changed()
+
     def _height_for(self, w):
-        if self.aspect:
-            return int(round(w / self.aspect))
+        if self._ratio():
+            return int(round(w / self._ratio()))
         return w if self.kind == "other" else 150      # audio: a short card
 
     def _apply_size(self, w, h):
         scr = (self.screen() or QGuiApplication.primaryScreen()).availableGeometry()
         w = max(self.MIN_W, min(int(w), scr.width()))
         h = max(110, min(int(h), scr.height()))
-        if self.aspect:                                   # keep the shape when a limit kicked in
-            if w / h > self.aspect + 0.01:
-                w = max(self.MIN_W, int(h * self.aspect))
+        a = self._ratio()
+        if a:                                             # keep the shape when a limit kicked in
+            if w / h > a + 0.01:
+                w = max(self.MIN_W, int(h * a))
             else:
-                h = max(110, int(w / self.aspect))
+                h = max(110, int(w / a))
         self.resize(w, h)
         self._scaled = None
         self.update()
@@ -1779,15 +2188,53 @@ class FloatWindow(QWidget):
         self.show()
         self._pin_changed()
 
+    def _taskbar_tick(self):
+        """A video or song playing in this float shows how far it got on its taskbar button (yellow when paused),
+        like a media player. Nothing for live streams, pictures and icons."""
+        if not winsys.IS_WIN or settings().value("float_taskbar", "true") != "true":
+            return
+        try:
+            p = self.player
+            dur = p.duration() if p is not None else 0
+            if p is None or dur <= 0 or self._live():
+                state, pos = winsys.TB_NONE, 0
+            else:
+                state = winsys.TB_NORMAL if self._playing() else winsys.TB_PAUSED
+                pos = p.position()
+            if state == winsys.TB_NONE and self._tb_state in (None, winsys.TB_NONE):
+                return
+            winsys.taskbar_progress(int(self.winId()), state, int(pos), int(dur))
+            self._tb_state = state
+        except RuntimeError:
+            return
+
+    def _keep_tick(self):
+        """Every float stays open after a restart (or update) until you close it: it's remembered as soon as it has
+        something in it, then every few seconds, with where a video or song had got to."""
+        try:
+            if self._placing or not self._has_content() or getattr(self, "_reopening", False):
+                return
+            if not self.pin_id:
+                if self._no_keep or settings().value("float_keep", "true") != "true":
+                    return
+                self.set_pinned(True, startup=False)
+            elif self.player is not None and not self._live():
+                self._save_pin()
+        except RuntimeError:
+            return
+
     # ---------------------------------------------------------------- reopen when Windows starts
-    def set_pinned(self, on):
+    def set_pinned(self, on, startup=True):
         pins = [x for x in _float_pins() if x.get("id") != self.pin_id]
+        if not on:
+            self._no_keep = True                         # you turned it off: don't keep it again by itself
         if on:
             import uuid
+            self._no_keep = False
             self.pin_id = self.pin_id or uuid.uuid4().hex[:12]
             _save_float_pins(pins)
             self._save_pin()
-            if not winsys.startup_enabled():          # DragWheel itself has to start with Windows
+            if startup and not winsys.startup_enabled():          # DragWheel itself has to start with Windows
                 try:
                     winsys.set_startup(True)
                 except Exception as e:
@@ -1806,6 +2253,8 @@ class FloatWindow(QWidget):
         st = {"id": self.pin_id, "src": self.link["page"] if self.link else str(self.path), "link": bool(self.link),
               "title": (self.link or {}).get("title", ""),
               "x": g.x(), "y": g.y(), "w": g.width(), "h": g.height(), "on_top": self.on_top}
+        if getattr(self, "free_shape", False):
+            st["free"] = True
         if self.player is not None and not self._live():
             st["pos"] = int(self.player.position())
             st["playing"] = bool(self._playing())
@@ -1815,8 +2264,10 @@ class FloatWindow(QWidget):
         if not self.pin_id:
             return
         entry = self.state()
-        entry.pop("pos", None)
-        entry.pop("playing", None)
+        entry["playing"] = False                         # after a restart it waits where it was, paused
+        old = next((x for x in _float_pins() if x.get("id") == self.pin_id), None)
+        if old == entry:                                 # nothing changed: don't write the setting again
+            return
         pins = [x for x in _float_pins() if x.get("id") != self.pin_id] + [entry]
         _save_float_pins(pins)
 
@@ -1830,8 +2281,9 @@ class FloatWindow(QWidget):
 
     def reopen(self, play=None):
         """Close this float and open it again: same size, place and media, from the same point."""
-        if _APP is None or not self._has_content():
+        if _APP is None or not self._has_content() or getattr(self, "_reopening", False):
             return
+        self._reopening = True
         st = self.state()
         if play is not None:
             st["playing"] = bool(play)
@@ -1884,16 +2336,24 @@ class FloatWindow(QWidget):
         clip = QPainterPath()
         clip.addRoundedRect(r, self.RADIUS, self.RADIUS)
         p.setClipPath(clip)
-        bare = self.kind == "other" and not self.link and settings().value("float_icon_only", "true") == "true"
+        bare = self.kind == "other" and not self.link and quick_setting("float_icon_only", "true") == "true"
         if bare:                                            # just the icon and its name: no panel, frame or highlight
             p.fillRect(r, QColor(0, 0, 0, 1))               # (all but invisible, so the float still takes the mouse)
         else:
             p.fillRect(r, QColor(0, 0, 0) if self.kind == "video" else C("panel"))
         media = self.kind in ("image", "video") or self.art
         if self.kind == "image" or self.art:
-            if self._scaled is None or self._scaled.size() != self.size():
-                self._scaled = self.src.scaled(self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            p.drawPixmap(0, 0, self._scaled)
+            if self.free_shape:                             # any shape: the whole picture, centred, not stretched
+                if self._scaled is None or getattr(self, "_scaled_for", None) != self.size():
+                    self._scaled = self.src.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    self._scaled_for = self.size()
+                p.fillRect(r, QColor(0, 0, 0))
+                p.drawPixmap((self.width() - self._scaled.width()) // 2, (self.height() - self._scaled.height()) // 2,
+                             self._scaled)
+            else:
+                if self._scaled is None or self._scaled.size() != self.size():
+                    self._scaled = self.src.scaled(self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                p.drawPixmap(0, 0, self._scaled)
         elif self.kind == "video":
             if self.frame is not None:
                 fr = QSizeF(self.frame.size()).scaled(QSizeF(self.size()), Qt.KeepAspectRatio)
@@ -1920,23 +2380,30 @@ class FloatWindow(QWidget):
                 p.setPen(QPen(ACCENT, 1.5))
                 p.setBrush(hl)
                 p.drawRoundedRect(ir.adjusted(-12, -12, 12, 12), 16, 16)
-            p.drawPixmap(ir.toRect(), self.src.scaled(int(ir.width()), int(ir.height()),
-                                                       Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            if bare and settings().value("float_hide_name", "false") != "true":   # the name under the icon
-                pt = max(7.0, min(22.0, ir.width() * 0.085))     # grows and shrinks with the icon
-                nf = QFont("Segoe UI")
+            want = (int(ir.width()), int(ir.height()), self.src.cacheKey())
+            if getattr(self, "_icon_for", None) != want:     # scale once per size, not on every repaint
+                self._icon_px = self.src.scaled(want[0], want[1], Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self._icon_for = want
+            p.drawPixmap(ir.toRect(), self._icon_px)
+            if bare and not self._name_hidden():           # the name under the icon
+                st = float_label(self.path)
+                pt = float(st.get("size") or self._auto_label_pt())
+                nf = QFont(st.get("font") or "Segoe UI")
                 nf.setPointSizeF(pt)
-                nf.setBold(True)
+                nf.setBold(st.get("bold", True))
                 p.setFont(nf)
                 nr = QRectF(6, ir.bottom() + pt * 0.4, self.width() - 12, pt * 3)
-                pp = Path(self.path or "")
-                label = pp.name if pp.is_dir() or not pp.suffix else pp.stem      # no ".zip", ".exe"…
-                txt = QFontMetrics(nf).elidedText(label, Qt.ElideRight, int(nr.width()))
-                p.setPen(QColor(0, 0, 0, 170))
+                txt = QFontMetrics(nf).elidedText(st.get("name") or self._default_label(), Qt.ElideRight, int(nr.width()))
+                if st.get("hover"):                         # only while the mouse is over the float (fades)
+                    p.setOpacity(max(0.0, min(1.0, self.ctrl)))
+                col = QColor(st.get("color") or "#ffffff")
+                dark = col.lightnessF() < 0.4                # a dark name gets a light outline, so it reads anywhere
+                p.setPen(QColor(255, 255, 255, 170) if dark else QColor(0, 0, 0, 170))
                 for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1), (0, 1.5)):
                     p.drawText(nr.translated(dx, dy), Qt.AlignHCenter | Qt.AlignTop, txt)
-                p.setPen(QColor("#ffffff"))
+                p.setPen(col)
                 p.drawText(nr, Qt.AlignHCenter | Qt.AlignTop, txt)
+                p.setOpacity(1.0)
         # ---- subtitles (above the controls when they are showing)
         if self.kind == "video" and self.player:
             text = self._current_subtitle()
@@ -2173,21 +2640,22 @@ class FloatWindow(QWidget):
         dw = (delta.x() if r else -delta.x() if l else 0)
         dh = (delta.y() if b else -delta.y() if t else 0)
         nw, nh = w + dw, h + dh
-        if self.aspect:                       # keep the picture's shape
+        a = self._ratio()
+        if a:                                 # keep the picture's shape
             if (l or r) and (t or b):         # corner: follow the mouse in any direction (project on the diagonal)
-                k = (dw * self.aspect + dh) / (self.aspect ** 2 + 1)
-                nw, nh = w + k * self.aspect, h + k
+                k = (dw * a + dh) / (a ** 2 + 1)
+                nw, nh = w + k * a, h + k
             elif l or r:
-                nh = nw / self.aspect
+                nh = nw / a
             else:
-                nw = nh * self.aspect
+                nw = nh * a
         self._apply_size(nw, nh)
         nw, nh = self.width(), self.height()
         nx = x + (w - nw) if l else x
         ny = y + (h - nh) if t else y
-        if self.aspect and (t or b) and not (l or r):          # grow sideways around the centre
+        if a and (t or b) and not (l or r):                    # grow sideways around the centre
             nx = x + (w - nw) // 2
-        if self.aspect and (l or r) and not (t or b):
+        if a and (l or r) and not (t or b):
             ny = y + (h - nh) // 2
         self.move(int(nx), int(ny))
 
@@ -2225,7 +2693,7 @@ class FloatWindow(QWidget):
             return
         step = 1.1 if e.angleDelta().y() > 0 else 1 / 1.1
         g0 = self.geometry()
-        self._apply_size(self.width() * step, (self._height_for(self.width() * step) if self.aspect
+        self._apply_size(self.width() * step, (self._height_for(self.width() * step) if self._ratio()
                                                 else self.height() * step))
         dw, dh = self.width() - g0.width(), self.height() - g0.height()
         if dw or dh:                                 # grow or shrink around the middle; at a limit it stays put
@@ -2350,22 +2818,58 @@ class FloatWindow(QWidget):
                 rm.addAction(tr("Manage recently played…"), lambda: RecentPlayedDialog(self._play_recent).exec())
                 rm.addAction(tr("Clear the list"), lambda: forget_played())
             rm.setToolTipsVisible(True)
+        if self.kind == "other" and not self.link and self._has_content():     # an app, folder, shortcut…
+            nm = m.addMenu(tr("Name and icon"))
+            shown = nm.addAction(tr("Show the name"))
+            shown.setCheckable(True)
+            shown.setChecked(not self._name_hidden())
+            shown.toggled.connect(self._set_name_shown)
+            hov = nm.addAction(tr("Auto hide name"))
+            hov.setCheckable(True)
+            hov.setChecked(bool(float_label(self.path).get("hover")))
+            hov.setEnabled(not self._name_hidden())
+            hov.toggled.connect(self._set_name_hover)
+            nm.addAction(tr("Rename…"), self._rename_float)
+            nm.addAction(tr("Font, size and colour…"), self._name_style)
+            nm.addSeparator()
+            nm.addAction(tr("Change icon…"), self._change_icon)
+            if float_label(self.path).get("icon"):
+                nm.addAction(tr("Use the normal icon"), lambda: self._set_icon(None))
+            if float_label(self.path):
+                nm.addSeparator()
+                nm.addAction(tr("Back to normal"),
+                             lambda: (self._set_icon(None), set_float_label(self.path, {}), self.update()))
+            if settings().value("float_icon_only", "true") != "true":    # the name shows only on a bare icon
+                for a in nm.actions():
+                    if a.text() not in (tr("Rename…"), tr("Change icon…"), tr("Use the normal icon")):
+                        a.setEnabled(False)
+                hint = nm.addAction(tr("Turn on Settings → Float → Remove float border to show it"))
+                hint.setEnabled(False)
         m.addSeparator()
+        if self.aspect and self.kind in ("image", "video"):
+            kr = m.addAction(tr("Keep aspect ratio"))
+            kr.setCheckable(True)
+            kr.setChecked(not self.free_shape)
+            kr.setToolTip(tr("Off: resize the float to any shape (the picture isn't stretched)"))
+            kr.toggled.connect(self.set_keep_ratio)
         top = m.addAction(tr("Always on top"))
         top.setCheckable(True)
         top.setChecked(self.on_top)
         top.toggled.connect(self.set_on_top)
-        boot = m.addAction(tr("Open when Windows starts"))
+        boot = m.addAction(tr("Keep open after restart"))
         boot.setCheckable(True)
         boot.setChecked(bool(self.pin_id))
-        boot.setToolTip(tr("This float comes back at the same place, playing the same file or link"))
+        boot.setToolTip(tr("This float comes back at the same place, with the same file or link, until you close it"))
         boot.toggled.connect(self.set_pinned)
         if self._has_content() and _APP is not None:
-            m.addAction(tr("Reopen"), self.reopen)
+            m.addAction(tr("Reopen"), lambda: self.reopen())
         m.addAction(tr("Close"), self.close_by_user)
         m.exec(at)
 
     def closeEvent(self, e):
+        self._keep_timer.stop()
+        self._tb_timer.stop()
+        self._pin_timer.stop()
         self._drop_companion()
         self._stop_relay()
         if self.player:
