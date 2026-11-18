@@ -137,8 +137,8 @@ def install_crash_handlers():
     _th.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
     # a hard crash (inside Qt or a library) can't be caught: faulthandler writes it down, and the next start offers it
     d = _crash_dir()
-    import time as _t
     try:                                            # keep the crash folder small: the newest 20, under 30 days
+        import time as _t
         old = sorted(d.glob("crash-*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
         for i, f in enumerate(old):
             if i >= 20 or _t.time() - f.stat().st_mtime > 30 * 86400:

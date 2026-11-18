@@ -1247,10 +1247,9 @@ def shell_icon(path: str, size: int = 256):
     icon (which the jumbo list draws tiny in a corner) the 48 px one instead. None if it can't be read."""
     if not IS_WIN:
         return None
+    import ctypes
+    from ctypes import wintypes
     try:
-        import ctypes
-        from ctypes import wintypes
-
         class SHFILEINFOW(ctypes.Structure):
             _fields_ = [("hIcon", wintypes.HANDLE), ("iIcon", ctypes.c_int), ("dwAttributes", wintypes.DWORD),
                         ("szDisplayName", wintypes.WCHAR * 260), ("szTypeName", wintypes.WCHAR * 80)]
@@ -1378,9 +1377,9 @@ def icon_from_file(file: str, index: int = 0, size: int = 256):
     """(w, h, BGRA) of icon number `index` inside an .exe, .dll or .ico, as large as it has (up to `size`)."""
     if not IS_WIN:
         return None
+    import ctypes
+    from ctypes import wintypes
     try:
-        import ctypes
-        from ctypes import wintypes
         hicon = wintypes.HICON()
         icon_id = wintypes.UINT()
         u = ctypes.WinDLL("user32")

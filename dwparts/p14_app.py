@@ -13,19 +13,204 @@ def asset(name) -> str:
     return str(Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / name)
 
 
-# TODO RECOVER ['browser_extension_dir'] (line 15)
+def browser_extension_dir() -> Path:
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "browser-extension"
 
 
-# TODO RECOVER ['_browser_exes'] (line 19)
+def _browser_exes() -> list:
+    """Installed browsers: [(name, exe, extensions page)]."""
+    out = []
+    if not winsys.IS_WIN:
+        return out
+    import winreg
+    for name, exe, page in (("Edge", "msedge.exe", "edge://extensions"), ("Chrome", "chrome.exe", "chrome://extensions"),
+                            ("Brave", "brave.exe", "brave://extensions"),
+                            ("Firefox", "firefox.exe", "about:debugging#/runtime/this-firefox")):
+        path = None
+        for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(root, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe}") as k:
+                    path = winreg.QueryValueEx(k, "")[0]
+                    break
+            except OSError:
+                continue
+        if path and os.path.exists(path.strip('"')):
+            out.append((name, path.strip('"'), page))
+    return out
 
 
-# TODO RECOVER ['BrowserSetup'] (line 41)
+class BrowserSetup(FrontDialog):
+    """Tray → Add DragWheel to your browser: the extension comes with DragWheel; three steps put it in Edge,
+    Chrome or Brave (Firefox: for this session). Browsers only install store extensions by themselves."""
+
+    def __init__(self):
+        super().__init__(None)
+        from PySide6.QtWidgets import QLayout
+        self.setWindowTitle(f"{APP} — " + tr("Browser extension"))
+        self.setWindowIcon(app_icon())
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetFixedSize)
+        self.header(lay, tr("Add DragWheel to your browser"),
+                    tr("Right-click any video or link → Play in DragWheel Float. Right-click any picture → "
+                       "Save image as PNG, JPG, WebP and more."))
+        import bridge
+        if bridge.CHROME_LIVE:
+            self._store_page(lay)
+            return
+        folder = str(browser_extension_dir())
+        steps = QLabel("<ol style='margin-left:-20px'>"
+                       f"<li>{tr('Open your browser’s extensions page (a button below).')}</li>"
+                       f"<li>{tr('Turn on Developer mode.')}</li>"
+                       f"<li>{tr('Click Load unpacked and choose the DragWheel extension folder (Copy folder path, then paste it in the window that opens).')}</li>"
+                       "</ol>")
+        steps.setWordWrap(True)
+        steps.setFixedWidth(QR_W + 60)
+        lay.addWidget(steps)
+        path = QLabel(folder)
+        path.setObjectName("sub")
+        path.setWordWrap(True)
+        path.setFixedWidth(QR_W + 60)
+        path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(path)
+        copy = QPushButton(tr("Copy folder path"))
+        copy.setObjectName("primary")
+        copy.clicked.connect(lambda: (QGuiApplication.clipboard().setText(folder), copy.setText(tr("Copied"))))
+        show = QPushButton(tr("Show the folder"))
+        show.clicked.connect(lambda: winsys.reveal(str(Path(folder) / "manifest.json")))
+        self.buttons(lay, copy, show)
+        found = _browser_exes()
+        row = []
+        for name, exe, page in found:
+            if name == "Firefox" and bridge.FIREFOX_LIVE:   # (Firefox gets the store button below)
+                continue
+            b = QPushButton(tr("Open {browser}", browser=name))
+            b.clicked.connect(lambda _=False, e=exe, pg=page: self._open(e, pg))
+            row.append(b)
+        if row:
+            self.buttons(lay, *row)
+        if bridge.FIREFOX_LIVE:                             # Firefox: from Firefox Add-ons, one click
+            fox = QPushButton(tr("Firefox: Add from Firefox Add-ons"))
+            fox.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(bridge.FIREFOX_STORE_URL)))
+            self.buttons(lay, fox)
+        else:
+            note = QLabel(tr("Firefox: on the page that opens, click Load Temporary Add-on and pick manifest.json "
+                             "in that folder (Firefox keeps it until it closes)."))
+            note.setObjectName("note")
+            note.setWordWrap(True)
+            note.setFixedWidth(QR_W + 60)
+            lay.addWidget(note)
+        close = QPushButton(tr("Close"))
+        close.clicked.connect(self.close)
+        self.buttons(lay, close)
+
+    def _store_page(self, lay):
+        """Once the stores publish it: DragWheel has already offered it to the browsers (like IDM), so this only
+        says what the browser shows, with the store pages for anyone who removed it or uses another browser."""
+        import bridge
+        steps = QLabel("<ol style='margin-left:-20px'>"
+                       f"<li>{tr('Close your browser and open it again.')}</li>"
+                       f"<li>{tr('It says DragWheel for Browser was added: click Turn on extension (Enable in Firefox).')}</li>"
+                       "</ol>")
+        steps.setWordWrap(True)
+        steps.setFixedWidth(QR_W + 60)
+        lay.addWidget(steps)
+        note = QLabel(tr("Didn't see it, or using another browser? Add it from your browser's store:"))
+        note.setObjectName("note")
+        note.setWordWrap(True)
+        note.setFixedWidth(QR_W + 60)
+        lay.addWidget(note)
+        chrome = QPushButton(tr("Chrome, Edge, Brave, Opera"))
+        chrome.setObjectName("primary")
+        chrome.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(bridge.CHROME_STORE_URL)))
+        fox = QPushButton(tr("Firefox"))
+        fox.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(bridge.FIREFOX_STORE_URL)))
+        self.buttons(lay, chrome, fox)
+        close = QPushButton(tr("Close"))
+        close.clicked.connect(self.close)
+        self.buttons(lay, close)
+
+    def _open(self, exe, page):
+        import subprocess
+        try:
+            subprocess.Popen([exe, page], close_fds=True)
+        except OSError as e:
+            winsys.log(f"browser setup: {e}")
 
 
 _ICON = None
 
 
-# TODO RECOVER ['StarDialog'] (line 144)
+class StarDialog(FrontDialog):
+    """"Enjoying DragWheel?": asks once (after 20 jobs that worked) for a star on GitHub. In the middle of the
+    screen, on top, but it never blocks anything and closes with Esc."""
+
+    def __init__(self, app):
+        super().__init__(None)
+        from PySide6.QtWidgets import QLayout
+        self.app = app
+        self.setWindowTitle(APP)
+        self.setWindowIcon(app_icon())
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.setStyleSheet(i18n.css(DIALOG_CSS))
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetFixedSize)
+        lay.setContentsMargins(28, 24, 28, 22)
+        lay.setSpacing(10)
+        pic = QLabel()
+        pm = QPixmap(asset("dragwheel.png"))
+        if not pm.isNull():
+            pic.setPixmap(pm.scaled(84, 84, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        pic.setAlignment(Qt.AlignCenter)
+        lay.addWidget(pic)
+        title = QLabel(tr("Enjoying DragWheel?"))
+        title.setObjectName("title")
+        title.setAlignment(Qt.AlignCenter)
+        lay.addWidget(title)
+        body = QLabel(tr("A star on GitHub helps other people find it. It's free and takes a second."))
+        body.setObjectName("sub")
+        body.setWordWrap(True)
+        body.setAlignment(Qt.AlignCenter)
+        body.setFixedWidth(380)
+        lay.addWidget(body, 0, Qt.AlignHCenter)
+        lay.addSpacing(6)
+        star = QPushButton("⭐  " + tr("Star on GitHub"))
+        star.setObjectName("primary")
+        star.setDefault(True)
+        star.setMinimumHeight(40)
+        star.setCursor(Qt.PointingHandCursor)
+        star.clicked.connect(self._star)
+        lay.addWidget(star)
+        later = QPushButton(tr("Maybe later"))
+        later.clicked.connect(self._later)
+        no = QPushButton(tr("No thanks"))
+        no.clicked.connect(self.reject)
+        self.buttons(lay, later, no)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        scr = (QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()).availableGeometry()
+        self.adjustSize()
+        self.move(scr.center() - self.rect().center())
+        winsys.log("star request shown")
+
+    def _star(self):
+        QDesktopServices.openUrl(QUrl(updater.REPO_URL))
+        winsys.log("star request: opened GitHub")
+        self.accept()
+
+    def _later(self):
+        s = settings()
+        try:
+            n = int(s.value("jobs_done", 0) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if s.value("star_later", "") != "1":          # asks once more, 50 jobs later; after that never again
+            s.setValue("star_later", "1")
+            s.setValue("star_asked", "later")
+            s.setValue("star_again_at", n + 50)
+        self.accept()
 
 
 def app_icon() -> QIcon:
@@ -94,9 +279,14 @@ class DragWheelApp(QObject):
         self._update_jobs = set()
         QTimer.singleShot(8000, self._auto_update_check)
         QTimer.singleShot(150, self.restore_pinned_floats)
+        QTimer.singleShot(400, self.restore_notes)
+        self.qapp.commitDataRequest.connect(self._session_ending)     # Windows signing out / restarting
         self.predownload()
         self._prebuild_settings(6000)
         QTimer.singleShot(3000, refresh_clouds)
+        QTimer.singleShot(5000, self._register_browser_bridge)
+        QTimer.singleShot(7000, self.refresh_file_menus)
+        winsys.on_menu_changed = lambda: QTimer.singleShot(300, self.refresh_file_menus)
         self._stall_watch = StallWatch(self)
         QApplication.instance().aboutToQuit.connect(self._end_shares)
         self._cloud_timer = QTimer(self, interval=10 * 60 * 1000, timeout=clean_cloud_shares)
@@ -110,9 +300,21 @@ class DragWheelApp(QObject):
         except (TypeError, ValueError):
             resume = []
         settings().remove("float_resume")
-        ids = {r.get("id") for r in resume if r.get("id")}
-        for pin in resume + [x for x in _float_pins() if x.get("id") not in ids]:
+        seen_ids, seen_src = set(), set()
+        for pin in resume + _float_pins():                  # each float once, even if it was saved twice
+            fid, src = pin.get("id"), pin.get("src")
+            if (fid and fid in seen_ids) or (src and src in seen_src):
+                continue
+            seen_ids.add(fid)
+            seen_src.add(src)
             self.open_float_state(pin)
+        if len(_float_pins()) != len({x.get("id") for x in _float_pins()}):    # tidy duplicates left by older versions
+            keep, ids = [], set()
+            for x in _float_pins():
+                if x.get("id") not in ids:
+                    ids.add(x.get("id"))
+                    keep.append(x)
+            _save_float_pins(keep)
 
     def open_float_state(self, pin):
         """Open a float from FloatWindow.state(): the same file or link, place, size and point in the video."""
@@ -146,6 +348,9 @@ class DragWheelApp(QObject):
         menu.addAction(tr("Save image from clipboard"), self.save_clipboard_image)
         menu.addAction(tr("Paste link to Float"), self.play_link)
         menu.addAction(tr("Read QR code on screen"), lambda: QTimer.singleShot(300, self.read_qr_on_screen))
+        menu.addAction(tr("New sticky note"), lambda: self.open_note())
+        menu.addAction(tr("Show all notes"), self.open_all_notes)
+        menu.addAction(tr("Add DragWheel to your browser…"), self.show_browser_setup)
         recent = menu.addMenu(tr("Recent results"))
         recent.aboutToShow.connect(lambda m=recent: self._fill_recent(m))
         self._qr_menu = menu.addMenu(tr("Send to phone — show QR code"))
@@ -631,6 +836,243 @@ class DragWheelApp(QObject):
                 self.actions.float(paths[:1], {})
         QTimer.singleShot(120, go)
 
+    # ---- sticky notes
+    def move_notes(self, base: Path):
+        """Keep notes in another place (a cloud folder follows you to your other PCs): the notes DragWheel made
+        move into <base> › DragWheel Notes, open ones carry on there."""
+        old, new = notes_folder(), Path(base) / "DragWheel Notes"
+        if os.path.normcase(str(old)) == os.path.normcase(str(new)):
+            return
+        try:
+            new.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.toast.show_msg(tr("Keep notes in"), str(e), "err", 6000)
+            return
+        for n in getattr(self, "notes", []):
+            n._write()                                      # nothing typed is left behind
+        moved, failed, where = 0, 0, {}
+        for f in (old.glob("*.txt") if old.exists() else []):
+            dest = new / f.name
+            if dest.exists():
+                dest = Path(engine.unique_path(dest))
+            try:
+                shutil.move(str(f), str(dest))
+                where[os.path.normcase(str(f))] = dest
+                moved += 1
+            except OSError as e:
+                failed += 1
+                winsys.log(f"move note {f.name}: {e}")
+        settings().setValue("notes_base", "" if os.path.normcase(str(base)) == os.path.normcase(str(default_notes_base()))
+                            else str(base))
+        for n in getattr(self, "notes", []):
+            dest = where.get(os.path.normcase(str(n.path)))
+            if dest:
+                n.relocate(dest)
+        self._kept_notes = [dict(x, path=str(where.get(os.path.normcase(x["path"]), x["path"])))
+                            for x in getattr(self, "_kept_notes", [])]
+        self._save_notes()
+        winsys.log(f"notes moved to {new}: {moved} moved, {failed} failed")
+        self.toast.show_msg(tr("Notes are now kept in {folder}", folder=str(new)),
+                            tr("{n} notes moved", n=moved) + (f" · {tr('{n} could not be moved', n=failed)}" if failed else ""),
+                            "ok" if not failed else "err", 6000)
+
+    def open_all_notes(self):
+        """Every note in the notes folder, including ones written on another PC (cloud folder)."""
+        folder = notes_folder()
+        files = sorted(folder.glob("*.txt"), key=lambda f: f.stat().st_mtime) if folder.exists() else []
+        if not files:
+            self.toast.show_msg(tr("Show all notes"), tr("No notes yet"), "info", 4000)
+            return
+        for i, f in enumerate(files):
+            st = None if any(os.path.normcase(str(n.path)) == os.path.normcase(str(f))
+                             for n in getattr(self, "notes", [])) else {"x": 120 + 36 * (i % 10), "y": 120 + 36 * (i % 10), "path": str(f)}
+            self.open_note(str(f), st)
+
+    def open_note(self, path=None, state=None):
+        """A sticky note: a new one (saved in Documents › DragWheel Notes) or a text file to edit."""
+        self.notes = getattr(self, "notes", [])
+        if path is None:
+            folder = notes_folder()
+            folder.mkdir(parents=True, exist_ok=True)
+            path = engine.unique_path(folder / (time.strftime("Note %Y-%m-%d %H-%M") + ".txt"))
+            Path(path).write_bytes(b"")
+        for n in self.notes:                                # already open: bring it forward
+            if os.path.normcase(str(n.path)) == os.path.normcase(str(path)):
+                n.show()
+                n.raise_()
+                n.activateWindow()
+                return n
+        w = StickyNote(path, state)
+        w.app_new = lambda: self.open_note(state={"color": w.color, "x": w.x() + 36, "y": w.y() + 36})
+        w.closed.connect(self._note_closed)
+        w.changed.connect(self._save_notes_soon)
+        self.notes.append(w)
+        w.show()
+        w.raise_()
+        w.activateWindow()
+        if state is None or "x" not in state or not state.get("path"):
+            w.edit.setFocus()
+        self._save_notes_soon()
+        return w
+
+    def _note_closed(self, w):
+        if not getattr(w, "by_user", False):              # Windows or DragWheel closing it: it comes back
+            if w in getattr(self, "notes", []):
+                self.notes.remove(w)
+                self._kept_notes = getattr(self, "_kept_notes", []) + [w.state()]
+            self._save_notes()
+            settings().sync()
+            return
+        if w in getattr(self, "notes", []):
+            self.notes.remove(w)
+        gone = os.path.normcase(str(w.path))
+        self._kept_notes = [x for x in getattr(self, "_kept_notes", []) if os.path.normcase(x["path"]) != gone]
+        self._save_notes()
+
+    def _save_notes_soon(self):
+        t = getattr(self, "_notes_timer", None)
+        if t is None:
+            t = self._notes_timer = QTimer(self, singleShot=True, interval=700, timeout=self._save_notes)
+        t.start()
+
+    def _save_notes(self):
+        states = []
+        for n in getattr(self, "notes", []):
+            try:
+                states.append(n.state())
+            except RuntimeError:
+                pass
+        seen = {os.path.normcase(x["path"]) for x in states}
+        states += [x for x in getattr(self, "_kept_notes", []) if os.path.normcase(x["path"]) not in seen]
+        settings().setValue("sticky_notes", json.dumps(states, ensure_ascii=False))
+
+    def restore_notes(self):
+        """The sticky notes that were open last time come back."""
+        for st in _note_states():
+            if st.get("path") and Path(st["path"]).exists():
+                try:
+                    self.open_note(st["path"], st)
+                except Exception as e:
+                    winsys.log(f"sticky note: {e}")
+
+    # ---- right-click → DragWheel: Convert / Tools / Actions
+    def run_from_menu(self, spec, paths):
+        """Right-click → DragWheel → Convert/Tools/Actions → a slice. Explorer starts one request per selected file,
+        so they're gathered for a moment and run together, like dropping them all on the wheel."""
+        q = getattr(self, "_menu_runs", None)
+        if q is None:
+            q = self._menu_runs = {}
+            self._menu_timer = QTimer(self, singleShot=True, interval=450, timeout=self._run_menu_batch)
+        q.setdefault(spec, [])
+        for p in paths:
+            if p not in q[spec]:
+                q[spec].append(p)
+        self._menu_timer.start()
+
+    def _run_menu_batch(self):
+        runs, self._menu_runs = self._menu_runs, {}
+        for spec, paths in runs.items():
+            mode, _, op_id = spec.partition(":")
+            paths = [p for p in paths if os.path.exists(p)]
+            if not paths or mode not in ("convert", "tool", "action"):
+                continue
+            ops = self.ops_for(mode, paths)
+            op = next((o for o in ops if o.id == op_id), None)
+            winsys.log(f"menu: {spec} on {len(paths)} item(s){'' if op else ' — not for these files'}")
+            if op is None:
+                self.toast.show_msg(tr("Can't do that with these files"),
+                                    tr("Pick another one, or open the wheel to see what fits."), "info", 6000)
+                continue
+            self.wheel.click_mode = False
+            self.execute(op, paths)
+
+    def refresh_file_menus(self):
+        """Rebuild right-click → DragWheel (after start, and when slices or the language change)."""
+        if not winsys.IS_WIN or not winsys.context_menu_enabled():
+            return
+
+        def work():
+            try:
+                winsys.set_file_menus(file_menu_spec(self))
+            except Exception as e:
+                winsys.log(f"menu: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---- DragWheel for Browser
+    def show_browser_setup(self):
+        w = BrowserSetup()
+        self._phone_windows = getattr(self, "_phone_windows", [])
+        self._phone_windows.append(w)
+        w.show()
+        w.raise_()
+        w.activateWindow()
+
+    def _register_browser_bridge(self):
+        """Tell the browsers where DragWheel is, for the DragWheel for Browser extension (each start, so it
+        follows DragWheel when it's moved or updated)."""
+        if not getattr(sys, "frozen", False) or not winsys.IS_WIN:
+            return
+        import bridge
+        try:
+            bridge.register(sys.executable, Path(engine.models_dir()).parent / "browser")
+        except Exception as e:
+            winsys.log(f"browser bridge: {e}")
+        choice = settings().value("browser_setup", "")
+        if choice not in ("1", "shown"):                    # (the installer's Browser extension option was off)
+            return
+        settings().setValue("browser_setup", "shown")
+        if bridge.CHROME_LIVE and settings().value("browser_offered", "") != "1":
+            # offer it to Chrome, Edge and Brave (they ask to turn it on), once
+            try:
+                done = bridge.offer_extension()
+            except Exception as e:
+                done = []
+                winsys.log(f"browser offer: {e}")
+            winsys.log(f"browser extension offered to: {', '.join(done) or 'none'}")
+            settings().setValue("browser_offered", "1")
+            if done:                                        # no window: the browser itself asks to turn it on
+                self.toast.show_msg(tr("DragWheel for Browser"),
+                                    tr("Open your browser and click Turn on extension when it asks."), "ok", 8000)
+        if bridge.FIREFOX_LIVE and settings().value("firefox_offered", "") != "1":
+            # Firefox doesn't let programs add extensions: open its add-on page once (one click: Add to Firefox)
+            fx = bridge.firefox_exe()
+            settings().setValue("firefox_offered", "1")
+            if fx:
+                import subprocess
+                try:
+                    subprocess.Popen([fx, bridge.FIREFOX_STORE_URL], close_fds=True)
+                    winsys.log("browser: opened the Firefox add-on page")
+                except OSError as e:
+                    winsys.log(f"browser: firefox: {e}")
+
+    def save_web_image(self, path, fmt):
+        """DragWheel for Browser → Save image as…: the picture from the page, saved in Downloads in the chosen
+        format (or opened on the Convert wheel, which also saves into Downloads)."""
+        from PySide6.QtCore import QStandardPaths
+        dl = Path(QStandardPaths.writableLocation(QStandardPaths.DownloadLocation) or Path.home() / "Downloads")
+        dl.mkdir(parents=True, exist_ok=True)
+        src = Path(path)
+        winsys.log(f"browser: save image as {fmt}: {src.name}")
+        self.out_override[str(src)] = str(dl)
+        if fmt == "wheel":
+            self.open_paths([str(src)])
+            return
+        if fmt == "original" or engine.ext_of(src) == fmt or (fmt == "jpg" and engine.ext_of(src) == "jpeg"):
+            dest = engine.unique_path(dl / src.name)
+            try:
+                shutil.copy2(src, dest)
+            except OSError as e:
+                self.toast.show_msg(tr("Couldn't save the picture"), str(e), "err", 8000)
+                return
+            self.toast.show_result(tr("Picture saved"), [str(dest)])
+            return
+        op = next((o for o in engine.conversions([str(src)]) if o.id == f"to_{fmt}"), None)
+        if op is None:
+            self.toast.show_msg(tr("Couldn't save the picture"),
+                                tr("This picture can't be saved as {fmt}.", fmt=fmt.upper()), "err", 8000)
+            return
+        self._start(op, [str(src)], {})
+
     def open_empty_float(self):
         """Right-click on the desktop → Open Float: an empty float to drop a file on or paste a link into."""
         w = FloatWindow("")
@@ -675,8 +1117,39 @@ class DragWheelApp(QObject):
                 o.setFocus()
                 winsys.bring_to_front(int(o.winId()))
 
+    def _session_ending(self, *_):
+        """Windows is signing out, restarting or shutting down: remember every open float and sticky note (with
+        where they are) before the windows go, so they all come back."""
+        self._quitting_notes = True
+        try:
+            self._save_notes()
+            for n in list(getattr(self, "notes", [])):
+                n._write()
+        except Exception as e:
+            winsys.log(f"session end notes: {e}")
+        for f in list(getattr(self, "floats", [])):
+            try:
+                f._keep_tick()
+                f._save_pin()
+            except Exception:
+                pass
+        settings().sync()
+
     def _end_shares(self):
-        """Quitting: shares that live in a window end without asking."""
+        """Quitting: shares that live in a window end without asking; open sticky notes are saved for next time."""
+        try:
+            self._save_notes()
+            for n in list(getattr(self, "notes", [])):
+                n._write()
+        except Exception:
+            pass
+        self._quitting_notes = True
+        for f in list(getattr(self, "floats", [])):           # where each float is, for next time
+            try:
+                f._keep_timer.stop()
+                f._save_pin()
+            except Exception:
+                pass
         for w in list(getattr(self, "_phone_windows", [])):
             try:
                 w._leaving = True
@@ -761,7 +1234,7 @@ class DragWheelApp(QObject):
                     remember_played("link", key, info.get("title"))   # Recently played (saving is up to you)
             if err and pin is not None and pin.get("_tries", 0) < 4:     # at sign-in the network may not be up yet
                 pin["_tries"] = pin.get("_tries", 0) + 1
-                QTimer.singleShot(15000, lambda: self._resolve_and_play(url, None, pin=pin))
+                QTimer.singleShot(15000, lambda: self._resolve_and_play(url, target, pin=pin, quiet=quiet))
                 return
             if err:
                 winsys.log(f"link failed: {url}: {err}")
@@ -775,7 +1248,9 @@ class DragWheelApp(QObject):
                     else:
                         target._load("")
                 return
-            if target is not None and target in self.floats:
+            if target is not None:
+                if target not in self.floats:
+                    return                                 # it was closed while the link was loading
                 if quiet:                                  # live stream reconnect: keep size and controls as they are
                     target.restart_live(info)
                     return
@@ -1029,7 +1504,35 @@ class DragWheelApp(QObject):
             else:
                 c = target.show_result(title, outs) or target
                 c.set_undo(self._undo_for(outs, worker))
+            self._count_success()
             self._remember(outs, worker)
+
+    STAR_AFTER = 20
+
+    def _count_success(self):
+        """After 20 jobs that worked: a small window in the middle of the screen asking for a star on GitHub (it
+        helps others find DragWheel). Maybe later asks once more 50 jobs on; Star or No thanks never again."""
+        s = settings()
+        try:
+            n = int(s.value("jobs_done", 0) or 0) + 1
+            again = int(s.value("star_again_at", 0) or 0)
+        except (TypeError, ValueError):
+            n, again = 1, 0
+        s.setValue("jobs_done", n)
+        asked = s.value("star_asked", "")
+        if asked == "1" or n < self.STAR_AFTER or (asked == "later" and n < again):
+            return
+        s.setValue("star_asked", "1")
+        QTimer.singleShot(2500, self, self._ask_for_star)    # after the result card
+
+    def _ask_for_star(self):
+        if getattr(self, "_star_window", None) is not None:
+            return
+        w = self._star_window = StarDialog(self)
+        w.finished.connect(lambda _r: QTimer.singleShot(0, self, lambda: setattr(self, "_star_window", None)))
+        w.show()
+        w.raise_()
+        w.activateWindow()
 
     def _undo_for(self, outs, worker):
         """Undo for files a job just made — not when they replaced the originals or went to the clipboard."""
@@ -1319,7 +1822,7 @@ class DragWheelApp(QObject):
     # ---- windows
     # Settings has eight pages of controls; building them takes about a second, and everything else (a playing
     # float too) waits meanwhile. So a copy is built ahead of time, while no float is playing, and shown at once.
-    _VOLATILE = ("float_resume", "float_recent", "recent_results", "float_volume", "geometry",
+    _VOLATILE = ("float_resume", "sticky_notes", "note_color", "float_recent", "recent_results", "float_volume", "geometry",
                  "share_links", "float_pins", "last_dir", "float_links", "float_repeat", "link_quality",
                  "share_way", "share_minutes", "sign_mode", "pdf_watermark", "InstallerLanguage")
 
