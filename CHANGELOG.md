@@ -3,6 +3,7 @@
 ## 1.2.3 — not released yet
 
 ### New
+- YouTube links open faster in Float: a quick player is asked at the same time as the full list, and used when it has the quality you chose.
 - **Sticky notes** on the desktop: right-click the desktop → DragWheel → *New sticky note* (or the tray). They save themselves as you type (plain .txt files in Documents › DragWheel Notes), six colours, Keep on top, bigger or smaller text, and they come back when DragWheel starts. Floating a .txt, .md or .log file opens it as a note you can edit. ⋯ → *Keep notes in* moves them to OneDrive, Google Drive or any folder so they follow you to your other PCs; *Show all notes* opens every one
 - **DragWheel for Browser** (Chrome Web Store and Firefox Add-ons): right-click a video, song or link → *Play in DragWheel Float*; right-click a picture → *Save image as* PNG, JPG, WebP, AVIF, ICO, PDF and more. The installer's *Browser extension* option adds it to Chrome, Edge and Brave the way IDM does (the browser asks once to turn it on); Firefox opens its add-on page once
 - **Right-click a file → DragWheel: Convert ▸ / Tools ▸ / Actions ▸**, with the slices of your wheels for that kind of file
