@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.3 — not released yet
+- Crop & Resize: **Overwrite** button, next to *Save copy*. Saves over the original picture; the original goes to the Recycle Bin, so you can still get it back
+- Crop & Resize: **4×6** photo print size. Crops to 4×6 (10×15 cm) the way the picture faces and saves 1800 × 1200 px at 300 dpi, ready to print
+
 ## 1.2.2 — November 2026
 
 ### New tools

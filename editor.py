@@ -17,7 +17,8 @@ HANDLE = 9          # handle half-size in px
 MIN_CROP = 8        # in image pixels
 
 ASPECTS = [("Free", None), ("Original", "orig"), ("1:1", 1.0), ("4:3", 4 / 3), ("3:2", 3 / 2),
-           ("16:9", 16 / 9), ("9:16", 9 / 16), ("4:5", 4 / 5)]
+           ("16:9", 16 / 9), ("9:16", 9 / 16), ("4:5", 4 / 5), ("4×6", "4x6")]
+PRINT_4X6 = (1800, 1200)        # a 4×6 in (10×15 cm) photo print at 300 dpi; turned to suit the picture
 
 
 def pil_to_qimage(img) -> QImage:
@@ -286,6 +287,8 @@ class CropResizeDialog(QDialog):
         self.flip_h = False
         self.flip_v = False
         self._sync = False
+        self._print = False                # 4×6 chosen: the output is a 300 dpi photo print
+        self._overwrite = False            # Overwrite: the result replaces the original (original to the Recycle Bin)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -314,6 +317,8 @@ class CropResizeDialog(QDialog):
             b.setObjectName("chip")
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.clicked.connect(lambda _=False, v=val: self._set_aspect(v))
+            if val == "4x6":
+                b.setToolTip(tr("4×6 photo print (10×15 cm): 1800 × 1200 px at 300 dpi, turned to suit the picture"))
             self.aspect_group.addButton(b, i)
             grid.addWidget(b, i // 4, i % 4)
         self.aspect_group.button(0).setChecked(True)
@@ -404,10 +409,15 @@ class CropResizeDialog(QDialog):
         btns = QHBoxLayout()
         cancel = QPushButton(tr("Cancel"))
         cancel.clicked.connect(self.reject)
+        over = QPushButton(tr("Overwrite"))
+        over.setToolTip(tr("Save over the original picture. The original goes to the Recycle Bin, "
+                           "so you can still get it back."))
+        over.clicked.connect(self._save_over)
         save = QPushButton(tr("Save copy"))
         save.setDefault(True)
         save.clicked.connect(self.accept)
         btns.addWidget(cancel)
+        btns.addWidget(over, 1)
         btns.addWidget(save, 1)
         sv.addLayout(btns)
         hint = QLabel(tr("Drag the box or its corners. Double-click the image to reset the crop."))
@@ -493,6 +503,10 @@ class CropResizeDialog(QDialog):
         self._set_aspect(val)
 
     def _set_aspect(self, val):
+        self._print = val == "4x6"
+        if val == "4x6":                   # landscape or portrait, whichever way the picture is
+            f = self._rotated_full()
+            val = 3 / 2 if f.width() >= f.height() else 2 / 3
         if val == "orig":
             f = self._rotated_full()
             val = f.width() / f.height()
@@ -512,6 +526,7 @@ class CropResizeDialog(QDialog):
 
     def _reset(self):
         self.rotate, self.flip_h, self.flip_v = 0, False, False
+        self._print = False
         self.nobg.setChecked(False)
         self.aspect_group.button(0).setChecked(True)
         self._rebuild_preview()
@@ -521,6 +536,8 @@ class CropResizeDialog(QDialog):
         w, h = max(1, round(c.width())), max(1, round(c.height()))
         self.crop_lbl.setText(f"{w} × {h} px   ·   x {round(c.x())}, y {round(c.y())}")
         self._sync = True
+        if self._print:                    # print size, not the crop's size
+            w, h = PRINT_4X6 if w >= h else PRINT_4X6[::-1]
         self.w_spin.setValue(w)
         self.h_spin.setValue(h)
         self._sync = False
@@ -537,6 +554,10 @@ class CropResizeDialog(QDialog):
             self.w_spin.setValue(max(1, round(self.h_spin.value() * ratio)))
         self._sync = False
 
+    def _save_over(self):
+        self._overwrite = True
+        self.accept()
+
     def _percent(self, pct):
         c = self.canvas.crop
         self._sync = True
@@ -550,7 +571,9 @@ class CropResizeDialog(QDialog):
                 "remove_bg": self.nobg.isChecked(),
                 "box": (c.left(), c.top(), c.right(), c.bottom()),
                 "size": (self.w_spin.value(), self.h_spin.value()),
-                "format": self.fmt.currentData()}
+                "format": self.fmt.currentData(),
+                "dpi": 300 if self._print else None,
+                "overwrite": self._overwrite}
 
 
 EDITOR_CSS = """

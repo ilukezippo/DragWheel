@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -863,7 +864,8 @@ def resolve_link(url, quality=None, _updated=False) -> dict:
     host = (urlparse(url).hostname or "").lower()
     youtube = host.endswith(("youtube.com", "youtu.be"))
     per_client = {}
-    r = subprocess.run(cmd + [url], capture_output=True, timeout=90, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    r = subprocess.run(cmd + [url], capture_output=True, timeout=90, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW,
+                       cwd=tempfile.gettempdir())       # not System32 (a browser extension starts DragWheel there)
     err = r.stderr.decode("utf-8", "replace").strip().splitlines()
     info = {}
     if r.returncode == 0:
@@ -910,7 +912,7 @@ def resolve_link(url, quality=None, _updated=False) -> dict:
         _link_log(f"yt-dlp: {last} | " + " | ".join(x for x in err if "WARNING" in x)[:600])
         if not _updated:                               # sites change: update yt-dlp once and retry
             u = subprocess.run([exe, "-U"], capture_output=True, timeout=120, stdin=subprocess.DEVNULL,
-                               creationflags=NO_WINDOW)
+                               cwd=tempfile.gettempdir(), creationflags=NO_WINDOW)
             _link_log("yt-dlp -U: " + u.stdout.decode("utf-8", "replace").strip().replace("\n", " | ")[-300:])
             return resolve_link(url, quality, _updated=True)
         raise ConversionError(last if r.returncode else "Requested format is not available")
@@ -1514,7 +1516,27 @@ def image_crop_resize(src, p):
         fmt = "png"
     if p.get("remove_bg") and fmt in ("jpg", "bmp", "heic"):        # these can't be see-through
         fmt = "png"
-    return save_image(img, out_for(src, fmt, "edited"), fmt)
+    extra = {"dpi": (p["dpi"], p["dpi"])} if p.get("dpi") and fmt in ("jpg", "png", "tiff") else {}
+    out = save_image(img, out_for(src, fmt, "edited"), fmt, **extra)
+    if p.get("overwrite"):
+        out = replace_original(src, out)
+    return out
+
+
+def replace_original(src, out) -> Path:
+    """The result takes the original's place: same name (with the new extension if the format changed);
+    the original goes to the Recycle Bin, so it can still be restored."""
+    a, b = Path(src), Path(out)
+    target = a.with_suffix(b.suffix)
+    if target != a and target.exists():
+        target = unique_path(target)
+    try:
+        import winsys
+        winsys.recycle(str(a))
+    except ImportError:
+        a.unlink()
+    shutil.move(str(b), str(target))
+    return target
 
 
 def _strip(img, p):
