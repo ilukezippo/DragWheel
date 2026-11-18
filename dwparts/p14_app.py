@@ -332,6 +332,8 @@ class DragWheelApp(QObject):
             return w
         if not os.path.exists(src):
             winsys.log(f"pinned float missing: {src}")
+            if os.path.exists(Path(src).anchor or "/"):       # the drive is there but the file is gone: forget it
+                _save_float_pins([x for x in _float_pins() if x.get("id") != pin.get("id")])
             return None
         w = FloatWindow(src, play=pin.get("playing", True), pin=pin)
         self.floats.append(w)

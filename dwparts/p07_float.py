@@ -876,6 +876,36 @@ def _clipboard_media_file():
     return None
 
 
+class _FollowDefaultOutput(QObject):
+    """Qt keeps a float's sound on the device it started on. When Windows switches to another one (a headset
+    unplugged or turned off, speakers chosen in the sound menu), the float went silent: this moves its sound to
+    the new default device, as other players do. A child of the float's audio output, so it goes with it."""
+    _devices = None
+
+    def __init__(self, audio):
+        super().__init__(audio)
+        from PySide6.QtMultimedia import QMediaDevices
+        self.audio = audio
+        if _FollowDefaultOutput._devices is None:
+            _FollowDefaultOutput._devices = QMediaDevices()
+        _FollowDefaultOutput._devices.audioOutputsChanged.connect(self.check)
+        self._last = QMediaDevices.defaultAudioOutput().id()
+        self._timer = QTimer(self, interval=1500, timeout=self.check)    # (not every change is announced)
+        self._timer.start()
+
+    def check(self):
+        from PySide6.QtMultimedia import QMediaDevices
+        try:
+            dev = QMediaDevices.defaultAudioOutput()
+            if dev.isNull() or dev.id() == self._last:
+                return
+            self._last = dev.id()
+            self.audio.setDevice(dev)
+            winsys.log(f"float: sound now goes to {dev.description()}")
+        except RuntimeError:
+            pass
+
+
 LABEL_COLORS = [("White", "#ffffff"), ("Black", "#1c1e22"), ("Orange", "#ff8c1a"), ("Yellow", "#ffd84d"),
                 ("Red", "#ef4b45"), ("Green", "#5fd38d"), ("Blue", "#5aa9ff"), ("Pink", "#ff7eb6")]
 
@@ -885,7 +915,7 @@ _LABELS = (None, {})      # the float_labels setting as read last time (it's rea
 
 def _float_labels() -> dict:
     global _LABELS
-    raw = settings().value("float_labels", "{}") or "{}"
+    raw = quick_setting("float_labels", "{}") or "{}"     # (asked while painting: not from the registry each time)
     if raw != _LABELS[0]:
         try:
             d = json.loads(raw)
@@ -908,6 +938,7 @@ def set_float_label(path, style: dict) -> None:
     else:
         d.pop(key, None)
     settings().setValue("float_labels", json.dumps(d, ensure_ascii=False))
+    keys_changed()                                       # (quick_setting reads it fresh)
 
 
 def _shell_pixmap(path):
@@ -1532,6 +1563,10 @@ class FloatWindow(QWidget):
         except (TypeError, ValueError):
             pass
         self.player.setAudioOutput(self.audio)
+        try:
+            _FollowDefaultOutput(self.audio)
+        except Exception as e:
+            winsys.log(f"float: sound device watch: {e}")
         self.autoplay = settings().value("float_autoplay", "true") == "true" or getattr(self, "_play_now", False)
         self._play_now = False
         self.subs = None             # external subtitles: list of (start ms, end ms, text)

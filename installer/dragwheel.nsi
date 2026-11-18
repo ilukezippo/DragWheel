@@ -274,6 +274,12 @@ Section "$(SecMenuName)" SecMenu
   SetShellVarContext all
 SectionEnd
 
+; DragWheel for Browser: DragWheel offers the store extension to Chrome, Edge and Brave when it starts (each browser
+; asks once to turn it on) and opens its Firefox Add-ons page once
+Section "$(SecBrowserName)" SecBrowser
+  WriteRegStr HKCU "${SETTINGS_KEY}" "browser_setup" "1"
+SectionEnd
+
 Section "$(SecStartupName)" SecStartup
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APPNAME}" '"$INSTDIR\${EXE}" --tray'
 SectionEnd
@@ -302,6 +308,7 @@ SectionEnd
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecCore}    "$(SecCoreDesc)"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMenu}    "$(SecMenuDesc)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecBrowser} "$(SecBrowserDesc)"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecStartup} "$(SecStartupDesc)"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "$(SecDesktopDesc)"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDl}      "$(SecDlDesc)"
@@ -369,6 +376,28 @@ Function un.onInit
   !insertmacro MUI_UNGETLANGUAGE
 FunctionEnd
 
+!macro DeleteFileMenus
+  !insertmacro DeleteFileMenu "image"
+  !insertmacro DeleteFileMenu "video"
+  !insertmacro DeleteFileMenu "audio"
+  !insertmacro DeleteFileMenu "pdf"
+  !insertmacro DeleteFileMenu "document"
+  !insertmacro DeleteFileMenu "spreadsheet"
+  !insertmacro DeleteFileMenu "slides"
+  !insertmacro DeleteFileMenu "archive"
+  !insertmacro DeleteFileMenu "ebook"
+  !insertmacro DeleteFileMenu "comic"
+  !insertmacro DeleteFileMenu "font"
+  !insertmacro DeleteFileMenu "subtitle"
+  !insertmacro DeleteFileMenu "other"
+!macroend
+!macro DeleteFileMenu CAT
+  DeleteRegKey HKCU "Software\Classes\*\shell\DragWheel.${CAT}"
+  DeleteRegKey HKCU "Software\Classes\*\shell\DragWheel.${CAT}.1convert"
+  DeleteRegKey HKCU "Software\Classes\*\shell\DragWheel.${CAT}.2tool"
+  DeleteRegKey HKCU "Software\Classes\*\shell\DragWheel.${CAT}.3action"
+!macroend
+
 Section "!un.$(UnSecApp)" UnSecApp
   SectionIn RO
   SetShellVarContext current
@@ -381,6 +410,22 @@ Section "!un.$(UnSecApp)" UnSecApp
   DeleteRegKey   HKCU "Software\Classes\*\shell\DragWheel"
   DeleteRegKey   HKCU "Software\Classes\Directory\shell\DragWheel"
   DeleteRegKey   HKCU "Software\Classes\Directory\Background\shell\DragWheel"
+  ; right-click → DragWheel: Convert / Tools / Actions (one entry per kind of file)
+  DeleteRegKey   HKCU "Software\Classes\DragWheel.Menus"
+  DeleteRegKey   HKCU "Software\Classes\Directory\shell\DragWheel.tool"
+  DeleteRegKey   HKCU "Software\Classes\Directory\shell\DragWheel.action"
+  !insertmacro DeleteFileMenus
+  ; DragWheel for Browser: the link to the extension, and the extension offered to the browsers
+  DeleteRegKey   HKCU "Software\Google\Chrome\NativeMessagingHosts\com.ilukezippo.dragwheel"
+  DeleteRegKey   HKCU "Software\Microsoft\Edge\NativeMessagingHosts\com.ilukezippo.dragwheel"
+  DeleteRegKey   HKCU "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.ilukezippo.dragwheel"
+  DeleteRegKey   HKCU "Software\Chromium\NativeMessagingHosts\com.ilukezippo.dragwheel"
+  DeleteRegKey   HKCU "Software\Vivaldi\NativeMessagingHosts\com.ilukezippo.dragwheel"
+  DeleteRegKey   HKCU "Software\Mozilla\NativeMessagingHosts\com.ilukezippo.dragwheel"
+  DeleteRegKey   HKCU "Software\Google\Chrome\Extensions\mabjkdfbddokmmfbdhgkgcmhalgkbbcj"
+  DeleteRegKey   HKCU "Software\Microsoft\Edge\Extensions\mabjkdfbddokmmfbdhgkgcmhalgkbbcj"
+  DeleteRegKey   HKCU "Software\BraveSoftware\Brave-Browser\Extensions\mabjkdfbddokmmfbdhgkgcmhalgkbbcj"
+  DeleteRegValue HKCU "Software\Mozilla\Firefox\Extensions" "dragwheel@ilukezippo"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APPNAME}"
   DeleteRegKey   HKLM "${UNINST_KEY}"
 
@@ -489,6 +534,10 @@ LangString SecCoreName    ${LANG_ENGLISH} "${APPNAME} (required)"
 LangString SecCoreName    ${LANG_ARABIC}  "${APPNAME} (مطلوب)"
 LangString SecMenuName    ${LANG_ENGLISH} "Explorer right-click menu and Send To"
 LangString SecMenuName    ${LANG_ARABIC}  "قائمة الزر الأيمن و«إرسال إلى»"
+LangString SecBrowserName ${LANG_ENGLISH} "Browser extension"
+LangString SecBrowserName ${LANG_ARABIC}  "إضافة المتصفح"
+LangString SecBrowserDesc ${LANG_ENGLISH} "DragWheel for Browser: right-click a video or link to play it in Float, or a picture to save it in any format. Your browser asks once to turn it on."
+LangString SecBrowserDesc ${LANG_ARABIC}  "DragWheel للمتصفح: انقر بزر الفأرة الأيمن على فيديو أو رابط لتشغيله في Float، أو على صورة لحفظها بأي صيغة. يطلب منك المتصفح تفعيلها مرة واحدة."
 LangString SecStartupName ${LANG_ENGLISH} "Start with Windows"
 LangString SecStartupName ${LANG_ARABIC}  "التشغيل مع Windows"
 LangString SecDesktopName ${LANG_ENGLISH} "Desktop shortcut"

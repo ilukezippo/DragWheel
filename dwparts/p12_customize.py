@@ -120,7 +120,7 @@ DEFAULT_WHEEL_LAYOUT = {
                      "hidden": ["to_heic", "to_avif", "to_tiff", "to_bmp", "to_tga", "to_jp2", "to_icns"]},
     "tool/image": {"order": ["compress", "edit", "scan", "rotate", "flip", "gray", "strip", "resize", "removebg", "ocr", "upscale", "sharpen", "watermark", "blurfaces", "zip", "protect_zip", "splitparts"],
                   "hidden": ["rotate", "flip", "gray", "strip", "resize", "splitparts"]},
-    "tool/video": {"order": ["compress", "720p", "trim", "mute", "rotate", "snapshot", "speed", "gif", "social", "ringtone", "transcribe", "zip", "protect_zip", "splitparts"],
+    "tool/video": {"order": ["compress", "720p", "trim", "mute", "rotate", "fliph", "flipv", "snapshot", "speed", "gif", "social", "ringtone", "transcribe", "zip", "protect_zip", "splitparts"],
                   "hidden": ["compress", "720p", "mute", "speed", "gif", "transcribe", "protect_zip", "splitparts"]},
     "tool/audio": {"order": ["compress", "trim", "normalize", "mono", "fade", "ringtone", "transcribe", "zip", "protect_zip", "splitparts"],
                   "hidden": ["normalize", "mono", "protect_zip", "splitparts"]},

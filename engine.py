@@ -1058,6 +1058,16 @@ def video_rotate(src, p):
               "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy")
 
 
+def video_flip(how):
+    """Mirror a video left to right ("hflip") or upside down ("vflip"); the sound is kept as it is."""
+    tag = "flipped" if how == "hflip" else "flipped-v"
+
+    def f(src, p):
+        return ff(src, out_for(src, "mp4", tag), "-vf", how,
+                  "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy")
+    return f
+
+
 def video_snapshot(src, p):
     return ff(src, out_for(src, "png", "frame"), "-frames:v", "1", pre=("-ss", parse_time(p["At time"])))
 
@@ -2746,7 +2756,20 @@ def _lo_convert(src: Path, fmt: str) -> Path | None:
         shutil.rmtree(td, ignore_errors=True)
 
 
+_OFFICE = [0.0, False]
+
+
 def office_available() -> bool:
+    """Word/Excel/PowerPoint or LibreOffice is installed. Remembered for 10 minutes: looking for LibreOffice
+    searches the PATH, which froze the Settings window for half a second."""
+    import time as _t
+    if _t.monotonic() - _OFFICE[0] < 600:
+        return _OFFICE[1]
+    _OFFICE[:] = [_t.monotonic(), _office_available()]
+    return _OFFICE[1]
+
+
+def _office_available() -> bool:
     if soffice():
         return True
     if IS_WIN:
@@ -3757,6 +3780,8 @@ def tools(paths: list[str]) -> list[Op]:
             T("trim", "Trim…", media_trim, ask=TRIM),
             T("mute", "Mute", video_mute),
             T("rotate", "Rotate 90°", video_rotate),
+            T("fliph", "Flip horizontal", video_flip("hflip")),
+            T("flipv", "Flip vertical", video_flip("vflip")),
             T("snapshot", "Snapshot…", video_snapshot, ask=[("At time", "0:01")]),
             T("speed", "Speed 2×", video_speed2x),
             T("gif", "Make GIF…", video_gif_clip, ask=[("Start", "0:00"), ("End", "0:05")]),
@@ -4036,10 +4061,16 @@ def _cleanup(token: CancelToken):
             pass
 
 
+_CATALOG = None
+
+
 def count_catalog() -> tuple[int, int]:
-    """Rough count of conversion pairs and tools, for the About box."""
-    samples = ["a.png", "a.mp4", "a.mp3", "a.pdf", "a.md", "a.docx", "a.html", "a.txt", "a.pptx",
-               "a.xlsx", "a.csv", "a.srt", "a.vtt", "a.epub", "a.zip", "a.tar"]
-    conv = sum(len(conversions([s])) for s in samples)
-    tl = sum(len(tools([s])) for s in samples)
-    return conv, tl
+    """Rough count of conversion pairs and tools, for the About box. Worked out once, for files in a folder that
+    doesn't exist: a plain "a.mp4" made the tools look through the current folder (Temp, which can be huge)."""
+    global _CATALOG
+    if _CATALOG is None:
+        base = Path(tempfile.gettempdir()) / "dragwheel-no-such-folder"
+        samples = [str(base / s) for s in ("a.png", "a.mp4", "a.mp3", "a.pdf", "a.md", "a.docx", "a.html", "a.txt",
+                                           "a.pptx", "a.xlsx", "a.csv", "a.srt", "a.vtt", "a.epub", "a.zip", "a.tar")]
+        _CATALOG = (sum(len(conversions([s])) for s in samples), sum(len(tools([s])) for s in samples))
+    return _CATALOG

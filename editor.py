@@ -17,8 +17,29 @@ HANDLE = 9          # handle half-size in px
 MIN_CROP = 8        # in image pixels
 
 ASPECTS = [("Free", None), ("Original", "orig"), ("1:1", 1.0), ("4:3", 4 / 3), ("3:2", 3 / 2),
-           ("16:9", 16 / 9), ("9:16", 9 / 16), ("4:5", 4 / 5), ("4×6", "4x6")]
-PRINT_4X6 = (1800, 1200)        # a 4×6 in (10×15 cm) photo print at 300 dpi; turned to suit the picture
+           ("16:9", 16 / 9), ("9:16", 9 / 16), ("4:5", 4 / 5)]
+PRINT_DPI = 300
+# printable sizes (name, long side, short side in inches): saved at 300 dpi, turned to suit the picture
+MM = 1 / 25.4
+IMAGE_SIZES = [
+    ("Wallet 2.5×3.5 in (6×9 cm)", 3.5, 2.5),
+    ("Passport 2×2 in (5×5 cm)", 2, 2),
+    ("Passport 35×45 mm", 45 * MM, 35 * MM),
+    ("3.5×5 in (9×13 cm)", 5, 3.5),
+    ("4×6 in (10×15 cm)", 6, 4),
+    ("5×7 in (13×18 cm)", 7, 5),
+    ("6×8 in (15×20 cm)", 8, 6),
+    ("8×10 in (20×25 cm)", 10, 8),
+    ("8.5×11 in (Letter)", 11, 8.5),
+    ("11×14 in (28×36 cm)", 14, 11),
+    ("12×18 in (30×45 cm)", 18, 12),
+    ("16×20 in (40×50 cm)", 20, 16),
+    ("20×30 in (50×75 cm)", 30, 20),
+    ("A6 (105×148 mm)", 148 * MM, 105 * MM),
+    ("A5 (148×210 mm)", 210 * MM, 148 * MM),
+    ("A4 (210×297 mm)", 297 * MM, 210 * MM),
+    ("A3 (297×420 mm)", 420 * MM, 297 * MM),
+]
 
 
 def pil_to_qimage(img) -> QImage:
@@ -287,7 +308,7 @@ class CropResizeDialog(QDialog):
         self.flip_h = False
         self.flip_v = False
         self._sync = False
-        self._print = False                # 4×6 chosen: the output is a 300 dpi photo print
+        self._print = None                 # an Image size chosen: (long, short) px of the 300 dpi print
         self._overwrite = False            # Overwrite: the result replaces the original (original to the Recycle Bin)
 
         root = QHBoxLayout(self)
@@ -316,13 +337,23 @@ class CropResizeDialog(QDialog):
             b.setCheckable(True)
             b.setObjectName("chip")
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            b.clicked.connect(lambda _=False, v=val: self._set_aspect(v))
-            if val == "4x6":
-                b.setToolTip(tr("4×6 photo print (10×15 cm): 1800 × 1200 px at 300 dpi, turned to suit the picture"))
+            b.clicked.connect(lambda _=False, v=val: self._choose_aspect(v))
             self.aspect_group.addButton(b, i)
             grid.addWidget(b, i // 4, i % 4)
         self.aspect_group.button(0).setChecked(True)
         sv.addLayout(grid)
+
+        # --- printable sizes
+        sv.addWidget(self._title(tr("Image sizes")))
+        self.sizes = QComboBox()
+        self.sizes.addItem(tr("None (any size)"), None)
+        for name, a, b in IMAGE_SIZES:
+            px = (round(a * PRINT_DPI), round(b * PRINT_DPI))
+            self.sizes.addItem(f"{tr(name)}  ·  {px[0]} × {px[1]} px", px)
+        self.sizes.setToolTip(tr("Crops to a photo print size, the way the picture faces, and saves it at 300 dpi "
+                                 "ready to print"))
+        self.sizes.currentIndexChanged.connect(self._choose_size)
+        sv.addWidget(self.sizes)
 
         # --- rotate / flip
         sv.addWidget(self._title(tr("Rotate & flip")))
@@ -498,16 +529,44 @@ class CropResizeDialog(QDialog):
         self._rebuild_preview(keep_crop=True)
 
     def _apply_aspect_choice(self):
+        if self._print:
+            self._set_aspect(None)
+            return
         idx = self.aspect_group.checkedId()
         val = ASPECTS[idx][1] if idx >= 0 else None
         self._set_aspect(val)
 
-    def _set_aspect(self, val):
-        self._print = val == "4x6"
-        if val == "4x6":                   # landscape or portrait, whichever way the picture is
+    def _choose_aspect(self, val):
+        """An aspect ratio chip: no print size any more."""
+        if self._print is not None:
+            self._print = None
+            self.sizes.blockSignals(True)
+            self.sizes.setCurrentIndex(0)
+            self.sizes.blockSignals(False)
+        if val == "orig":                  # the whole picture again, not just its shape
             f = self._rotated_full()
-            val = 3 / 2 if f.width() >= f.height() else 2 / 3
-        if val == "orig":
+            self.canvas.set_crop(QRectF(0, 0, f.width(), f.height()))
+        self._set_aspect(val)
+
+    def _choose_size(self, _i):
+        px = self.sizes.currentData()
+        self._print = tuple(px) if px else None
+        if self._print:                    # the aspect chips step aside
+            self.aspect_group.setExclusive(False)
+            for b in self.aspect_group.buttons():
+                b.setChecked(False)
+            self.aspect_group.setExclusive(True)
+            self._set_aspect(None)
+        else:
+            self.aspect_group.button(0).setChecked(True)
+            self._set_aspect(None)
+
+    def _set_aspect(self, val):
+        if self._print:                    # landscape or portrait, whichever way the picture is
+            f = self._rotated_full()
+            long_, short = self._print
+            val = long_ / short if f.width() >= f.height() else short / long_
+        elif val == "orig":
             f = self._rotated_full()
             val = f.width() / f.height()
         self.canvas.set_aspect(val)
@@ -526,7 +585,10 @@ class CropResizeDialog(QDialog):
 
     def _reset(self):
         self.rotate, self.flip_h, self.flip_v = 0, False, False
-        self._print = False
+        self._print = None
+        self.sizes.blockSignals(True)
+        self.sizes.setCurrentIndex(0)
+        self.sizes.blockSignals(False)
         self.nobg.setChecked(False)
         self.aspect_group.button(0).setChecked(True)
         self._rebuild_preview()
@@ -537,7 +599,7 @@ class CropResizeDialog(QDialog):
         self.crop_lbl.setText(f"{w} × {h} px   ·   x {round(c.x())}, y {round(c.y())}")
         self._sync = True
         if self._print:                    # print size, not the crop's size
-            w, h = PRINT_4X6 if w >= h else PRINT_4X6[::-1]
+            w, h = self._print if w >= h else self._print[::-1]
         self.w_spin.setValue(w)
         self.h_spin.setValue(h)
         self._sync = False
@@ -572,7 +634,7 @@ class CropResizeDialog(QDialog):
                 "box": (c.left(), c.top(), c.right(), c.bottom()),
                 "size": (self.w_spin.value(), self.h_spin.value()),
                 "format": self.fmt.currentData(),
-                "dpi": 300 if self._print else None,
+                "dpi": PRINT_DPI if self._print else None,
                 "overwrite": self._overwrite}
 
 
