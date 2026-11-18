@@ -499,10 +499,12 @@ MENU_TARGETS = [r"Software\Classes\*\shell\DragWheel",
 
 BG_MENU = r"Software\Classes\Directory\Background\shell\DragWheel"   # right-click on the desktop / a folder's empty space
 
+on_menu_changed = None          # the app sets this: rebuild the Convert / Tools / Actions menus when the menu is turned on
+
 
 def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image here",
                      link_label: str = "Paste link to Float", float_label: str = "Open Float", sendto=None,
-                     qr_label: str = "Read QR code on screen") -> None:
+                     qr_label: str = "Read QR code on screen", note_label: str = "New sticky note") -> None:
     """The DragWheel entries of Explorer's right-click menu. Send To is separate: sendto=True/False sets it,
     None leaves it as it is."""
     if not IS_WIN:
@@ -535,6 +537,11 @@ def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image her
             winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_path())
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zzfloat\command") as k:
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _quote(app_command()) + " --open-float")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zznote") as k:    # a new sticky note
+            winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, note_label)
+            winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_path())
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, BG_MENU + r"\shell\zznote\command") as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, _quote(app_command()) + " --new-note")
     else:
         _delete_tree(winreg.HKEY_CURRENT_USER, BG_MENU)
     for key in MENU_TARGETS:
@@ -551,6 +558,10 @@ def set_context_menu(enabled: bool, paste_label: str = "Save clipboard image her
                     winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
                 except FileNotFoundError:
                     pass
+    if not enabled:
+        set_file_menus(None)
+    elif on_menu_changed is not None:
+        on_menu_changed()
     if sendto is not None:
         _sendto(bool(sendto))
 
@@ -560,10 +571,72 @@ def context_menu_enabled() -> bool:
         return False
     import winreg
     try:
-        winreg.OpenKey(winreg.HKEY_CURRENT_USER, MENU_TARGETS[0]).Close()
+        winreg.OpenKey(winreg.HKEY_CURRENT_USER, MENU_TARGETS[1]).Close()     # (files get their own menus)
         return True
     except OSError:
         return False
+
+
+FILE_MENUS = r"Software\Classes\DragWheel.Menus"      # the submenus' items, shared by the file types' entries
+FILE_MENU_CATS = ("image", "video", "audio", "pdf", "document", "spreadsheet", "slides", "archive", "ebook",
+                  "comic", "font", "subtitle", "other")
+
+
+def set_file_menus(spec) -> None:
+    """Right-click a file or folder → DragWheel: Convert ▸ / DragWheel: Tools ▸ / DragWheel: Actions ▸, with the
+    same slices as the wheels for that kind of file (and Open the wheel). spec = None removes them; else
+    {"open": label, "groups": [(mode, label)], "cats": {category: {"exts": [...], mode: [(id, label)]}}}.
+    Each kind of file gets its own "DragWheel" entry (shown only for its file types, AppliesTo), all sharing
+    their submenus from DragWheel.Menus."""
+    if not IS_WIN:
+        return
+    import winreg
+    H = winreg.HKEY_CURRENT_USER
+    _delete_tree(H, FILE_MENUS)
+    for cat in FILE_MENU_CATS:
+        _delete_tree(H, rf"Software\Classes\*\shell\DragWheel.{cat}")
+        for g, mode in enumerate(("convert", "tool", "action"), 1):
+            _delete_tree(H, rf"Software\Classes\*\shell\DragWheel.{cat}.{g}{mode}")
+    for mode in ("tool", "action"):
+        _delete_tree(H, f"{MENU_TARGETS[1]}.{mode}")
+    if spec is None:
+        return
+    _delete_tree(H, MENU_TARGETS[0])                     # the old single entry for files
+    exe = _quote(app_command())
+    known = sorted({e for c in spec["cats"].values() for e in c.get("exts", [])})
+
+    def put(path, **values):
+        with winreg.CreateKey(H, path) as k:
+            for name, v in values.items():
+                winreg.SetValueEx(k, name, 0, winreg.REG_SZ, v)
+
+    for cat, c in spec["cats"].items():
+        target = "%1"
+        if cat == "other":
+            applies = " AND ".join(f"NOT System.FileExtension:=.{e}" for e in known)
+        else:
+            applies = " OR ".join(f"System.FileExtension:=.{e}" for e in c.get("exts", []))
+        for g, (mode, label) in enumerate(spec["groups"], 1):
+            items = (c.get(mode) or [])[:15]
+            if not items:
+                continue
+            sub = rf"{FILE_MENUS}\{cat}.{mode}\shell"
+            if g == 1:                                   # Open the wheel, at the top of the first one
+                put(rf"{sub}\a00open", MUIVerb=spec["open"], Icon=icon_path())
+                put(rf"{sub}\a00open\command", **{"": f'{exe} --open "{target}"'})
+            for i, (op_id, op_label) in enumerate(items):
+                ik = rf"{sub}\{mode}{i:03d}"
+                put(ik, MUIVerb=op_label)
+                put(ik + r"\command", **{"": f'{exe} --run={mode}:{op_id} "{target}"'})
+            title = f"DragWheel: {label}"
+            if cat == "folder":
+                key = MENU_TARGETS[1] if g == 1 else f"{MENU_TARGETS[1]}.{mode}"
+                _delete_tree(H, key)
+                put(key, MUIVerb=title, Icon=icon_path(), MultiSelectModel="Player",
+                    ExtendedSubCommandsKey=rf"DragWheel.Menus\{cat}.{mode}")
+                continue
+            put(rf"Software\Classes\*\shell\DragWheel.{cat}.{g}{mode}", MUIVerb=title, Icon=icon_path(),
+                MultiSelectModel="Player", AppliesTo=applies, ExtendedSubCommandsKey=rf"DragWheel.Menus\{cat}.{mode}")
 
 
 def sendto_enabled() -> bool:
@@ -1110,5 +1183,234 @@ def shortcut_target(lnk: str) -> str | None:
                            creationflags=0x08000000)
         t = r.stdout.decode("utf-8", "replace").strip()
         return t if t and os.path.exists(t) else None
+    except Exception:
+        return None
+
+
+# ---- taskbar progress (ITaskbarList3) --------------------------------------
+_TASKBAR = None
+TB_NONE, TB_NORMAL, TB_PAUSED = 0, 2, 8
+
+
+def _taskbar():
+    """ITaskbarList3, made once (plain ctypes COM, no extra library). None when it isn't available."""
+    global _TASKBAR
+    if _TASKBAR is not None or not IS_WIN:
+        return _TASKBAR or None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("a", ctypes.c_uint32), ("b", ctypes.c_uint16), ("c", ctypes.c_uint16), ("d", ctypes.c_ubyte * 8)]
+
+        def guid(s):
+            import uuid
+            u = uuid.UUID(s)
+            return GUID(u.fields[0], u.fields[1], u.fields[2], (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+
+        ole = ctypes.oledll.ole32
+        ptr = ctypes.c_void_p()
+        ole.CoCreateInstance(ctypes.byref(guid("56FDF344-FD6D-11d0-958A-006097C9A090")), None, 1,
+                             ctypes.byref(guid("EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF")), ctypes.byref(ptr))
+        vtbl = ctypes.cast(ctypes.cast(ptr, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+        HR = ctypes.HRESULT
+        hr_init = ctypes.WINFUNCTYPE(HR, ctypes.c_void_p)(vtbl[3])
+        set_value = ctypes.WINFUNCTYPE(HR, ctypes.c_void_p, wintypes.HWND, ctypes.c_ulonglong, ctypes.c_ulonglong)(vtbl[9])
+        set_state = ctypes.WINFUNCTYPE(HR, ctypes.c_void_p, wintypes.HWND, ctypes.c_int)(vtbl[10])
+        hr_init(ptr)
+        _TASKBAR = (ptr, set_value, set_state)
+    except Exception as e:
+        log(f"taskbar progress: {e}")
+        _TASKBAR = False
+    return _TASKBAR or None
+
+
+def taskbar_progress(hwnd: int, state: int, done: int = 0, total: int = 0) -> None:
+    """Show `done` of `total` on a window's taskbar button (green, or yellow when paused); TB_NONE clears it."""
+    tb = _taskbar()
+    if not tb or not hwnd:
+        return
+    ptr, set_value, set_state = tb
+    try:
+        set_state(ptr, hwnd, state)
+        if state != TB_NONE and total > 0:
+            set_value(ptr, hwnd, max(0, min(done, total)), total)
+    except Exception as e:
+        log(f"taskbar progress: {e}")
+
+
+# ---- big file icons ---------------------------------------------------------
+def shell_icon(path: str, size: int = 256):
+    """(width, height, BGRA bytes) of the icon Windows shows for `path` — the same one as in Explorer, so a .url
+    or .lnk whose icon you changed shows that icon. Uses the 256 px 'jumbo' list; when the file only has a small
+    icon (which the jumbo list draws tiny in a corner) the 48 px one instead. None if it can't be read."""
+    if not IS_WIN:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class SHFILEINFOW(ctypes.Structure):
+            _fields_ = [("hIcon", wintypes.HANDLE), ("iIcon", ctypes.c_int), ("dwAttributes", wintypes.DWORD),
+                        ("szDisplayName", wintypes.WCHAR * 260), ("szTypeName", wintypes.WCHAR * 80)]
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("a", ctypes.c_uint32), ("b", ctypes.c_uint16), ("c", ctypes.c_uint16), ("d", ctypes.c_ubyte * 8)]
+
+        import uuid
+        u = uuid.UUID("46EB5926-582E-4017-9FDF-E8998DAA0950")           # IID_IImageList
+        iid = GUID(u.fields[0], u.fields[1], u.fields[2], (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+        shell = ctypes.WinDLL("shell32")
+        shell.SHGetFileInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p, wintypes.UINT, wintypes.UINT]
+        shell.SHGetFileInfoW.restype = ctypes.c_size_t
+        shell.SHGetImageList.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+        shell.SHGetImageList.restype = ctypes.c_long
+        info = SHFILEINFOW()
+        if not shell.SHGetFileInfoW(str(path), 0, ctypes.byref(info), ctypes.sizeof(info), 0x4000):  # SYSICONINDEX
+            return None
+
+        def from_list(which):
+            lst = ctypes.c_void_p()
+            if shell.SHGetImageList(which, ctypes.byref(iid), ctypes.byref(lst)) != 0 or not lst:
+                return None
+            vt = ctypes.cast(ctypes.cast(lst, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+            get_icon = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, ctypes.c_int, ctypes.c_uint,
+                                          ctypes.POINTER(wintypes.HICON))(vt[10])
+            release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vt[2])
+            hicon = wintypes.HICON()
+            try:
+                get_icon(lst, info.iIcon, 0x21, ctypes.byref(hicon))    # ILD_TRANSPARENT | ILD_IMAGE
+            except OSError:
+                return None
+            finally:
+                release(lst)
+            if not hicon:
+                return None
+            try:
+                return _hicon_bgra(hicon)
+            finally:
+                _destroy_icon(hicon)
+
+        img = from_list(4)                                  # SHIL_JUMBO (256)
+        if img is not None:
+            w, h, data = img
+            right = bottom = 0
+            for y in range(0, h, 4):
+                row = data[y * w * 4:(y + 1) * w * 4]
+                for x in range(w - 1, -1, -4):
+                    if row[x * 4 + 3]:
+                        right = max(right, x)
+                        bottom = max(bottom, y)
+                        break
+            if right > 96 or bottom > 96:                  # really big, not a small icon in the corner
+                return img
+        return from_list(2) or img                          # SHIL_EXTRALARGE (48)
+    except Exception as e:
+        log(f"shell icon: {e}")
+        return None
+
+
+def _destroy_icon(hicon):
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.WinDLL("user32")
+    u.DestroyIcon.argtypes = [wintypes.HICON]
+    u.DestroyIcon(hicon)
+
+
+def _hicon_bgra(hicon):
+    """An icon handle as (w, h, BGRA bytes, top row first)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ICONINFO(ctypes.Structure):
+        _fields_ = [("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD), ("yHotspot", wintypes.DWORD),
+                    ("hbmMask", wintypes.HBITMAP), ("hbmColor", wintypes.HBITMAP)]
+
+    class BITMAP(ctypes.Structure):
+        _fields_ = [("bmType", ctypes.c_long), ("bmWidth", ctypes.c_long), ("bmHeight", ctypes.c_long),
+                    ("bmWidthBytes", ctypes.c_long), ("bmPlanes", wintypes.WORD), ("bmBitsPixel", wintypes.WORD),
+                    ("bmBits", ctypes.c_void_p)]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long),
+                    ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                    ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
+
+    user32, gdi32 = ctypes.WinDLL("user32"), ctypes.WinDLL("gdi32")     # (own handles: 64-bit types set below)
+    user32.GetIconInfo.argtypes = [wintypes.HICON, ctypes.POINTER(ICONINFO)]
+    user32.GetDC.argtypes, user32.GetDC.restype = [wintypes.HWND], wintypes.HDC
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    gdi32.GetObjectW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p]
+    gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT, ctypes.c_void_p,
+                                ctypes.c_void_p, wintypes.UINT]
+    gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    ii = ICONINFO()
+    if not user32.GetIconInfo(hicon, ctypes.byref(ii)):
+        return None
+    try:
+        bm = BITMAP()
+        gdi32.GetObjectW(ii.hbmColor, ctypes.sizeof(bm), ctypes.byref(bm))
+        w, h = bm.bmWidth, bm.bmHeight
+        if w <= 0 or h <= 0:
+            return None
+        bih = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+        buf = ctypes.create_string_buffer(w * h * 4)
+        hdc = user32.GetDC(None)
+        try:
+            gdi32.GetDIBits(hdc, ii.hbmColor, 0, h, buf, ctypes.byref(bih), 0)
+        finally:
+            user32.ReleaseDC(None, hdc)
+        data = bytearray(buf.raw)
+        if not any(data[3::4]):                             # an icon without alpha: make it opaque
+            data[3::4] = b"\xff" * (w * h)
+        return w, h, bytes(data)
+    finally:
+        if ii.hbmColor:
+            gdi32.DeleteObject(ii.hbmColor)
+        if ii.hbmMask:
+            gdi32.DeleteObject(ii.hbmMask)
+
+
+def icon_from_file(file: str, index: int = 0, size: int = 256):
+    """(w, h, BGRA) of icon number `index` inside an .exe, .dll or .ico, as large as it has (up to `size`)."""
+    if not IS_WIN:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        hicon = wintypes.HICON()
+        icon_id = wintypes.UINT()
+        u = ctypes.WinDLL("user32")
+        u.PrivateExtractIconsW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                           ctypes.POINTER(wintypes.HICON), ctypes.POINTER(wintypes.UINT),
+                                           wintypes.UINT, wintypes.UINT]
+        n = u.PrivateExtractIconsW(str(file), int(index), size, size, ctypes.byref(hicon), ctypes.byref(icon_id), 1, 0)
+        if n != 1 or not hicon:
+            return None
+        try:
+            return _hicon_bgra(hicon)
+        finally:
+            _destroy_icon(hicon)
+    except Exception as e:
+        log(f"icon from file: {e}")
+        return None
+
+
+def url_shortcut_icon(path: str):
+    """The icon a .url (internet shortcut) was given in its Properties → Change Icon: (file, index) or None."""
+    try:
+        import configparser
+        cp = configparser.ConfigParser(interpolation=None, strict=False)
+        cp.read(str(path), encoding="utf-8-sig")
+        sec = cp["InternetShortcut"] if cp.has_section("InternetShortcut") else None
+        if sec is None:
+            return None
+        f = os.path.expandvars(sec.get("IconFile", "") or "")
+        if not f or f.lower().startswith(("http://", "https://")) or not os.path.exists(f):
+            return None
+        return f, int(sec.get("IconIndex", "0") or 0)
     except Exception:
         return None
