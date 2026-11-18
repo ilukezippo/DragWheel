@@ -354,6 +354,8 @@ class Toast(QWidget):
         self.body.setText(body)
         self.btn.setVisible(show_btn)
         self.on_undo = None
+        self._is_action = False
+        self.undo_btn.setText(tr("Undo"))
         self.undo_btn.hide()
         self.on_cancel = cancel
         self.cancel_btn.setVisible(cancel is not None)
@@ -407,8 +409,25 @@ class Toast(QWidget):
             self.timer.start(max(self.timer.remainingTime(), 9000))     # time to change your mind
         self._place()
 
+    def set_action(self, label, fn):
+        """A button of its own on the card (in the Undo button's place); clicking it runs fn and closes the card."""
+        self.undo_btn.setText(label)
+        self.on_undo = fn
+        self._is_action = True
+        self.undo_btn.setVisible(True)
+        if self.timer.isActive():
+            self.timer.start(max(self.timer.remainingTime(), 12000))
+        self._place()
+        return self
+
     def _undo(self):
         fn, self.on_undo = self.on_undo, None
+        if fn and getattr(self, "_is_action", False):     # set_action's button, not Undo
+            self._is_action = False
+            self.undo_btn.setText(tr("Undo"))
+            fn()
+            self.close_card()
+            return
         if fn:
             play_finish_sound("err")
             ok = fn()

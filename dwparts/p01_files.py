@@ -435,7 +435,8 @@ class FrontDialog(QDialog):
         super().showEvent(e)
         if not getattr(self, "_fronted", False):
             self._fronted = True
-            QTimer.singleShot(0, lambda: (self.raise_(), self.activateWindow(), winsys.bring_to_front(int(self.winId()))))
+            QTimer.singleShot(0, self, lambda: (self.raise_(), self.activateWindow(),
+                                                winsys.bring_to_front(int(self.winId()))))
 
 
 class PhoneShare(FrontDialog):
@@ -747,8 +748,7 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
             return
         self.ended = True
         try:
-            self.server.shutdown()
-            self.server.server_close()
+            _stop_server(self.server)
         except Exception:
             pass
         if self.tunnel is not None:                    # the link ends with the window
@@ -759,7 +759,16 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Fo
         super().closeEvent(e)
 
 
-# TODO RECOVER ['_stop_server'] (line 758)
+def _stop_server(server):
+    """Stop a local web server without making the window wait: shutdown() blocks until its loop notices (up to
+    half a second, longer while a phone is still downloading)."""
+    def work():
+        try:
+            server.shutdown()
+            server.server_close()
+        except Exception:
+            pass
+    threading.Thread(target=work, daemon=True).start()
 
 
 QUICK_SHARE_URL = "https://www.android.com/better-together/quick-share-app/"

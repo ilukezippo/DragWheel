@@ -160,10 +160,41 @@ def wheel_layout() -> dict:
     return dict(DEFAULT_WHEEL_LAYOUT, **_jload("wheel_layout", {}))
 
 
-# TODO RECOVER ['_SAMPLE_EXT'] (line 158)
+# the files the right-click menus are worked out for (one with few conversions first, so the common ones come too)
+_SAMPLE_EXT = {"image": ("tga", "jpg"), "video": ("mkv", "mp4"), "audio": ("aiff", "mp3"), "pdf": ("pdf",),
+               "document": ("odt", "docx"), "spreadsheet": ("ods", "xlsx"), "slides": ("odp", "pptx"),
+               "archive": ("tar", "zip"), "ebook": ("fb2", "epub"), "comic": ("cb7", "cbz"), "font": ("woff", "ttf"),
+               "subtitle": ("ass", "srt")}
 
 
-# TODO RECOVER ['file_menu_spec'] (line 164)
+def file_menu_spec(app) -> dict:
+    """What right-click → DragWheel shows for each kind of file: the same slices as the wheels (your order, without
+    the ones you hid). Built for a typical file of each kind; picking one that doesn't fit the file says so."""
+    cats = {}
+    groups = [("convert", tr("Convert")), ("tool", tr("Tools")), ("action", tr("Actions"))]
+    by_cat = {}
+    for ext, cat in engine.EXT_CATEGORY.items():
+        by_cat.setdefault(cat, []).append(ext)
+    plan = [(cat, [f"C:/DragWheel/sample.{e}" for e in _SAMPLE_EXT.get(cat, (by_cat[cat][0],))]) for cat in by_cat]
+    plan += [("folder", ["C:/DragWheel/sample folder"]), ("other", ["C:/DragWheel/sample.xyz"])]
+    for cat, samples in plan:
+        c = {"exts": sorted(by_cat.get(cat, []))}
+        for mode, _label in groups:
+            seen, items = set(), []
+            for smp in samples:
+                try:
+                    ops = app.ops_for(mode, [smp])
+                except Exception as e:
+                    winsys.log(f"menu: {cat}/{mode}: {e}")
+                    ops = []
+                for op in ops:
+                    if op.id in seen or op.id == "none" or op.id.startswith("custom:"):
+                        continue
+                    seen.add(op.id)
+                    items.append((op.id, tr(op.label).replace("&", "&&")))
+            c[mode] = items
+        cats[cat] = c
+    return {"open": tr("Open the wheel"), "groups": groups, "cats": cats}
 
 
 def apply_wheel_layout(mode, category, ops):
@@ -686,6 +717,8 @@ class WheelLayoutDialog(QDialog):
             for k in [k for k in self.layouts if k.startswith("action/") and k != "action/*"]:
                 self.layouts.pop(k)
         settings().setValue("wheel_layout", json.dumps({k: v for k, v in self.layouts.items() if v.get("hidden") or v.get("order")}))
+        if _APP is not None:                             # the right-click menus follow the wheels
+            QTimer.singleShot(300, _APP.refresh_file_menus)
         self.accept()
 
 
@@ -895,13 +928,14 @@ SETTINGS_DEFAULTS = {
     "tick_sound": "true", "tick_volume": 70, "sound_pack": "classic", "finish_sound": "true", "finish_anim": "true",
     "media_osd": "true", "media_osd_when": "unfocused", "output_mode": "next", "output_dir": "", "job_mode": "queue",
     "replace_no_ask": "false", "float_autoplay": "true", "float_on_top": "true", "float_ctrl_open": "true",
-    "float_link_stops": "true", "float_icon_only": "true", "float_hide_name": "false", "float_taskbar": "true",
+    "float_link_stops": "true", "float_icon_only": "true", "float_hide_name": "false", "float_keep": "true",
+    "float_taskbar": "true",
     "float_repeat": "off", "float_volume": 1.0, "link_quality": "1080p", "share_way": "quick", "share_minutes": 60,
     "sign_mode": "this", "wheel_layout": "{}", "custom_slices": "[]", "watch_folders": "[]",
 }
 
 
-EXPORT_SKIP = ("float_resume", "last_update", "geometry", "installer", "first_run_done", "skip_version", "detect_any",
+EXPORT_SKIP = ("float_resume", "sticky_notes", "last_update", "geometry", "installer", "first_run_done", "skip_version", "detect_any",
                "hotkey")
 
 
@@ -933,6 +967,7 @@ def import_settings(path) -> int:
     s = settings()
     for k, v in data["settings"].items():
         s.setValue(k, v)
+        keys_changed()
     if data.get("my_slices"):
         my_slices_file().parent.mkdir(parents=True, exist_ok=True)
         my_slices_file().write_text(data["my_slices"], encoding="utf-8")
@@ -944,7 +979,8 @@ def import_settings(path) -> int:
         if "menu" in win or "sendto" in win:
             winsys.set_context_menu(bool(win.get("menu", winsys.context_menu_enabled())),
                                     paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
-                                    float_label=tr("Open Float"), qr_label=tr("Read QR code on screen"), sendto=bool(win.get("sendto", winsys.sendto_enabled())))
+                                    float_label=tr("Open Float"), qr_label=tr("Read QR code on screen"),
+                                    note_label=tr("New sticky note"), sendto=bool(win.get("sendto", winsys.sendto_enabled())))
         if "full_menu" in win and bool(win["full_menu"]) != winsys.full_menu_enabled():
             winsys.set_full_menu(bool(win["full_menu"]))
             winsys.restart_explorer()
@@ -971,17 +1007,44 @@ class StallWatch:
     def _watch(self):
         reported, since = None, 0.0
         while True:
+            t0 = time.monotonic()
             time.sleep(0.1)
+            if time.monotonic() - t0 > 1.0:              # this thread was stopped too: the PC slept or hibernated,
+                reported = self.beat                     # which isn't DragWheel freezing
+                continue
             beat = self.beat
             lag = time.monotonic() - beat
             if lag > self.LIMIT and reported != beat and time.monotonic() - since > 3:
                 frame = sys._current_frames().get(self.main)
-                where = " < ".join(f"{Path(f.filename).stem}:{f.name}:{f.lineno}"
-                                   for f in reversed(traceback.extract_stack(frame)[-7:])) if frame else "?"
+                stack = traceback.extract_stack(frame)[-7:] if frame else []
+                where = " < ".join(f"{Path(f.filename).stem}:{f.name}:{f.lineno}" for f in reversed(stack)) or "?"
                 reported, since = beat, time.monotonic()
+                slept = False
                 while self.beat == beat and time.monotonic() - beat < 30:     # how long it lasts
+                    t1 = time.monotonic()
                     time.sleep(0.05)
+                    if time.monotonic() - t1 > 1.0:
+                        slept = True
+                        break
+                if slept:
+                    continue
+                if len(stack) <= 2:                       # nothing of ours running: Qt or Windows itself was busy
+                    where += " (inside Qt/Windows; " + self._context() + ")"
                 winsys.log(f"stall {time.monotonic() - beat:.2f}s: {where}")
+
+    @staticmethod
+    def _context():
+        """What was open, to tell native stalls apart (read without touching Qt objects from this thread)."""
+        try:
+            fl = list(getattr(_APP, "floats", []) or [])
+            kinds = {}
+            for f in fl:
+                k = ("link " if getattr(f, "link", None) else "") + str(getattr(f, "kind", "?"))
+                kinds[k] = kinds.get(k, 0) + 1
+            notes = len(getattr(_APP, "notes", []) or [])
+            return ", ".join(f"{n}× {k}" for k, n in kinds.items()) + f"; {notes} notes" if fl else f"no floats; {notes} notes"
+        except Exception:
+            return "?"
 
 
 class SettingsDialog(QDialog):
@@ -1063,6 +1126,7 @@ class SettingsDialog(QDialog):
             "media_osd": s.value("media_osd", "true") == "true",
             "icon_only": s.value("float_icon_only", "true") == "true",
             "taskbar": s.value("float_taskbar", "true") == "true",
+            "keep": s.value("float_keep", "true") == "true",
             "sound_pack": sound_pack(),
             "hide_name": s.value("float_hide_name", "false") == "true",
             "anim": wheel_anim(),
@@ -1478,6 +1542,9 @@ class SettingsDialog(QDialog):
         vf.addWidget(self.hide_name)
         self.icon_only.toggled.connect(self.hide_name.setEnabled)
         self.hide_name.setEnabled(st["icon_only"])
+        self.keep = SwitchBox(tr("Keep floats open after a restart, until you close them"))
+        self.keep.setChecked(st["keep"])
+        vf.addWidget(self.keep)
         self.media_osd = SwitchBox(tr("Enable multimedia logos on screen"))
         self.media_osd.setChecked(st["media_osd"])
         vf.addWidget(self.media_osd)
@@ -1730,10 +1797,10 @@ class SettingsDialog(QDialog):
         donate.setCursor(Qt.PointingHandCursor)
         donate.setToolTip("buymeacoffee.com/ilukezippo")
         donate.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(DONATE_URL)))
-        gh = QPushButton(tr("GitHub page"))
+        gh = QPushButton("⭐  " + tr("Star on GitHub"))
         gh.setObjectName("link")
         gh.setCursor(Qt.PointingHandCursor)
-        gh.setToolTip(updater.REPO_URL)
+        gh.setToolTip(tr("A star helps other people find DragWheel") + "\n" + updater.REPO_URL)
         gh.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(updater.REPO_URL)))
         issues = QPushButton(tr("Report a problem"))
         issues.setObjectName("link")
@@ -1983,6 +2050,7 @@ class SettingsDialog(QDialog):
         s.clear()
         for k, v in keep.items():
             s.setValue(k, v)
+        keys_changed()
         s.sync()
         winsys.log("settings restored to defaults")
         self.app.apply_language()
@@ -2024,6 +2092,7 @@ class SettingsDialog(QDialog):
         s = settings()
         for m, k in keys.items():
             s.setValue(f"keys/{m}", k)
+        keys_changed()
         s.setValue("trigger_mode", self.detect.currentData())
         s.setValue("peek_hold", "true" if self.peek_hold.currentData() else "false")
         s.setValue("detect_any", 0)
@@ -2039,8 +2108,10 @@ class SettingsDialog(QDialog):
         s.setValue("media_osd", "true" if self.media_osd.isChecked() else "false")
         s.setValue("float_icon_only", "true" if self.icon_only.isChecked() else "false")
         s.setValue("float_hide_name", "true" if self.hide_name.isChecked() else "false")
+        keys_changed()
         tb_changed = (s.value("float_taskbar", "true") == "true") != self.taskbar.isChecked()
         s.setValue("float_taskbar", "true" if self.taskbar.isChecked() else "false")
+        s.setValue("float_keep", "true" if self.keep.isChecked() else "false")
         for w in getattr(self.app, "floats", []):
             if tb_changed:
                 w.set_taskbar(self.taskbar.isChecked())
@@ -2077,7 +2148,8 @@ class SettingsDialog(QDialog):
         try:
             winsys.set_startup(self.startup.isChecked())
             winsys.set_context_menu(self.menu.isChecked(), paste_label=tr("Save clipboard image here"), link_label=tr("Paste link to Float"),
-                                    float_label=tr("Open Float"), qr_label=tr("Read QR code on screen"), sendto=self.sendto.isChecked())
+                                    float_label=tr("Open Float"), qr_label=tr("Read QR code on screen"),
+                                    note_label=tr("New sticky note"), sendto=self.sendto.isChecked())
         except Exception as e:
             QMessageBox.warning(self, APP, tr("Couldn't update Windows integration:") + f"\n{e}")
         self.accept()
