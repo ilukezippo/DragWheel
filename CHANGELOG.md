@@ -3,7 +3,6 @@
 ## 1.2.3 — not released yet
 
 ### New
-- YouTube links open faster in Float: a quick player is asked at the same time as the full list, and used when it has the quality you chose.
 - **Sticky notes** on the desktop: right-click the desktop → DragWheel → *New sticky note* (or the tray). They save themselves as you type (plain .txt files in Documents › DragWheel Notes), six colours, Keep on top, bigger or smaller text, and they come back when DragWheel starts. Floating a .txt, .md or .log file opens it as a note you can edit. ⋯ → *Keep notes in* moves them to OneDrive, Google Drive or any folder so they follow you to your other PCs; *Show all notes* opens every one
 - **DragWheel for Browser** (Chrome Web Store and Firefox Add-ons): right-click a video, song or link → *Play in DragWheel Float*; right-click a picture → *Save image as* PNG, JPG, WebP, AVIF, ICO, PDF and more. The installer's *Browser extension* option adds it to Chrome, Edge and Brave the way IDM does (the browser asks once to turn it on); Firefox opens its add-on page once
 - **Right-click a file → DragWheel: Convert ▸ / Tools ▸ / Actions ▸**, with the slices of your wheels for that kind of file
@@ -17,6 +16,7 @@
 - Settings → About: *Star on GitHub*; after 20 jobs a small window asks once whether you'd like to star DragWheel
 
 ### Fixed
+- Float: playing a web video again after a long pause no longer asks the site again (about 14 s) while its link is still good for a while; the player restarts on the same link at once
 - A Float playing through a headset went silent when Windows switched to another output (speakers, or the headset turned off): the sound now moves to the new device
 - *Original* in Crop & Resize now goes back to the whole picture, not just its shape
 - Freezes: starting a long online video (the temp file is reserved instantly), a video stuttering while the mouse was over its Float, the wheel keys and Float settings read from the registry many times a second, the Settings window looking through the Temp folder and searching for LibreOffice

@@ -876,6 +876,25 @@ def _clipboard_media_file():
     return None
 
 
+def _link_still_good(link, margin=20 * 60):
+    """True while a site's media address stays valid for `margin` more seconds (YouTube writes when it
+    stops working into the address: expire=<unix time>). Then a long pause restarts the player on the same
+    address at once instead of asking the site again."""
+    from urllib.parse import parse_qs, urlsplit
+    import time
+    urls = [u for u in (link.get("url"), link.get("audio")) if u]
+    if not urls or link.get("live"):
+        return False
+    for u in urls:
+        try:
+            exp = int(parse_qs(urlsplit(u).query).get("expire", ["0"])[0])
+        except ValueError:
+            return False
+        if exp - time.time() < margin:
+            return False
+    return True
+
+
 class _FollowDefaultOutput(QObject):
     """Qt keeps a float's sound on the device it started on. When Windows switches to another one (a headset
     unplugged or turned off, speakers chosen in the sound menu), the float went silent: this moves its sound to
@@ -2087,9 +2106,9 @@ class FloatWindow(QWidget):
                 winsys.log(f"float: playing again after {int((time.monotonic() - paused) / 60)} min paused — fresh start")
                 self._paused_at = None
                 pos = self.player.position()
-                if self.link and self.link.get("page"):
+                if self.link and self.link.get("page") and not _link_still_good(self.link):
                     self._resume_ms = pos
-                    self.refresh_link()                  # a fresh address from the site
+                    self.refresh_link()                  # a fresh address from the site (about 14 s)
                     return
                 self._play_now = True
                 self._load(self.path, self.link)

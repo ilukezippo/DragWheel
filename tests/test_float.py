@@ -50,3 +50,14 @@ def test_sound_follows_the_default_device(dw, qapp):
     watch.check()
     assert watch._last == QMediaDevices.defaultAudioOutput().id()
     assert audio.device().id() == QMediaDevices.defaultAudioOutput().id()
+
+
+def test_link_still_good_after_pause(dw):
+    import time
+    good = dw["_link_still_good"]
+    later, soon = int(time.time()) + 4 * 3600, int(time.time()) + 300
+    u = "https://rr1.googlevideo.com/videoplayback?expire={}&itag=137"
+    assert good({"url": u.format(later), "audio": u.format(later), "page": "p"})
+    assert not good({"url": u.format(later), "audio": u.format(soon), "page": "p"})   # sound link about to stop
+    assert not good({"url": "https://x/no-expiry.m3u8", "page": "p"})
+    assert not good({"url": u.format(later), "live": True, "page": "p"})

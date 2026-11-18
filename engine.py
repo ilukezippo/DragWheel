@@ -762,9 +762,6 @@ def is_link(text) -> bool:
 
 # YouTube hands different streams to different "players"; asking several at once gets a playable choice in one go
 _YT_CLIENTS = "youtube:player_client=default,web_safari,android_vr,tv,mweb"
-# asked at the same time as the full list: one player that needs no challenge solved (the full list solves
-# YouTube's JavaScript puzzle once per player, about 14 s); used when it has the quality asked for
-_YT_FAST = "youtube:player_client=android_vr"
 LINK_QUALITIES = ["1080p", "720p", "480p", "360p"]
 
 
@@ -846,29 +843,6 @@ def _pick_formats(info, max_h=1080, live=False) -> dict:
     return out or {}
 
 
-def _fast_youtube(cmd, url, max_h):
-    """yt-dlp with only the quick player. Returns (info, [], 0) when it gives a normal video in the quality asked
-    for (or the best the video has), else ({}, [], 1) and the full list's answer is used."""
-    base = [c for c in cmd if c not in ("--extractor-args", _YT_CLIENTS)]
-    try:
-        r = subprocess.run(base + ["--extractor-args", _YT_FAST, url], capture_output=True, timeout=45,
-                           stdin=subprocess.DEVNULL, creationflags=NO_WINDOW, cwd=tempfile.gettempdir())
-        if r.returncode != 0:
-            return {}, [], 1
-        info = json.loads(r.stdout.decode("utf-8", "replace") or "{}")
-    except Exception:
-        return {}, [], 1
-    if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
-        return {}, [], 1                                   # live streams: the full way (it picks a player)
-    choice = _pick_formats(info, max_h, False)
-    best = max((f.get("height") or 0 for f in info.get("formats") or [] if f.get("vcodec") not in (None, "none")),
-               default=0)
-    if choice.get("url") and (choice.get("height") or 0) >= min(max_h, best):
-        _link_log("link: quick player")
-        return info, [], 0
-    return {}, [], 1
-
-
 def resolve_link(url, quality=None, _updated=False) -> dict:
     """Turn a page link into something the float can play: {"url", "title", "page", "live"?, "audio"?, "headers", …}.
     Direct media links play as they are; other sites go through yt-dlp (QuickJS solves YouTube's player
@@ -890,27 +864,15 @@ def resolve_link(url, quality=None, _updated=False) -> dict:
     host = (urlparse(url).hostname or "").lower()
     youtube = host.endswith(("youtube.com", "youtu.be"))
     per_client = {}
-    full = subprocess.Popen(cmd + [url], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                            creationflags=NO_WINDOW, cwd=tempfile.gettempdir())   # (not System32, where a browser
-    info, err, rc = _fast_youtube(cmd, url, max_h) if youtube else ({}, [], 1)    # extension starts DragWheel)
-    if info:
+    r = subprocess.run(cmd + [url], capture_output=True, timeout=90, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW,
+                       cwd=tempfile.gettempdir())       # not System32 (a browser extension starts DragWheel there)
+    err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+    info = {}
+    if r.returncode == 0:
         try:
-            full.kill()
-        except Exception:
-            pass
-    else:
-        try:
-            outp, errp = full.communicate(timeout=90)
-        except subprocess.TimeoutExpired:
-            full.kill()
-            outp, errp = full.communicate()
-        rc = full.returncode
-        err = errp.decode("utf-8", "replace").strip().splitlines()
-        if rc == 0:
-            try:
-                info = json.loads(outp.decode("utf-8", "replace") or "{}")
-            except ValueError:
-                info = {}
+            info = json.loads(r.stdout.decode("utf-8", "replace") or "{}")
+        except ValueError:
+            info = {}
     live = bool(info.get("is_live") or info.get("live_status") == "is_live")
     if youtube and live:
         # a live stream: ask each of these players on its own (all at once), so DragWheel knows which player a
@@ -953,7 +915,7 @@ def resolve_link(url, quality=None, _updated=False) -> dict:
                                cwd=tempfile.gettempdir(), creationflags=NO_WINDOW)
             _link_log("yt-dlp -U: " + u.stdout.decode("utf-8", "replace").strip().replace("\n", " | ")[-300:])
             return resolve_link(url, quality, _updated=True)
-        raise ConversionError(last if rc else "Requested format is not available")
+        raise ConversionError(last if r.returncode else "Requested format is not available")
     out = dict(choice, title=info.get("title") or url, page=info.get("webpage_url") or url)
     out["headers"] = {k: v for k, v in (out.get("headers") or {}).items()
                       if k.lower() in ("user-agent", "referer", "origin", "cookie", "accept-language")}
