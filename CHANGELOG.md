@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.4 — not released yet
+
+### New
+- **Trim…** shows the part you keep, like Ringtone: drag its edges on the sound wave, scroll to zoom, and press Play to hear it. Videos also show the picture at the edge you drag and play the part with sound. Any length (several files at once still use Start and End)
+
 ## 1.2.3 — November 2026
 
 ### New

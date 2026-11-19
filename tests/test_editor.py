@@ -46,3 +46,19 @@ def test_overwrite_replaces_the_original(qapp, tmp_path):
     out = engine.image_crop_resize(str(f), d.params())
     assert str(out) == str(f) and Image.open(out).size == (400, 250)
     assert sorted(os.listdir(tmp_path)) == ["photo.jpg"]
+
+
+def test_trim_wave_has_no_limit(dw, qapp):
+    v = dw["WaveView"](None)                 # Trim: any length, starts with the whole file
+    v.set_data([0.5] * 100, 600.0)
+    assert (v.a, v.b) == (0.0, 600.0)
+    v.set_range(10, 500)
+    assert (v.a, v.b) == (10, 500)
+    r = dw["WaveView"](40.0)                 # Ringtone: 30 s to start, never more than 40
+    r.set_data([0.5] * 100, 600.0)
+    assert (r.a, r.b) == (0.0, 30.0)
+    r.set_range(0, 100, keep="a")
+    assert r.b - r.a == 40.0
+    pv = dw["VideoPreview"]()
+    pv.resize(320, 180)
+    pv.grab()                                # paints "Loading…" without a picture

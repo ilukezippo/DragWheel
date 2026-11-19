@@ -34,13 +34,14 @@ class WaveView(QWidget):
         self.a, self.b = 0.0, 0.0
         self.v0, self.v1 = 0.0, 1.0          # visible time range (zoom)
         self.head = None                     # playback position (s)
-        self.max_len = max_len
+        self.max_len = max_len or float("inf")   # None: no limit (Trim)
         self._drag = None                    # ("a" | "b" | "move" | "new", anchor seconds, a, b)
 
     def set_data(self, peaks, dur):
         self.peaks, self.dur = peaks, max(dur, 0.1)
         self.v0, self.v1 = 0.0, self.dur
-        self.a, self.b = 0.0, min(30.0, self.dur, self.max_len)
+        # Ringtone starts with 30 s; Trim (no limit) with the whole file
+        self.a, self.b = 0.0, (self.dur if self.max_len == float("inf") else min(30.0, self.dur, self.max_len))
         self.changed.emit()
         self.update()
 
@@ -168,14 +169,48 @@ class WaveView(QWidget):
         self.update()
 
 
-class TrimWidget(QWidget):
-    """Waveform + play button + start/end boxes. value() -> 'start-end' in seconds."""
+class VideoPreview(QWidget):
+    """The video's picture for Trim: the frame at the edge you're dragging, or the part playing."""
 
-    def __init__(self, path, max_len=40.0):
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(560, 300)
+        self.img = None
+
+    def set_frame(self, frame):
+        try:
+            img = frame.toImage()
+        except Exception:
+            return
+        if not img.isNull():
+            self.img = img
+            self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.fillRect(self.rect(), QColor(0, 0, 0))
+        if self.img is None:
+            p.setPen(theme.color("dim"))
+            p.drawText(self.rect(), Qt.AlignCenter, tr("Loading…"))
+            return
+        s = min(self.width() / self.img.width(), self.height() / self.img.height())
+        w, h = self.img.width() * s, self.img.height() * s
+        p.drawImage(QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h), self.img)
+
+
+class TrimWidget(QWidget):
+    """Waveform + play button + start/end boxes (+ the picture for videos). value() -> 'start-end' in seconds.
+    max_len None = any length (Trim)."""
+
+    def __init__(self, path, max_len=40.0, video=False):
         super().__init__()
         self.path = path
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        self.screen_ = VideoPreview() if video else None
+        if self.screen_ is not None:
+            lay.addWidget(self.screen_, 1)
         self.view = WaveView(max_len)
         lay.addWidget(self.view)
         row = QHBoxLayout()
@@ -196,10 +231,14 @@ class TrimWidget(QWidget):
         row.addWidget(self.len_lbl)
         row.addStretch(1)
         lay.addLayout(row)
-        hint = QLabel(tr("Drag the orange edges or the part itself · scroll to zoom · up to {n} seconds", n=int(max_len)))
+        hint = QLabel(tr("Drag the orange edges or the part itself · scroll to zoom · up to {n} seconds", n=int(max_len))
+                      if max_len else tr("Drag the orange edges or the part itself · scroll to zoom"))
         hint.setStyleSheet(f"color:{theme.hexc('dim')};font-size:9pt")
         lay.addWidget(hint)
         self.view.changed.connect(self._sync)
+        self._ab = (None, None)
+        self._show_at = None                         # where the picture should go while you drag
+        self._frame_timer = QTimer(self, singleShot=True, interval=60, timeout=self._show_frame)
         self.view.seek.connect(lambda t: self._play_from(t) if self._playing() else None)
         self.player = None
         try:
@@ -207,7 +246,14 @@ class TrimWidget(QWidget):
             self.player = QMediaPlayer(self)
             self.audio = QAudioOutput(self)
             self.player.setAudioOutput(self.audio)
+            if self.screen_ is not None:
+                from PySide6.QtMultimedia import QVideoSink
+                self.sink = QVideoSink(self)
+                self.sink.videoFrameChanged.connect(self.screen_.set_frame)
+                self.player.setVideoOutput(self.sink)
             self.player.setSource(QUrl.fromLocalFile(path))
+            if self.screen_ is not None:
+                self.player.pause()                  # loads the first picture without playing
             self.player.positionChanged.connect(self._pos)
             self.player.playbackStateChanged.connect(lambda *_: self._label())
         except Exception as e:
@@ -232,9 +278,20 @@ class TrimWidget(QWidget):
         self.play.setEnabled(self.player is not None)
 
     def _sync(self):
+        a, b = self.view.a, self.view.b
+        if self.screen_ is not None and self.player is not None and not self._playing():
+            self._show_at = b if (a == self._ab[0] and b != self._ab[1]) else a    # the edge that moved
+            self._frame_timer.start()
+        self._ab = (a, b)
         self.start_ed.setText(_fmt_secs(self.view.a))
         self.end_ed.setText(_fmt_secs(self.view.b))
         self.len_lbl.setText(tr("{s} seconds", s=f"{self.view.b - self.view.a:.1f}"))
+
+    def _show_frame(self):
+        if self._show_at is None or self.player is None or self._playing():
+            return
+        self.player.setPosition(int(self._show_at * 1000))
+        self.player.pause()
 
     def _typed(self):
         try:
@@ -262,6 +319,7 @@ class TrimWidget(QWidget):
             self.player.pause()
             self.view.head = None
             self.view.update()
+            self._label()
         else:
             self._play_from(self.view.a)
 
@@ -272,6 +330,8 @@ class TrimWidget(QWidget):
         if t >= self.view.b or t < self.view.a - 0.5:
             self.player.pause()
             self.view.head = None
+            self._show_at = self.view.a
+            self._frame_timer.start()                    # back to the first picture of the part
         else:
             self.view.head = t
         self.view.update()

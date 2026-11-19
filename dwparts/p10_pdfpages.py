@@ -1285,7 +1285,16 @@ def ask_params(op, paths) -> dict | None:
     form = QFormLayout()
     edits = {}
     trims = []
+    # Trim of one file: pick the part on the sound wave (and see the picture for a video), like Ringtone
+    trim_one = op.id == "trim" and len(paths) == 1 and [n for n, _ in op.ask] == ["Start", "End"]
+    if trim_one:
+        tw = TrimWidget(paths[0], None, video=engine.EXT_CATEGORY.get(engine.ext_of(paths[0])) == "video")
+        form.addRow(tw)
+        edits["_clip"] = tw
+        trims.append(tw)
     for name, default in op.ask:
+        if trim_one:
+            continue
         if default == "@trim":                          # waveform: pick the part and listen to it
             tw = TrimWidget(paths[0], engine.RINGTONE_MAX)
             form.addRow(tw)
@@ -1347,6 +1356,10 @@ def ask_params(op, paths) -> dict | None:
         dlg.resize(760, 560)
         scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         dlg.move(scr.availableGeometry().center() - QPoint(380, 280))
+    elif trim_one and trims[0].screen_ is not None:
+        dlg.resize(760, 620)
+        scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        dlg.move(scr.availableGeometry().center() - QPoint(380, 310))
     else:
         dlg.move(QCursor.pos() - QPoint(310 if trims else 170, 60))
     dlg.activateWindow()
@@ -1356,8 +1369,12 @@ def ask_params(op, paths) -> dict | None:
             tw.stop()
     if not ok:
         return None
-    return {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview, PageBoard, SignPlacer, WatermarkEditor, CornerPicker)) else e.text())
-            for k, e in edits.items()}
+    out = {k: (e.currentData() if isinstance(e, QComboBox) else e.value() if isinstance(e, (TrimWidget, CropPreview, PageBoard, SignPlacer, WatermarkEditor, CornerPicker)) else e.text())
+           for k, e in edits.items()}
+    if "_clip" in out:                                   # Trim keeps its Start / End (presets, chains, command line)
+        a, b = out.pop("_clip").split("-")
+        out["Start"], out["End"] = a, b
+    return out
 
 
 def message(title, html):
