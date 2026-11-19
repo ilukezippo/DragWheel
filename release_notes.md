@@ -1,38 +1,35 @@
 **Drag a file, tap a key, drop it on the wheel.** Offline file converter and toolbox for Windows.
 
-**Install:** download `DragWheel-Setup-1.2.2.exe` below and run it (asks for admin, installs to `C:\Program Files\DragWheel`).
+**Install:** download `DragWheel-Setup-1.2.3.exe` below and run it (asks for admin, installs to `C:\Program Files\DragWheel`).
 The installer is not code-signed yet, so Windows may warn: if Edge holds the download, choose *… → Keep → Show more → Keep anyway*; if SmartScreen warns when you run it, choose *More info → Run anyway*.
 
-**Portable:** `DragWheel-Portable-1.2.2.zip` — unzip anywhere and run `DragWheel.exe`.
+**Portable:** `DragWheel-Portable-1.2.3.zip` — unzip anywhere and run `DragWheel.exe`.
 
 Requires Windows 10 (1809+) or 11, 64-bit.
 
-## What's new in 1.2.2
+## What's new in 1.2.3
 
-#### New tools
-- **Read QR code on screen** (tray menu and the desktop's right-click menu): the QR codes on your screens light up; click one, or drag a box around a small one, and DragWheel shows what it says — open a link, copy text, or copy a Wi-Fi password. Pictures get a *Read QR code* action too. Works offline
-- **Fix alignment…** for photos of documents, like a scanner app: DragWheel finds the page's edges and corners (even on a white table), you drag any corner or side with a magnifier showing exactly where, rotate left or right, and see a live preview of each look — clean document, original colours, black & white or grayscale. Several pictures at once are straightened automatically
-
-#### Send to phone
-- **Two new ways:** *Link from this PC* makes a link that works on any network, served straight from this PC through a free Cloudflare tunnel while the window is open (nothing is uploaded); *Cloud link* puts a copy in your OneDrive, Google Drive, iCloud Drive, Dropbox or Box and uses its own Copy link, so the link works even when this PC is off (the copy is deleted when the time you choose runs out)
-- **Redone windows:** an icon for each way with a short line under it, ‹ Back at the top left to pick another way, a space for the QR code with a spinning wheel inside it until the link is ready (with the upload percentage), and clear main buttons; click a QR code to copy its link
-- **Same file, same QR code:** choosing Internet link or Cloud link again for a file that's already shared shows the link you made, with the time left and *New link* if you want a fresh one
-- **Stop sharing?** Closing a window with X or Back while something is shared asks whether to stop or keep sharing (the *Stop sharing* button just stops); shares that are still going are listed in the tray under *Send to phone — show QR code*
-- **Choose the file service** for an internet link: Automatic (Litterbox, then 0x0.st, then uguu.se, which all give the file itself), one of them, or tmpfiles.org with a warning about the ads and pop-ups on its download page; each shows the link times it offers
-- A service that refuses your network is skipped straight away instead of uploading half the file first; when an upload fails, the message says what each service did
-- Programs go as *Name.zip* (not *Name.exe.zip*, which some services refuse) and files are sent with their real type
-- Cloud link lists every cloud it supports (one that isn't set up offers to get it) and finds Google Drive in any of its setups
-- The windows come to the front when they open but no longer stay on top of everything
-
-#### Float and Settings
-- **Smoother with a video playing:** Settings is prepared one page at a time in the background and opens at once, Send to phone looks for clouds and network addresses in the background, and DragWheel notes in its log anything that holds it up for a moment
-- **Reopen** on the float's right-click menu: closes it and opens it again at the same size and place, with the same file or link, from the same point
-- **Floats that open with Windows** come back at the same place and size
-- **Playing again after a long break:** a video paused for more than 10 minutes (or overnight) reopens fresh when you press play, instead of the sound coming back with a frozen picture
-- **Settings Config exports everything:** every option, your keys, slices, presets, chains, Custom Slices, Auto Convert folders and saved links, plus starting with Windows and the right-click menus
-- The installer can download every extra ahead of time (Remove background, Transcribe, Paste link to Float and Link from this PC), all optional
-- Windows 11: the right-click option is now called *Use the full right-click menu (like Windows 10)*, which is what it does — Windows' short menu only takes signed, packaged apps
+#### New
+- **Sticky notes** on the desktop: right-click the desktop → DragWheel → *New sticky note* (or the tray). They save themselves as you type (plain .txt files in Documents › DragWheel Notes), six colours, Keep on top, bigger or smaller text, and they come back when DragWheel starts. Floating a .txt, .md or .log file opens it as a note you can edit. ⋯ → *Keep notes in* moves them to OneDrive, Google Drive or any folder so they follow you to your other PCs; *Show all notes* opens every one
+- **DragWheel for Browser** (Chrome Web Store and Firefox Add-ons): right-click a video, song or link → *Play in DragWheel Float*; right-click a picture → *Save image as* PNG, JPG, WebP, AVIF, ICO, PDF and more. The installer's *Browser extension* option adds it to Chrome, Edge and Brave the way IDM does (the browser asks once to turn it on); Firefox opens its add-on page once
+- **Right-click a file → DragWheel: Convert ▸ / Tools ▸ / Actions ▸**, with the slices of your wheels for that kind of file
+- **Floats stay open after a restart** until you close them, at the same place and size, with videos waiting where they were
+- **Float name and icon**: right-click an app, folder or shortcut float → *Name and icon*: show or hide the name, *Auto hide name*, rename it, font, size and colour, or *Change icon…* (any picture, .ico or a program's icon). Shortcut floats show the big icon Explorer shows, including icons you set in a shortcut's Properties
+- **Keep aspect ratio** on/off for picture and video floats: off, resize them to any shape
+- A video or song playing in a Float shows its progress on the taskbar button
+- **Crop & Resize**: an *Image sizes* list with printable sizes (wallet, passport, 4×6, 5×7, 8×10, Letter, A4…): it crops to that size the way the picture faces and saves it at 300 dpi, ready to print. And an **Overwrite** button next to *Save copy* (the original goes to the Recycle Bin)
+- **Flip horizontal** and **Flip vertical** for videos (Tools wheel)
+- New sound packs: Xbox, PlayStation and Steam
+- Settings → About: *Star on GitHub*; after 20 jobs a small window asks once whether you'd like to star DragWheel
 
 #### Fixed
-- A PDF you'd used in Manage pages, Sign, Watermark or another PDF tool stayed locked until DragWheel was closed, so it couldn't be renamed or deleted
+- Float: playing a web video again after a long pause no longer asks the site again (about 14 s) while its link is still good for a while; the player restarts on the same link at once
+- A Float playing through a headset went silent when Windows switched to another output (speakers, or the headset turned off): the sound now moves to the new device
+- *Original* in Crop & Resize now goes back to the whole picture, not just its shape
+- Freezes: starting a long online video (the temp file is reserved instantly), a video stuttering while the mouse was over its Float, the wheel keys and Float settings read from the registry many times a second, the Settings window looking through the Temp folder and searching for LibreOffice
+- 64-bit Windows: big icons failing to load for app and shortcut Floats
+- Playing a video from the browser extension no longer fails (DragWheel was started in System32)
+- No duplicate Floats after an update; a video paused for hours starts fresh in the same window
+- A pinned Float of a file that was deleted is forgotten instead of being looked for at every start
+- The freeze log ignores the PC sleeping, and old crash reports are tidied (the newest 20, under 30 days)
 
