@@ -70,6 +70,16 @@ Results are saved next to the original (`photo.webp`, `clip compressed.mp4`, …
 
 All keys can be changed in **Settings** (tray icon → Settings).
 
+## What's new in 1.2.3
+
+- **Sticky notes** on the desktop: right-click the desktop → DragWheel → *New sticky note*. They save as you type, come back when DragWheel starts, and can live in OneDrive or Google Drive to follow you to your other PCs
+- **DragWheel for Browser** ([Chrome Web Store](https://chromewebstore.google.com/detail/mabjkdfbddokmmfbdhgkgcmhalgkbbcj) and [Firefox Add-ons](https://addons.mozilla.org/addon/dragwheel-for-browser/)): right-click a video or link → *Play in DragWheel Float*, or a picture → *Save image as* any format
+- **Right-click a file → DragWheel: Convert ▸ / Tools ▸ / Actions ▸**, with the slices of your wheels
+- **Floats** stay open after a restart, get a name and icon of your choice, can drop *Keep aspect ratio*, show progress on the taskbar, and their sound follows Windows when you switch from headset to speakers
+- **Crop & Resize:** printable *Image sizes* (wallet, passport, 4×6, 5×7, A4…) saved at 300 dpi, and *Overwrite* the original
+- **Flip videos** horizontally or vertically, and new Xbox, PlayStation and Steam sound packs
+- **Fixed:** freezes while a video plays, big icons on 64-bit Windows, and more (see the [changelog](CHANGELOG.md))
+
 ## What's new in 1.2.2
 
 - **Read QR code on screen:** the QR codes on your screens light up, click one and open the link, copy the text or copy the Wi-Fi password. Works offline

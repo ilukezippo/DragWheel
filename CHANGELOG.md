@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.3 — not released yet
+## 1.2.3 — November 2026
 
 ### New
 - **Sticky notes** on the desktop: right-click the desktop → DragWheel → *New sticky note* (or the tray). They save themselves as you type (plain .txt files in Documents › DragWheel Notes), six colours, Keep on top, bigger or smaller text, and they come back when DragWheel starts. Floating a .txt, .md or .log file opens it as a note you can edit. ⋯ → *Keep notes in* moves them to OneDrive, Google Drive or any folder so they follow you to your other PCs; *Show all notes* opens every one
