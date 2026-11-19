@@ -44,6 +44,8 @@ def test_siblings_cached(dw, qapp, tmp_path):
 @pytest.mark.skipif(sys.platform != "win32", reason="Qt's sound devices need Windows (Linux CI has none)")
 def test_sound_follows_the_default_device(dw, qapp):
     from PySide6.QtMultimedia import QAudioOutput, QMediaDevices
+    if QMediaDevices.defaultAudioOutput().isNull():
+        pytest.skip("no sound device (GitHub's Windows runners have none)")
     audio = QAudioOutput()
     watch = dw["_FollowDefaultOutput"](audio)
     watch._last = "something else"                # as if Windows switched to another device
