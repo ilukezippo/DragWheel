@@ -77,6 +77,7 @@ All keys can be changed in **Settings** (tray icon → Settings).
 - **Right-click a file → DragWheel: Convert ▸ / Tools ▸ / Actions ▸**, with the slices of your wheels
 - **Floats** stay open after a restart, get a name and icon of your choice, can drop *Keep aspect ratio*, show progress on the taskbar, and their sound follows Windows when you switch from headset to speakers
 - **Crop & Resize:** printable *Image sizes* (wallet, passport, 4×6, 5×7, A4…) saved at 300 dpi, and *Overwrite* the original
+- **Trim** with a preview: drag the edges on the sound wave, see the video's picture and play the part before saving
 - **Flip videos** horizontally or vertically, and new Xbox, PlayStation and Steam sound packs
 - **Fixed:** freezes while a video plays, big icons on 64-bit Windows, and more (see the [changelog](CHANGELOG.md))
 
