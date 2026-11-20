@@ -18,6 +18,7 @@ Requires Windows 10 (1809+) or 11, 64-bit.
 - **Keep aspect ratio** on/off for picture and video floats: off, resize them to any shape
 - A video or song playing in a Float shows its progress on the taskbar button
 - **Crop & Resize**: an *Image sizes* list with printable sizes (wallet, passport, 4×6, 5×7, 8×10, Letter, A4…): it crops to that size the way the picture faces and saves it at 300 dpi, ready to print. And an **Overwrite** button next to *Save copy* (the original goes to the Recycle Bin)
+- **Trim…** shows the part you keep, like Ringtone: drag its edges on the sound wave, scroll to zoom, and press Play to hear it. Videos also show the picture at the edge you drag and play the part with sound. Any length (several files at once still use Start and End)
 - **Flip horizontal** and **Flip vertical** for videos (Tools wheel)
 - New sound packs: Xbox, PlayStation and Steam
 - Settings → About: *Star on GitHub*; after 20 jobs a small window asks once whether you'd like to star DragWheel
