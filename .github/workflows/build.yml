@@ -47,9 +47,28 @@ jobs:
           --icon assets/dragwheel.ico --version-file version_info.txt --add-data "assets;assets" --add-data "browser-extension;browser-extension"
           --collect-data imageio_ffmpeg --collect-binaries imageio_ffmpeg
           --collect-all pillow_heif --hidden-import win32timezone --hidden-import py7zr
-          --hidden-import win32com.shell.shell --hidden-import editor --hidden-import jobproc --hidden-import pdfdocx --hidden-import updater --hidden-import theme --collect-submodules locales --collect-submodules dwparts --hidden-import bridge --hidden-import PySide6.QtMultimedia --hidden-import onnxruntime --collect-binaries onnxruntime --exclude-module sympy
+          --hidden-import win32com.shell.shell --hidden-import editor --hidden-import jobproc --hidden-import pdfdocx --hidden-import updater --hidden-import theme --collect-submodules locales --hidden-import dwparts --hidden-import dwparts.p01_files --hidden-import dwparts.p02_actions --hidden-import dwparts.p03_notes --hidden-import dwparts.p04_worker --hidden-import dwparts.p05_wheel --hidden-import dwparts.p06_toast --hidden-import dwparts.p07_float --hidden-import dwparts.p08_dialogs --hidden-import dwparts.p09_trimmer --hidden-import dwparts.p10_pdfpages --hidden-import dwparts.p11_settings --hidden-import dwparts.p12_customize --hidden-import dwparts.p13_dragwatch --hidden-import dwparts.p14_app --hidden-import dwparts.p15_crash --hidden-import bridge --hidden-import PySide6.QtMultimedia --hidden-import onnxruntime --collect-binaries onnxruntime --exclude-module sympy
           --exclude-module tkinter --exclude-module matplotlib --exclude-module cv2
           dragwheel.pyw
+      - name: Check the program's parts are inside
+        # the parts in dwparts/ are run with exec, not imported, so PyInstaller only finds them as hidden imports;
+        # a build without them can't start ("No module named 'dwparts'")
+        shell: python
+        run: |
+          import marshal, struct
+          from PyInstaller.archive.readers import CArchiveReader
+          exe = "dist/DragWheel/DragWheel.exe"
+          ca = CArchiveReader(exe)
+          raw = open(exe, "rb").read()
+          off, ln, *_ = ca.toc["PYZ.pyz"]
+          pyz = raw[ca._start_offset + off:ca._start_offset + off + ln]
+          names = {n for n, _ in marshal.loads(pyz[struct.unpack("!i", pyz[8:12])[0]:])}
+          import re
+          parts = re.search(r"PARTS = \[(.*?)\]", open("dragwheel.pyw", encoding="utf-8").read(), re.S).group(1)
+          need = ["dwparts", "bridge", "editor", "engine", "segno"] + ["dwparts." + p for p in re.findall(r'"(\w+)"', parts)]
+          missing = [n for n in need if n not in names]
+          print(len(names), "modules; missing:", missing)
+          assert not missing, missing
       - name: Trim unused Qt files
         run: |
           Remove-Item dist/DragWheel/_internal/PySide6/opengl32sw.dll -ErrorAction SilentlyContinue
